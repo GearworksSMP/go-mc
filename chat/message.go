@@ -53,15 +53,15 @@ const (
 type Message struct {
 	Text string `json:"text" nbt:"text"`
 
-	Bold          bool `json:"bold,omitempty" nbt:"bold,omitempty"`                   // 粗体
-	Italic        bool `json:"italic,omitempty" nbt:"italic,omitempty"`               // 斜体
-	UnderLined    bool `json:"underlined,omitempty" nbt:"underlined,omitempty"`       // 下划线
-	StrikeThrough bool `json:"strikethrough,omitempty" nbt:"strikethrough,omitempty"` // 删除线
-	Obfuscated    bool `json:"obfuscated,omitempty" nbt:"obfuscated,omitempty"`       // 随机
+	Bold          bool `json:"bold,omitempty" nbt:"bold,omitempty"`                   // Bold
+	Italic        bool `json:"italic,omitempty" nbt:"italic,omitempty"`               // Italic
+	UnderLined    bool `json:"underlined,omitempty" nbt:"underlined,omitempty"`       // Underline
+	StrikeThrough bool `json:"strikethrough,omitempty" nbt:"strikethrough,omitempty"` // Strikethrough
+	Obfuscated    bool `json:"obfuscated,omitempty" nbt:"obfuscated,omitempty"`       // Obfuscated
 	// Font of the message, could be one of minecraft:uniform, minecraft:alt or minecraft:default
 	// This option is only valid on 1.16+, otherwise the property is ignored.
-	Font  string `json:"font,omitempty" nbt:"font,omitempty"`   // 字体
-	Color string `json:"color,omitempty" nbt:"color,omitempty"` // 颜色
+	Font  string `json:"font,omitempty" nbt:"font,omitempty"`   // Font
+	Color string `json:"color,omitempty" nbt:"color,omitempty"` // Color
 
 	// Insertion contains text to insert. Only used for messages in chat.
 	// When shift is held, clicking the component inserts the given text

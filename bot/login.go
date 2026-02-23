@@ -154,7 +154,7 @@ type Auth struct {
 }
 
 func handleEncryptionRequest(conn *net.Conn, c *Client, p pk.Packet) error {
-	// 创建AES对称加密密钥
+	// Create AES symmetric encryption key
 	key, encoStream, decoStream := newSymmetricEncryption()
 
 	// Read EncryptionRequest
@@ -163,12 +163,12 @@ func handleEncryptionRequest(conn *net.Conn, c *Client, p pk.Packet) error {
 		return err
 	}
 
-	err := loginAuth(c.Auth, key, er) // 向Mojang验证
+	err := loginAuth(c.Auth, key, er) // Authenticate with Mojang
 	if err != nil {
 		return fmt.Errorf("login fail: %v", err)
 	}
 
-	// 响应加密请求
+	// Respond to encryption request
 	// Write Encryption Key Response
 	p, err = genEncryptionKeyResponse(key, er.PublicKey, er.VerifyToken)
 	if err != nil {
@@ -180,7 +180,7 @@ func handleEncryptionRequest(conn *net.Conn, c *Client, p pk.Packet) error {
 		return err
 	}
 
-	// 设置连接加密
+	// Set connection encryption
 	conn.SetCipher(encoStream, decoStream)
 	return nil
 }

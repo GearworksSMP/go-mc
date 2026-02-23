@@ -42,7 +42,7 @@ var (
 	zlibPool = sync.Pool{New: func() any { return zlib.NewWriter(io.Discard) }}
 )
 
-// Pack 打包一个数据包
+// Pack packs a data packet
 func (p *Packet) Pack(w io.Writer, threshold int) error {
 	if threshold >= 0 {
 		return p.packWithCompression(w, threshold)

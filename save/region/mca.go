@@ -27,8 +27,8 @@ type Region struct {
 	sectors map[int32]bool
 }
 
-// In calculate chunk's coordinates relative to region
-// 计算chunk在region中的相对坐标。即，除以32并取余。
+// In calculate chunk's coordinates relative to region.
+// That is, divide by 32 and take the remainder.
 func In(cx, cz int) (int, int) {
 	// c & (32-1)
 	// is equal to:
@@ -36,8 +36,7 @@ func In(cx, cz int) (int, int) {
 	return cx & 31, cz & 31
 }
 
-// At calculate the region's coordinates where the chunk in
-// 计算chunk在哪一个region中
+// At calculate the region's coordinates where the chunk is located.
 func At(cx, cz int) (int, int) {
 	return cx >> 5, cz >> 5
 }

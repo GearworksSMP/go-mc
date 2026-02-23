@@ -70,7 +70,7 @@ func unpack(f, o string) {
 			fn := fmt.Sprintf("c.%d.%d.mcc", x<<5+i, z<<5+j)
 			if *decomp {
 				var err error
-				fn += ".nbt" // 解压后就是一个标准的NBT文件，可以加个.nbt后缀
+				fn += ".nbt" // After decompression this is a standard NBT file, so add a .nbt extension
 				switch data[0] {
 				default:
 					err = fmt.Errorf("unknown compression type 0x%02x", data[0])

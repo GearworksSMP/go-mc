@@ -64,7 +64,7 @@ func Encrypt(conn *net.Conn, name string, serverKey *rsa.PrivateKey) (*Resp, err
 		return nil, errors.New("load aes encryption key fail")
 	}
 
-	conn.SetCipher( // 启用加密
+	conn.SetCipher( // Enable encryption
 		CFB8.NewCFB8Encrypt(block, SharedSecret),
 		CFB8.NewCFB8Decrypt(block, SharedSecret),
 	)
