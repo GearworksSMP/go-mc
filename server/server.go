@@ -38,8 +38,8 @@ import (
 )
 
 const (
-	ProtocolName    = "1.20.2"
-	ProtocolVersion = 764
+	ProtocolName    = "26.1-snapshot-2"
+	ProtocolVersion = 0x40000120 // 1073742112
 )
 
 type Server struct {
@@ -90,7 +90,7 @@ func (s *Server) AcceptConn(conn *net.Conn) {
 			}
 			return
 		}
-		s.AcceptConfig(conn)
+		err = s.AcceptConfig(conn)
 		if err != nil {
 			var configErr ConfigFailErr
 			if errors.As(err, &configErr) {

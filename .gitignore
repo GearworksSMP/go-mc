@@ -20,3 +20,7 @@ examples/genmaps/*.png
 data/packetid/generate.go
 .idea/
 .vscode/
+/external-docs/
+/.cache/
+/.claude/
+chunk_*.bin

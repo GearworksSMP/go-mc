@@ -59,14 +59,33 @@ func (r *Registry[E]) ClearTags() {
 	r.tags = make(map[string][]*E)
 }
 
-// func (r *Registry[E]) BindTags(tag string, ids []int32) error {
-// 	values := make([]*E, len(ids))
-// 	for i, id := range ids {
-// 		if id < 0 || id >= int32(len(r.values)) {
-// 			return errors.New("invalid id: " + strconv.Itoa(int(id)))
-// 		}
-// 		values[i] = &r.values[id]
-// 	}
-// 	r.tags[tag] = values
-// 	return nil
-// }
+// Len returns the number of entries in the registry.
+func (r *Registry[E]) Len() int {
+	return len(r.values)
+}
+
+// Range calls fn for each entry in the registry, ordered by ID.
+func (r *Registry[E]) Range(fn func(id int32, key string, value *E)) {
+	// Build reverse map of id -> key for ordered iteration
+	idToKey := make([]string, len(r.values))
+	for key, id := range r.keys {
+		idToKey[id] = key
+	}
+	for i := range r.values {
+		fn(int32(i), idToKey[i], &r.values[i])
+	}
+}
+
+// EncodableEntries returns all entries as RegistryEntry slice ordered by ID,
+// suitable for encoding into registry data packets.
+func (r *Registry[E]) EncodableEntries() []RegistryEntry {
+	entries := make([]RegistryEntry, len(r.values))
+	idToKey := make([]string, len(r.values))
+	for key, id := range r.keys {
+		idToKey[id] = key
+	}
+	for i := range r.values {
+		entries[i] = RegistryEntry{Key: idToKey[i], Data: r.values[i]}
+	}
+	return entries
+}

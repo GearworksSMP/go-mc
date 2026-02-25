@@ -74,6 +74,18 @@ type Dimension struct {
 	MonsterSpawnBlockLightLimit int32          `nbt:"monster_spawn_block_light_limit"`
 }
 
+// RegistryEntry holds a single registry entry for packet encoding.
+type RegistryEntry struct {
+	Key  string
+	Data any
+}
+
+// EntryEncoder is implemented by all Registry[E] instances, allowing
+// iteration over entries without knowing the concrete element type.
+type EntryEncoder interface {
+	EncodableEntries() []RegistryEntry
+}
+
 type RegistryCodec interface {
 	pk.FieldDecoder
 	ReadTagsFrom(r io.Reader) (int64, error)
@@ -90,6 +102,24 @@ func (c *Registries) Registry(id string) RegistryCodec {
 		}
 		if registryID == id {
 			return codecVal.Field(i).Addr().Interface().(RegistryCodec)
+		}
+	}
+	return nil
+}
+
+// EachRegistry calls fn for each registry in the Registries struct,
+// passing the registry ID (from struct tag) and the EntryEncoder interface.
+func (c *Registries) EachRegistry(fn func(registryID string, enc EntryEncoder) error) error {
+	val := reflect.ValueOf(c).Elem()
+	typ := val.Type()
+	for i := 0; i < val.NumField(); i++ {
+		registryID, ok := typ.Field(i).Tag.Lookup("registry")
+		if !ok {
+			continue
+		}
+		enc := val.Field(i).Addr().Interface().(EntryEncoder)
+		if err := fn(registryID, enc); err != nil {
+			return err
 		}
 	}
 	return nil
