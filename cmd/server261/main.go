@@ -1,8 +1,5 @@
-// Command server261 is a minimal Minecraft 26.1-snapshot-2 server.
-//
-// It handles server list pings, login, configuration (registry sync),
-// and spawns the player in a void world. No world logic is implemented —
-// the player floats in the void and stays connected via keepalive.
+// Command server261 is a Minecraft 26.1-snapshot-2 server with a superflat world,
+// 20 TPS tick loop, player movement tracking, and view-distance chunk streaming.
 //
 // Usage:
 //
@@ -11,15 +8,24 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
+	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/dbworld"
+	"github.com/Tnze/go-mc/game/gen"
+	"github.com/Tnze/go-mc/game/handler"
+	"github.com/Tnze/go-mc/game/mem"
+	"github.com/Tnze/go-mc/game/pgstore"
+	"github.com/Tnze/go-mc/game/store"
 	"github.com/Tnze/go-mc/nbt"
 	"github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -33,12 +39,53 @@ import (
 func main() {
 	logger := log.New(os.Stdout, "[Server] ", log.LstdFlags)
 
+	// Create superflat world
+	sfGen := gen.DefaultSuperflat()
+	players := game.NewPlayerManager()
+
+	var world game.World
+	var playerStore store.PlayerStore
+	var dbw *dbworld.World // nil when using mem.World
+
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		logger.Printf("Connecting to PostgreSQL...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		pg, err := pgstore.New(ctx, dbURL)
+		cancel()
+		if err != nil {
+			logger.Fatalf("Database connection failed: %v", err)
+		}
+		defer pg.Close()
+
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := pgstore.Migrate(ctx2, pg.Pool()); err != nil {
+			cancel2()
+			logger.Fatalf("Database migration failed: %v", err)
+		}
+		cancel2()
+		logger.Printf("Database ready")
+
+		dbw = dbworld.NewWorld(pg, sfGen, sfGen.Sections, sfGen.MinY, "overworld", logger)
+		world = dbw
+		playerStore = pg
+	} else {
+		world = mem.NewWorld(sfGen, sfGen.Sections, sfGen.MinY)
+	}
+
 	// Build minimal registries for 26.1-snapshot-2
 	regs := buildRegistries()
 
+	gp := &gamePlay{
+		logger:      logger,
+		world:       world,
+		players:     players,
+		gen:         sfGen,
+		playerStore: playerStore,
+	}
+
 	srv := server.Server{
 		Logger:          logger,
-		ListPingHandler: &pingHandler{},
+		ListPingHandler: &pingHandler{players: players},
 		LoginHandler: &server.MojangLoginHandler{
 			OnlineMode: false,
 			Threshold:  256,
@@ -50,9 +97,44 @@ func main() {
 			},
 			KnownPackEntries: vanillaRegistryKeys(),
 			Tags:             vanillaConfigTags(),
+			Logger:           logger,
 		},
-		GamePlay:      &gamePlay{logger: logger},
+		GamePlay: gp,
 	}
+
+	// Start tick loop
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tickLoop := game.NewTickLoop(
+		game.TickHandlerFunc(func(tick int64) {
+			gp.keepalive.Tick(tick, players)
+		}),
+	)
+
+	// Add dirty-chunk flush handler (every 30s = 600 ticks)
+	if dbw != nil {
+		tickLoop.AddHandler(dbw.FlushTick(600))
+	}
+
+	go tickLoop.Run(ctx)
+
+	// Graceful shutdown: flush dirty chunks on SIGINT/SIGTERM
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		logger.Printf("Shutting down...")
+		if dbw != nil {
+			n, err := dbw.FlushDirty(context.Background())
+			if err != nil {
+				logger.Printf("Shutdown flush error: %v", err)
+			} else if n > 0 {
+				logger.Printf("Shutdown: flushed %d dirty chunks", n)
+			}
+		}
+		cancel()
+		os.Exit(0)
+	}()
 
 	addr := ":25565"
 	logger.Printf("Starting server on %s (protocol %s / %d)", addr, server.ProtocolName, server.ProtocolVersion)
@@ -65,12 +147,14 @@ func main() {
 // ListPingHandler
 // ---------------------------------------------------------------------------
 
-type pingHandler struct{}
+type pingHandler struct {
+	players *game.PlayerManager
+}
 
 func (p *pingHandler) Name() string                    { return server.ProtocolName }
 func (p *pingHandler) Protocol(int32) int              { return server.ProtocolVersion }
 func (p *pingHandler) MaxPlayer() int                  { return 20 }
-func (p *pingHandler) OnlinePlayer() int               { return 0 }
+func (p *pingHandler) OnlinePlayer() int               { return p.players.Count() }
 func (p *pingHandler) PlayerSamples() []server.PlayerSample { return nil }
 func (p *pingHandler) Description() *chat.Message {
 	msg := chat.Text("A Go-MC 26.1-snapshot-2 Server")
@@ -83,7 +167,13 @@ func (p *pingHandler) FavIcon() string { return "" }
 // ---------------------------------------------------------------------------
 
 type gamePlay struct {
-	logger *log.Logger
+	logger      *log.Logger
+	world       game.World
+	players     *game.PlayerManager
+	gen         *gen.SuperflatGenerator
+	playerStore store.PlayerStore
+
+	keepalive handler.KeepaliveHandler
 }
 
 func (g *gamePlay) logf(format string, args ...any) {
@@ -93,10 +183,60 @@ func (g *gamePlay) logf(format string, args ...any) {
 }
 
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
-	g.logf("Player %s (%s) joined [protocol=%d]", name, id, protocol)
-	defer g.logf("Player %s (%s) left", name, id)
+	eid := g.players.NextEntityID()
+	player := game.NewPlayer(name, id, eid, conn)
+	spawnX, spawnY, spawnZ := 0.5, g.gen.SpawnY(), 0.5
+	var spawnYaw, spawnPitch float32
 
-	if err := g.sendJoinGame(conn); err != nil {
+	// Load saved position if DB is available
+	if g.playerStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ps, err := g.playerStore.LoadPlayer(ctx, id)
+		cancel()
+		if err != nil {
+			g.logf("Warning: failed to load player %s state: %v", name, err)
+		} else if ps != nil {
+			spawnX, spawnY, spawnZ = ps.X, ps.Y, ps.Z
+			spawnYaw, spawnPitch = ps.Yaw, ps.Pitch
+			g.logf("Loaded saved position for %s: (%.1f, %.1f, %.1f)", name, spawnX, spawnY, spawnZ)
+		}
+	}
+
+	player.SetPosition(spawnX, spawnY, spawnZ)
+	player.SetRotation(spawnYaw, spawnPitch)
+	player.ViewDistance = 10
+
+	g.players.Add(player)
+	g.logf("Player %s (%s) joined [protocol=%d, eid=%d]", name, id, protocol, eid)
+	defer func() {
+		// Save player state on disconnect
+		if g.playerStore != nil {
+			px, py, pz := player.Position()
+			pyaw, ppitch := player.Rotation()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
+				UUID:      id,
+				Name:      name,
+				Dimension: "overworld",
+				X:         px,
+				Y:         py,
+				Z:         pz,
+				Yaw:       pyaw,
+				Pitch:     ppitch,
+				GameMode:  1,
+			})
+			cancel()
+			if err != nil {
+				g.logf("Warning: failed to save player %s state: %v", name, err)
+			} else {
+				g.logf("Saved position for %s: (%.1f, %.1f, %.1f)", name, px, py, pz)
+			}
+		}
+		g.players.Remove(id)
+		g.logf("Player %s (%s) left", name, id)
+	}()
+
+	if err := g.sendJoinGame(conn, eid); err != nil {
 		g.logf("Error sending JoinGame to %s: %v", name, err)
 		return
 	}
@@ -112,64 +252,39 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
-	// PlayerPosition — must come BEFORE chunks (vanilla sends it early)
+	// PlayerPosition — must come BEFORE chunks
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerPosition,
-		pk.VarInt(1),     // teleport ID
-		pk.Double(0.5),   // x (center of block)
-		pk.Double(112),   // y (above stone platform at Y=96-111)
-		pk.Double(0.5),   // z
-		pk.Double(0),     // vel_x
-		pk.Double(0),     // vel_y
-		pk.Double(0),     // vel_z
-		pk.Float(0),      // yaw
-		pk.Float(0),      // pitch
-		pk.Int(0),        // flags: all absolute
+		pk.VarInt(1),             // teleport ID
+		pk.Double(spawnX),        // x
+		pk.Double(spawnY),        // y
+		pk.Double(spawnZ),        // z
+		pk.Double(0),             // vel_x
+		pk.Double(0),             // vel_y
+		pk.Double(0),             // vel_z
+		pk.Float(spawnYaw),       // yaw
+		pk.Float(spawnPitch),     // pitch
+		pk.Int(0),                // flags: all absolute
 	)); err != nil {
 		g.logf("Error sending PlayerPosition to %s: %v", name, err)
 		return
 	}
 
-	if err := g.sendSpawnSequence(conn); err != nil {
+	if err := g.sendSpawnSequence(player); err != nil {
 		g.logf("Error sending spawn sequence to %s: %v", name, err)
 		return
 	}
 
-	// Keepalive + packet drain loop
-	g.keepAliveLoop(conn, name)
+	// Packet read loop with handlers
+	g.packetLoop(player)
 }
 
-func (g *gamePlay) sendJoinGame(conn *net.Conn) error {
-	// Build the JoinGame (Login) packet.
-	// Field order per wiki.vg for 1.20.2+ (extended in 1.21.2 with sea_level):
-	//   Int           entity_id
-	//   Boolean       is_hardcore
-	//   Array[Ident]  dimension_names  (VarInt-prefixed)
-	//   VarInt        max_players
-	//   VarInt        view_distance
-	//   VarInt        simulation_distance
-	//   Boolean       reduced_debug_info
-	//   Boolean       enable_respawn_screen
-	//   Boolean       do_limited_crafting
-	//   VarInt        dimension_type     (registry index)
-	//   Identifier    dimension_name
-	//   Long          hashed_seed
-	//   UnsignedByte  gamemode
-	//   Byte          previous_gamemode  (-1 = none)
-	//   Boolean       is_debug
-	//   Boolean       is_flat
-	//   Optional<death_location>:
-	//     Boolean     has_death_location
-	//     (if true: Identifier + Position)
-	//   VarInt        portal_cooldown
-	//   VarInt        sea_level           (1.21.2+)
-	//   Boolean       enforces_secure_chat
-
+func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
 	dimensionNames := []pk.Identifier{"minecraft:overworld"}
 
 	return conn.WritePacket(pk.Marshal(
 		packetid.ClientboundLogin,
-		pk.Int(1),                  // entity ID
+		pk.Int(eid),                // entity ID
 		pk.Boolean(false),          // not hardcore
 		pk.Array(dimensionNames),   // dimension names
 		pk.VarInt(20),              // max players
@@ -178,13 +293,13 @@ func (g *gamePlay) sendJoinGame(conn *net.Conn) error {
 		pk.Boolean(false),          // reduced debug info
 		pk.Boolean(true),           // enable respawn screen
 		pk.Boolean(false),          // do limited crafting
-		pk.VarInt(0),               // dimension type = index 0 in dimension_type registry
-		pk.Identifier("minecraft:overworld"), // dimension name
+		pk.VarInt(0),               // dimension type = index 0
+		pk.Identifier("minecraft:overworld"),
 		pk.Long(0),                 // hashed seed
 		pk.UnsignedByte(1),         // gamemode: creative
 		pk.Byte(-1),                // previous gamemode: none
 		pk.Boolean(false),          // is debug
-		pk.Boolean(true),           // is flat (superflat for void)
+		pk.Boolean(true),           // is flat
 		pk.Boolean(false),          // has death location
 		pk.VarInt(0),               // portal cooldown
 		pk.VarInt(63),              // sea level
@@ -192,191 +307,103 @@ func (g *gamePlay) sendJoinGame(conn *net.Conn) error {
 	))
 }
 
-func (g *gamePlay) sendSpawnSequence(conn *net.Conn) error {
-	// 1. Set default spawn position (26.1: RespawnData = GlobalPos + yaw + pitch)
-	err := conn.WritePacket(pk.Marshal(
+func (g *gamePlay) sendSpawnSequence(player *game.Player) error {
+	px, py, pz := player.Position()
+
+	// 1. Set default spawn position
+	err := player.WritePacket(pk.Marshal(
 		packetid.ClientboundSetDefaultSpawnPosition,
-		pk.Identifier("minecraft:overworld"), // dimension
-		pk.Position{X: 0, Y: 112, Z: 0},     // block pos (above stone)
-		pk.Float(0), // yaw
-		pk.Float(0), // pitch
+		pk.Identifier("minecraft:overworld"),
+		pk.Position{X: int(px), Y: int(py), Z: int(pz)},
+		pk.Float(0), pk.Float(0),
 	))
 	if err != nil {
 		return fmt.Errorf("spawn position: %w", err)
 	}
 
-	// 2. Game event: start waiting for level chunks (event 13, value 0)
-	err = conn.WritePacket(pk.Marshal(
+	// 2. Game event: start waiting for level chunks
+	err = player.WritePacket(pk.Marshal(
 		packetid.ClientboundGameEvent,
-		pk.UnsignedByte(13), // event: start waiting for chunks
-		pk.Float(0),         // value
+		pk.UnsignedByte(13), pk.Float(0),
 	))
 	if err != nil {
 		return fmt.Errorf("game event: %w", err)
 	}
 
-	// 3. Set chunk cache center
-	err = conn.WritePacket(pk.Marshal(
-		packetid.ClientboundSetChunkCacheCenter,
-		pk.VarInt(0), // chunk X
-		pk.VarInt(0), // chunk Z
-	))
-	if err != nil {
-		return fmt.Errorf("chunk cache center: %w", err)
+	// 3. Send initial chunks from the world
+	cs := &handler.ChunkSender{
+		World: g.world,
+		MinY:  g.gen.MinY,
 	}
-
-	// 4. Send chunk batch start
-	err = conn.WritePacket(pk.Marshal(packetid.ClientboundChunkBatchStart))
-	if err != nil {
-		return fmt.Errorf("chunk batch start: %w", err)
-	}
-
-	// 5. Send spawn chunks with a stone platform
-	// Overworld: 384 blocks height (-64 to 320), so 384/16 = 24 sections
-	//
-	// 26.1 chunk format:
-	//   ChunkData: heightmaps (stream codec map) + ByteArray(sections) + List(blockEntities)
-	//   LightData: 4 BitSets + 2 Lists (NO Trust Edges boolean)
-	//
-	// Section format: Short(blockCount) + PaletteContainer(states) + PaletteContainer(biomes)
-	// 26.1 CHANGE: PaletteContainer no longer writes VarInt(dataLongsCount) prefix!
-	// The data array length is inferred from bitsPerEntry.
-	// Single-value palette (bitsPerEntry=0): UnsignedByte(0) + VarInt(value) [no data array at all]
-
-	// Empty section (all air): 6 bytes
-	emptySection := []byte{
-		0x00, 0x00, // Short(0) blockCount
-		0x00,       // UnsignedByte(0) bits per entry for states (single value)
-		0x00,       // VarInt(0) = air state ID
-		0x00,       // UnsignedByte(0) bits per entry for biomes (single value)
-		0x00,       // VarInt(0) = biome ID 0
-	}
-
-	// All-stone section: 6 bytes
-	stoneSection := []byte{
-		0x10, 0x00, // Short(4096) blockCount = all non-air
-		0x00,       // UnsignedByte(0) bits per entry for states (single value)
-		0x01,       // VarInt(1) = stone state ID
-		0x00,       // UnsignedByte(0) bits per entry for biomes (single value)
-		0x00,       // VarInt(0) = biome ID 0
-	}
-
-	// Build section data: 24 sections, section 10 is stone (Y=96..111), rest air
-	var buf bytes.Buffer
-	for i := 0; i < 24; i++ {
-		if i == 10 {
-			buf.Write(stoneSection)
-		} else {
-			buf.Write(emptySection)
-		}
-	}
-	stoneSectionData := append([]byte(nil), buf.Bytes()...) // copy! Buffer.Bytes() shares memory
-
-	// Build empty chunk section data (all 24 sections air)
-	buf.Reset()
-	for i := 0; i < 24; i++ {
-		buf.Write(emptySection)
-	}
-	emptySectionData := append([]byte(nil), buf.Bytes()...)
-
-	// Build heightmap data for stone and empty chunks.
-	// Heightmap keys: WORLD_SURFACE=1, MOTION_BLOCKING=4, MOTION_BLOCKING_NO_LEAVES=5
-	// For stone chunk: top block at Y=111, heightmap value = (111+1) - (-64) = 176
-	// For empty chunk: value = 0
-	stoneHeightmaps := buildHeightmapBytes(176)
-	emptyHeightmaps := buildHeightmapBytes(0)
-
-	// Light data: 24 chunk sections → 26 light sections (one below, one above)
-	numLightSections := 26
-	skyLightMask := make(pk.BitSet, 1)
-	for i := 0; i < numLightSections; i++ {
-		skyLightMask.Set(i, true)
-	}
-	fullSkyLight := make(pk.ByteArray, 2048)
-	for i := range fullSkyLight {
-		fullSkyLight[i] = 0xFF
-	}
-	skyLightArrays := make([]pk.ByteArray, numLightSections)
-	for i := range skyLightArrays {
-		skyLightArrays[i] = fullSkyLight
-	}
-	emptyBitSet := pk.BitSet{}
-	chunkCount := 0
-
-	for cx := -3; cx <= 3; cx++ {
-		for cz := -3; cz <= 3; cz++ {
-			sectionData := emptySectionData
-			heightmaps := emptyHeightmaps
-			if cx >= -1 && cx <= 0 && cz >= -1 && cz <= 0 {
-				sectionData = stoneSectionData
-				heightmaps = stoneHeightmaps
-			}
-			err = conn.WritePacket(pk.Marshal(
-				packetid.ClientboundLevelChunkWithLight,
-				pk.Int(int32(cx)), pk.Int(int32(cz)),
-				// -- ChunkData --
-				rawBytes(heightmaps),      // heightmaps: 3 entries
-				pk.ByteArray(sectionData), // section data
-				pk.VarInt(0),              // block entities: empty list
-				// -- LightData --
-				skyLightMask,             // skyYMask
-				emptyBitSet,              // blockYMask
-				emptyBitSet,              // emptySkyYMask
-				emptyBitSet,              // emptyBlockYMask
-				pk.Array(skyLightArrays), // skyUpdates
-				pk.VarInt(0),             // blockUpdates: empty list
-			))
-			if err != nil {
-				return fmt.Errorf("chunk data (%d,%d): %w", cx, cz, err)
-			}
-			chunkCount++
-		}
-	}
-	g.logf("Sent %d chunks (%d bytes stone, %d bytes empty)", chunkCount, len(stoneSectionData), len(emptySectionData))
-
-	// 6. Chunk batch finished
-	err = conn.WritePacket(pk.Marshal(packetid.ClientboundChunkBatchFinished, pk.VarInt(int32(chunkCount))))
-	if err != nil {
-		return fmt.Errorf("chunk batch finished: %w", err)
+	if err := cs.SendInitialChunks(player); err != nil {
+		return fmt.Errorf("initial chunks: %w", err)
 	}
 
 	return nil
 }
 
-func (g *gamePlay) keepAliveLoop(conn *net.Conn, name string) {
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
+func (g *gamePlay) packetLoop(player *game.Player) {
+	cs := &handler.ChunkSender{
+		World: g.world,
+		MinY:  g.gen.MinY,
+	}
+	movHandler := &handler.MovementHandler{
+		World:   g.world,
+		Manager: g.players,
+		Logger:  g.logger,
+		Encoder: cs,
+	}
+	chatHandler := &handler.ChatHandler{
+		Manager: g.players,
+	}
 
-	// Goroutine to send keepalive pings; stops when done is closed.
+	// Keepalive sender goroutine (sends every 15s)
 	done := make(chan struct{})
 	defer close(done)
-
 	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
 				keepAliveID := rand.Int63()
-				err := conn.WritePacket(pk.Marshal(
+				player.WritePacket(pk.Marshal(
 					packetid.ClientboundKeepAlive,
 					pk.Long(keepAliveID),
 				))
-				if err != nil {
-					return
-				}
 			}
 		}
 	}()
 
-	// Read and discard all incoming packets (handles keepalive responses implicitly)
 	var p pk.Packet
 	for {
-		if err := conn.ReadPacket(&p); err != nil {
-			g.logf("Player %s disconnected: %v", name, err)
+		if err := player.Conn.ReadPacket(&p); err != nil {
+			g.logf("Player %s disconnected: %v", player.Name, err)
 			return
 		}
-		// Silently discard all packets — movement, chat, etc.
+
+		// Try each handler
+		if movHandler.HandlePacket(player, p) {
+			continue
+		}
+		if g.keepalive.HandlePacket(player, p) {
+			continue
+		}
+		if chatHandler.HandlePacket(player, p) {
+			continue
+		}
+
+		// Handle other known packets
+		switch packetid.ServerboundPacketID(p.ID) {
+		case packetid.ServerboundAcceptTeleportation:
+			// Acknowledged teleport — no action needed
+		case packetid.ServerboundChunkBatchReceived:
+			// Client ACK for chunk batch — no action needed
+		default:
+			// Silently discard unknown packets
+		}
 	}
 }
 
@@ -387,7 +414,6 @@ func (g *gamePlay) keepAliveLoop(conn *net.Conn, name string) {
 func buildRegistries() registry.Registries {
 	regs := registry.NewNetworkCodec()
 
-	// minecraft:dimension_type — minimum required for JoinGame
 	regs.DimensionType.Put("minecraft:overworld", registry.Dimension{
 		HasSkylight:        true,
 		HasCeiling:         false,
@@ -414,7 +440,6 @@ func buildRegistries() registry.Registries {
 		MonsterSpawnBlockLightLimit: 0,
 	})
 
-	// minecraft:worldgen/biome — at least one biome needed
 	regs.WorldGenBiome.Put("minecraft:plains", mustNBTRaw(map[string]any{
 		"has_precipitation": byte(1),
 		"temperature":      float32(0.8),
@@ -427,7 +452,6 @@ func buildRegistries() registry.Registries {
 		},
 	}))
 
-	// minecraft:chat_type — required for chat functionality
 	regs.ChatType.Put("minecraft:chat", registry.ChatType{
 		Chat: chat.Decoration{
 			TranslationKey: "chat.type.text",
@@ -439,7 +463,6 @@ func buildRegistries() registry.Registries {
 		},
 	})
 
-	// minecraft:damage_type — at least one required
 	regs.DamageType.Put("minecraft:generic", registry.DamageType{
 		MessageID:  "generic",
 		Scaling:    "when_caused_by_living_non_player",
@@ -454,42 +477,44 @@ func buildRegistries() registry.Registries {
 	return regs
 }
 
-// rawBytes is a FieldEncoder that writes its contents directly (no length prefix).
-type rawBytes []byte
-
-func (r rawBytes) WriteTo(w io.Writer) (int64, error) {
-	n, err := w.Write(r)
-	return int64(n), err
+// mustNBTRaw encodes v as an nbt.RawMessage suitable for embedding.
+func mustNBTRaw(v any) nbt.RawMessage {
+	var buf bytes.Buffer
+	enc := nbt.NewEncoder(&buf)
+	enc.NetworkFormat(true)
+	if err := enc.Encode(v, ""); err != nil {
+		panic(fmt.Sprintf("nbt.Encode: %v", err))
+	}
+	data := buf.Bytes()
+	return nbt.RawMessage{
+		Type: data[0],
+		Data: append([]byte(nil), data[1:]...),
+	}
 }
 
-// buildHeightmapBytes builds the raw bytes for a heightmap map with 3 entries
-// (WORLD_SURFACE=1, MOTION_BLOCKING=4, MOTION_BLOCKING_NO_LEAVES=5),
-// all set to the same uniform value for all 256 columns.
+// buildHeightmapBytes and packHeightmapLongs are kept for backward compatibility
+// with existing tests.
+
+// buildHeightmapBytes builds the raw bytes for a heightmap map with 3 entries.
 func buildHeightmapBytes(value int32) []byte {
 	longs := packHeightmapLongs(value)
 
 	var buf bytes.Buffer
-	// VarInt(3) — 3 heightmap entries
 	writeVarInt(&buf, 3)
-	// Entry 1: WORLD_SURFACE (key=1)
 	writeVarInt(&buf, 1)
 	writeLongArray(&buf, longs)
-	// Entry 2: MOTION_BLOCKING (key=4)
 	writeVarInt(&buf, 4)
 	writeLongArray(&buf, longs)
-	// Entry 3: MOTION_BLOCKING_NO_LEAVES (key=5)
 	writeVarInt(&buf, 5)
 	writeLongArray(&buf, longs)
 
 	return buf.Bytes()
 }
 
-// packHeightmapLongs packs 256 entries of the same value into a compact long array
-// using 9 bits per entry (for overworld height 384).
 func packHeightmapLongs(value int32) []int64 {
 	const bitsPerEntry = 9
-	const valsPerLong = 64 / bitsPerEntry // 7
-	numLongs := (256 + valsPerLong - 1) / valsPerLong // 37
+	const valsPerLong = 64 / bitsPerEntry
+	numLongs := (256 + valsPerLong - 1) / valsPerLong
 
 	longs := make([]int64, numLongs)
 	for i := 0; i < 256; i++ {
@@ -512,7 +537,6 @@ func writeVarInt(buf *bytes.Buffer, v int32) {
 func writeLongArray(buf *bytes.Buffer, longs []int64) {
 	writeVarInt(buf, int32(len(longs)))
 	for _, l := range longs {
-		// Big-endian int64
 		buf.WriteByte(byte(l >> 56))
 		buf.WriteByte(byte(l >> 48))
 		buf.WriteByte(byte(l >> 40))
@@ -521,24 +545,5 @@ func writeLongArray(buf *bytes.Buffer, longs []int64) {
 		buf.WriteByte(byte(l >> 16))
 		buf.WriteByte(byte(l >> 8))
 		buf.WriteByte(byte(l))
-	}
-}
-
-// mustNBTRaw encodes v as an nbt.RawMessage suitable for embedding
-// as a field value. Uses network format to get [tag_type][payload],
-// then stores them separately in RawMessage.
-func mustNBTRaw(v any) nbt.RawMessage {
-	var buf bytes.Buffer
-	enc := nbt.NewEncoder(&buf)
-	enc.NetworkFormat(true)
-	if err := enc.Encode(v, ""); err != nil {
-		panic(fmt.Sprintf("nbt.Encode: %v", err))
-	}
-	data := buf.Bytes()
-	// Network format output: [tag_type_byte] [payload...]
-	// RawMessage stores them separately.
-	return nbt.RawMessage{
-		Type: data[0],
-		Data: append([]byte(nil), data[1:]...), // copy payload
 	}
 }

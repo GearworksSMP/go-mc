@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gomc
+      POSTGRES_USER: gomc
+      POSTGRES_PASSWORD: gomc
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gomc"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: .
+    ports:
+      - "25565:25565"
+    environment:
+      DATABASE_URL: "postgres://gomc:gomc@postgres:5432/gomc?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

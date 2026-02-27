@@ -81,18 +81,28 @@ func (c *Chunk) Data(compressingType byte) ([]byte, error) {
 
 	buff.WriteByte(compressingType)
 	var w io.Writer
+	var closer io.Closer
 	switch compressingType {
 	default:
 		return nil, errors.New("unknown compression")
 	case 1:
-		w = gzip.NewWriter(&buff)
+		gw := gzip.NewWriter(&buff)
+		w, closer = gw, gw
 	case 2:
-		w = zlib.NewWriter(&buff)
+		zw := zlib.NewWriter(&buff)
+		w, closer = zw, zw
 	case 3:
 		w = &buff
 	}
-	err := nbt.NewEncoder(w).Encode(c, "")
-	return buff.Bytes(), err
+	if err := nbt.NewEncoder(w).Encode(c, ""); err != nil {
+		return nil, err
+	}
+	if closer != nil {
+		if err := closer.Close(); err != nil {
+			return nil, err
+		}
+	}
+	return buff.Bytes(), nil
 }
 
 type Entities struct {
