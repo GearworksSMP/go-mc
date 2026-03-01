@@ -23,15 +23,27 @@ type ChunkStore interface {
 	SaveChunks(ctx context.Context, chunks []ChunkData) error
 }
 
+// ItemSlot represents a single inventory slot for persistence.
+type ItemSlot struct {
+	ID            int32 `json:"id"`
+	Count         int32 `json:"count"`
+	Durability    int32 `json:"durability,omitempty"`
+	MaxDurability int32 `json:"max_durability,omitempty"`
+}
+
 // PlayerState holds the persistent state of a player.
 type PlayerState struct {
-	UUID      uuid.UUID
-	Name      string
-	Dimension string
-	X, Y, Z  float64
-	Yaw      float32
-	Pitch    float32
-	GameMode int
+	UUID       uuid.UUID
+	Name       string
+	Dimension  string
+	X, Y, Z   float64
+	Yaw        float32
+	Pitch      float32
+	GameMode   int
+	Health     float32
+	Food       int32
+	Saturation float32
+	Inventory  []ItemSlot
 }
 
 // PlayerStore provides persistent storage for player state.

@@ -1,13 +1,191 @@
 package game
 
 import (
+	"io"
 	"sync"
+	"time"
 
 	"github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/yggdrasil/user"
 	"github.com/google/uuid"
 )
+
+// Slot261 is a 26.1 wire-format inventory slot.
+type Slot261 struct {
+	Count         int32
+	ItemID        int32
+	Durability    int32 // remaining durability (0 = no durability info)
+	MaxDurability int32 // max durability (0 = not a tool)
+}
+
+// WriteTo implements pk.FieldEncoder for the 26.1 slot format:
+// VarInt(count); if count > 0: VarInt(itemID) + VarInt(addedCount) + components + VarInt(0)
+func (s Slot261) WriteTo(w io.Writer) (n int64, err error) {
+	nn, err := pk.VarInt(s.Count).WriteTo(w)
+	n += nn
+	if err != nil || s.Count <= 0 {
+		return
+	}
+	nn, err = pk.VarInt(s.ItemID).WriteTo(w)
+	n += nn
+	if err != nil {
+		return
+	}
+
+	// Send damage component if the item has durability and has taken damage
+	damageUsed := s.MaxDurability - s.Durability
+	if s.MaxDurability > 0 && damageUsed > 0 {
+		nn, err = pk.VarInt(1).WriteTo(w) // 1 added component
+		n += nn
+		if err != nil {
+			return
+		}
+		nn, err = pk.VarInt(3).WriteTo(w) // minecraft:damage = index 3
+		n += nn
+		if err != nil {
+			return
+		}
+		nn, err = pk.VarInt(damageUsed).WriteTo(w) // damage value
+		n += nn
+		if err != nil {
+			return
+		}
+	} else {
+		nn, err = pk.VarInt(0).WriteTo(w) // no added components
+		n += nn
+		if err != nil {
+			return
+		}
+	}
+
+	nn, err = pk.VarInt(0).WriteTo(w) // removed components
+	n += nn
+	return
+}
+
+// ReadFrom implements pk.FieldDecoder for the 26.1 slot format.
+func (s *Slot261) ReadFrom(r io.Reader) (n int64, err error) {
+	var count pk.VarInt
+	nn, err := count.ReadFrom(r)
+	n += nn
+	if err != nil || count <= 0 {
+		s.Count = 0
+		s.ItemID = 0
+		return
+	}
+	s.Count = int32(count)
+	var itemID, addComp, remComp pk.VarInt
+	nn, err = itemID.ReadFrom(r)
+	n += nn
+	if err != nil {
+		return
+	}
+	s.ItemID = int32(itemID)
+	nn, err = addComp.ReadFrom(r)
+	n += nn
+	if err != nil {
+		return
+	}
+	// Skip added component data (each is VarInt typeID + type-specific data)
+	for i := 0; i < int(addComp); i++ {
+		var typeID pk.VarInt
+		nn, err = typeID.ReadFrom(r)
+		n += nn
+		if err != nil {
+			return
+		}
+		// For minecraft:damage (type 3), read VarInt value
+		if typeID == 3 {
+			var val pk.VarInt
+			nn, err = val.ReadFrom(r)
+			n += nn
+			if err != nil {
+				return
+			}
+		}
+	}
+	nn, err = remComp.ReadFrom(r)
+	n += nn
+	if err != nil {
+		return
+	}
+	// Skip removed component IDs
+	for i := 0; i < int(remComp); i++ {
+		var typeID pk.VarInt
+		nn, err = typeID.ReadFrom(r)
+		n += nn
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+// Slot261Array is a VarInt-length-prefixed array of Slot261 values.
+type Slot261Array []Slot261
+
+// WriteTo writes VarInt(len) followed by each slot.
+func (a Slot261Array) WriteTo(w io.Writer) (n int64, err error) {
+	nn, err := pk.VarInt(len(a)).WriteTo(w)
+	n += nn
+	if err != nil {
+		return
+	}
+	for _, s := range a {
+		nn, err = s.WriteTo(w)
+		n += nn
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+// ItemStack represents a single item slot.
+type ItemStack struct {
+	ID            int32 // 0 = empty
+	Count         int32
+	Durability    int32 // remaining durability (tools only)
+	MaxDurability int32 // max durability (tools only; 0 = not a tool)
+}
+
+// ToSlot converts an ItemStack to a Slot261 for wire encoding.
+func (s ItemStack) ToSlot() Slot261 {
+	if s.ID <= 0 || s.Count <= 0 {
+		return Slot261{}
+	}
+	return Slot261{
+		Count:         s.Count,
+		ItemID:        s.ID,
+		Durability:    s.Durability,
+		MaxDurability: s.MaxDurability,
+	}
+}
+
+// Inventory represents a player's survival inventory (46 slots).
+// Slots 0-8 = crafting, 9-35 = main inventory, 36-44 = hotbar, 45 = offhand.
+type Inventory [46]ItemStack
+
+// AddItem tries to add an item to the inventory (main + hotbar slots 9-44).
+// Returns the slot index that was modified, or -1 if the inventory is full.
+func (inv *Inventory) AddItem(id, count int32) int {
+	// First try stacking with existing (skip tools — they are unstackable)
+	for i := 9; i <= 44; i++ {
+		if inv[i].ID == id && inv[i].Count > 0 && inv[i].Count < 64 && inv[i].MaxDurability == 0 {
+			inv[i].Count += count
+			return i
+		}
+	}
+	// Then find first empty slot
+	for i := 9; i <= 44; i++ {
+		if inv[i].ID == 0 || inv[i].Count <= 0 {
+			inv[i] = ItemStack{ID: id, Count: count}
+			return i
+		}
+	}
+	return -1
+}
 
 // Player represents a connected player with their state.
 type Player struct {
@@ -51,8 +229,21 @@ type Player struct {
 	SkinParts uint8
 
 	// Block breaking state (survival)
-	Digging      bool
+	Digging          bool
 	DigX, DigY, DigZ int
+	DigStartTime     time.Time
+
+	// Survival inventory
+	Inventory  Inventory
+	CursorItem ItemStack // item held on cursor during inventory interaction
+	StateID    int32     // container state ID, incremented per server update
+
+	// Eating animation state
+	EatingStart time.Time // zero = not eating
+
+	// Crafting table state
+	OpenWindowID int           // 0 = none, 1 = crafting table
+	CraftingGrid [9]ItemStack  // temporary 3x3 crafting grid
 }
 
 // NewPlayer creates a new Player with the given connection info.
@@ -135,11 +326,39 @@ func (p *Player) SetCreativeSlot(slot int16, itemID int32) {
 	}
 }
 
+// IsInvulnerable returns true if the player's game mode prevents damage (creative or spectator).
+func (p *Player) IsInvulnerable() bool {
+	return p.GameMode == 1 || p.GameMode == 3
+}
+
 // HeldItemID returns the item ID of the currently held item (thread-safe).
 // Returns 0 if no item is held.
 func (p *Player) HeldItemID() int32 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Hotbar slots are inventory slots 36-44
-	return p.CreativeItem[p.HeldSlot+36]
+	if p.GameMode == 1 {
+		// Creative mode: use CreativeItem map
+		return p.CreativeItem[p.HeldSlot+36]
+	}
+	// Survival mode: read from inventory
+	slot := p.Inventory[p.HeldSlot+36]
+	if slot.Count <= 0 {
+		return 0
+	}
+	return slot.ID
+}
+
+// InventorySlots returns all 46 inventory slots as a Slot261Array for wire encoding.
+func (p *Player) InventorySlots() Slot261Array {
+	slots := make(Slot261Array, 46)
+	for i, s := range p.Inventory {
+		slots[i] = s.ToSlot()
+	}
+	return slots
+}
+
+// NextStateID increments and returns the container state ID.
+func (p *Player) NextStateID() int32 {
+	p.StateID++
+	return p.StateID
 }

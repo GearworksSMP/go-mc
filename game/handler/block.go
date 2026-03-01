@@ -2,7 +2,9 @@ package handler
 
 import (
 	"log"
+	"time"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/item"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
@@ -57,12 +59,23 @@ func (h *BlockHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 // handlePlayerAction handles ServerboundPlayerAction.
 // In creative mode, action=0 causes instant break.
 // In survival mode, action=0 starts digging, action=1 cancels, action=2 finishes.
+// Actions 3/4 are Q-key drops (all game modes).
 func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 	var action pk.VarInt
 	var pos pk.Position
 	var face pk.Byte
 	var sequence pk.VarInt
 	if err := p.Scan(&action, &pos, &face, &sequence); err != nil {
+		return
+	}
+
+	// Q-key drops (all game modes)
+	switch action {
+	case 3: // drop item
+		h.dropFromHotbar(player, false)
+		return
+	case 4: // drop item stack (ctrl+Q)
+		h.dropFromHotbar(player, true)
 		return
 	}
 
@@ -76,8 +89,10 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 	// Survival mode
 	switch action {
 	case 0: // started_digging
+		CancelEating(player)
 		player.Digging = true
 		player.DigX, player.DigY, player.DigZ = pos.X, pos.Y, pos.Z
+		player.DigStartTime = time.Now()
 		// Broadcast break progress stage 0
 		h.broadcastBlockDestruction(player.EID, pos.X, pos.Y, pos.Z, 0)
 	case 1: // cancelled_digging
@@ -86,10 +101,35 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 		h.broadcastBlockDestruction(player.EID, player.DigX, player.DigY, player.DigZ, 10)
 	case 2: // finished_digging
 		if player.Digging && player.DigX == pos.X && player.DigY == pos.Y && player.DigZ == pos.Z {
-			h.breakBlock(player, pos.X, pos.Y, pos.Z, int32(sequence))
+			if h.validateBreakTime(player, pos.X, pos.Y, pos.Z) {
+				h.breakBlock(player, pos.X, pos.Y, pos.Z, int32(sequence))
+			} else {
+				// Reject: send ack only, don't break
+				h.sendAck(player, int32(sequence))
+			}
 		}
 		player.Digging = false
 	}
+}
+
+// dropFromHotbar drops items from the player's currently held hotbar slot.
+// If dropAll is true, drops the entire stack; otherwise drops one item.
+func (h *BlockHandler) dropFromHotbar(player *game.Player, dropAll bool) {
+	slot := int(player.HeldSlot) + 36
+	invItem := &player.Inventory[slot]
+	if invItem.ID == 0 || invItem.Count <= 0 {
+		return
+	}
+
+	if dropAll {
+		*invItem = game.ItemStack{}
+	} else {
+		invItem.Count--
+		if invItem.Count <= 0 {
+			*invItem = game.ItemStack{}
+		}
+	}
+	SendSlotUpdate(player, slot)
 }
 
 // handleUseItemOn handles ServerboundUseItemOn (block placement).
@@ -110,6 +150,19 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 		return
 	}
 
+	// Check if the clicked block is a crafting table (and player isn't sneaking)
+	if !player.Sneaking {
+		stateID, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
+		if err == nil {
+			blockName := BlockNameFromState(int(stateID))
+			if blockName == "crafting_table" {
+				h.openCraftingTable(player)
+				h.sendAck(player, int32(sequence))
+				return
+			}
+		}
+	}
+
 	offset := faceOffsets[face]
 	placeX := pos.X + offset[0]
 	placeY := pos.Y + offset[1]
@@ -123,6 +176,27 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 	}
 
 	h.placeBlock(player, placeX, placeY, placeZ, level.BlocksState(stateID), int32(sequence))
+}
+
+// openCraftingTable opens a 3x3 crafting window for the player.
+func (h *BlockHandler) openCraftingTable(player *game.Player) {
+	player.OpenWindowID = 1
+	// Clear crafting grid
+	for i := range player.CraftingGrid {
+		player.CraftingGrid[i] = game.ItemStack{}
+	}
+
+	// Send ClientboundOpenScreen: windowID=1, type=12 (crafting), title
+	title := chat.Text("Crafting")
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundOpenScreen,
+		pk.VarInt(1),  // window ID
+		pk.VarInt(12), // menu type: crafting (3x3)
+		title,
+	))
+
+	// Send initial window content
+	SendCraftingWindowContent(player)
 }
 
 // handleCreativeSlot handles ServerboundSetCreativeModeSlot.
@@ -153,6 +227,7 @@ func (h *BlockHandler) handleSetCarriedItem(player *game.Player, p pk.Packet) {
 	if err := p.Scan(&slot); err != nil {
 		return
 	}
+	CancelEating(player)
 	player.SetHeldSlot(int16(slot))
 }
 
@@ -184,7 +259,7 @@ func (h *BlockHandler) heldBlockState(player *game.Player) int32 {
 
 // breakBlock removes a block (sets to air) and broadcasts the change.
 func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int32) {
-	_, err := h.World.SetBlock(x, y, z, 0) // 0 = air
+	oldState, err := h.World.SetBlock(x, y, z, 0) // 0 = air
 	if err != nil {
 		h.logf("Error breaking block at (%d,%d,%d): %v", x, y, z, err)
 		return
@@ -192,7 +267,71 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 
 	h.broadcastBlockUpdate(x, y, z, 0)
 	h.sendAck(player, sequence)
+
+	// Drop item in survival mode
+	if player.GameMode == 0 && oldState > 0 {
+		h.dropBlockItem(player, int(oldState))
+		// Decrement tool durability
+		h.decrementToolDurability(player)
+	}
+
 	h.logf("Player %s broke block at (%d, %d, %d)", player.Name, x, y, z)
+}
+
+// dropBlockItem adds the broken block's item to the player's inventory and sends the slot update.
+func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int) {
+	if stateID >= len(block.StateList) || block.StateList[stateID] == nil {
+		return
+	}
+	blockName := block.StateList[stateID].ID()
+	itemID, ok := blockToItemID(blockName)
+	if !ok {
+		return
+	}
+	slot := player.Inventory.AddItem(itemID, 1)
+	if slot < 0 {
+		return // inventory full
+	}
+	SendSlotUpdate(player, slot)
+}
+
+// validateBreakTime checks whether the player has spent enough time mining a block.
+// Returns true if the break is allowed. Unknown blocks always pass.
+func (h *BlockHandler) validateBreakTime(player *game.Player, x, y, z int) bool {
+	stateID, err := h.World.GetBlock(x, y, z)
+	if err != nil {
+		return true // can't look up — allow
+	}
+	blockName := BlockNameFromState(int(stateID))
+	if blockName == "" {
+		return true
+	}
+	heldName := ItemNameByID(player.Inventory[player.HeldSlot+36].ID)
+	expected := CalculateBreakTime(blockName, heldName)
+	if expected <= 0 {
+		return true // instant break or unknown
+	}
+	if expected < 0 {
+		return false // unbreakable
+	}
+	elapsed := time.Since(player.DigStartTime).Seconds()
+	// 20% tolerance for network latency
+	return elapsed >= expected*0.8
+}
+
+// blockToItemID maps a block name (e.g. "minecraft:dirt") to its item ID.
+func blockToItemID(blockName string) (int32, bool) {
+	// Strip "minecraft:" prefix for matching against item names
+	name := blockName
+	if len(name) > 10 && name[:10] == "minecraft:" {
+		name = name[10:]
+	}
+	for id, itm := range item.ByID {
+		if itm.Name == name {
+			return int32(id), true
+		}
+	}
+	return 0, false
 }
 
 // placeBlock places a block and broadcasts the change.
@@ -206,6 +345,20 @@ func (h *BlockHandler) placeBlock(player *game.Player, x, y, z int, state level.
 
 	h.broadcastBlockUpdate(x, y, z, int32(state))
 	h.sendAck(player, sequence)
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		invItem := &player.Inventory[slot]
+		if invItem.Count > 0 {
+			invItem.Count--
+			if invItem.Count <= 0 {
+				*invItem = game.ItemStack{}
+			}
+			SendSlotUpdate(player, slot)
+		}
+	}
+
 	h.logf("Player %s placed block at (%d, %d, %d) state=%d", player.Name, x, y, z, state)
 }
 
@@ -241,6 +394,21 @@ func (h *BlockHandler) sendAck(player *game.Player, sequence int32) {
 		packetid.ClientboundBlockChangedAck,
 		pk.VarInt(sequence),
 	))
+}
+
+// decrementToolDurability reduces the held tool's durability by 1 after breaking a block.
+// If durability reaches 0, the tool breaks (slot is cleared).
+func (h *BlockHandler) decrementToolDurability(player *game.Player) {
+	slot := int(player.HeldSlot) + 36
+	invItem := &player.Inventory[slot]
+	if invItem.MaxDurability <= 0 {
+		return // not a tool
+	}
+	invItem.Durability--
+	if invItem.Durability <= 0 {
+		*invItem = game.ItemStack{} // tool breaks
+	}
+	SendSlotUpdate(player, slot)
 }
 
 func (h *BlockHandler) logf(format string, args ...any) {

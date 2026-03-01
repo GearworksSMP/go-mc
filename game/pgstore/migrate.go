@@ -36,6 +36,16 @@ var migrations = []string{
 		version INTEGER NOT NULL
 	);
 	INSERT INTO schema_version (version) VALUES (1);`,
+
+	// Version 1 → 2: add health, food, saturation columns
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS health REAL NOT NULL DEFAULT 20;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS food INTEGER NOT NULL DEFAULT 20;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS saturation REAL NOT NULL DEFAULT 5;
+	UPDATE schema_version SET version = 2;`,
+
+	// Version 2 → 3: add inventory column
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS inventory JSONB;
+	UPDATE schema_version SET version = 3;`,
 }
 
 // Migrate runs all pending schema migrations.

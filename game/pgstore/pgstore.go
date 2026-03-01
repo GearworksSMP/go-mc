@@ -3,6 +3,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -85,31 +86,49 @@ func (s *PGStore) SaveChunks(ctx context.Context, chunks []store.ChunkData) erro
 // LoadPlayer returns the player state, or nil if not found.
 func (s *PGStore) LoadPlayer(ctx context.Context, id uuid.UUID) (*store.PlayerState, error) {
 	ps := &store.PlayerState{}
+	var invJSON []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT uuid, name, dimension, x, y, z, yaw, pitch, game_mode
+		`SELECT uuid, name, dimension, x, y, z, yaw, pitch, game_mode, health, food, saturation, inventory
 		 FROM players WHERE uuid=$1`, id,
-	).Scan(&ps.UUID, &ps.Name, &ps.Dimension, &ps.X, &ps.Y, &ps.Z, &ps.Yaw, &ps.Pitch, &ps.GameMode)
+	).Scan(&ps.UUID, &ps.Name, &ps.Dimension, &ps.X, &ps.Y, &ps.Z, &ps.Yaw, &ps.Pitch, &ps.GameMode,
+		&ps.Health, &ps.Food, &ps.Saturation, &invJSON)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pgstore: load player %x: %w", id, err)
 	}
+	if len(invJSON) > 0 {
+		if err := json.Unmarshal(invJSON, &ps.Inventory); err != nil {
+			return nil, fmt.Errorf("pgstore: unmarshal inventory for %x: %w", id, err)
+		}
+	}
 	return ps, nil
 }
 
 // SavePlayer upserts the player state.
 func (s *PGStore) SavePlayer(ctx context.Context, state *store.PlayerState) error {
+	var invJSON []byte
+	if len(state.Inventory) > 0 {
+		var err error
+		invJSON, err = json.Marshal(state.Inventory)
+		if err != nil {
+			return fmt.Errorf("pgstore: marshal inventory for %s: %w", state.Name, err)
+		}
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO players (uuid, name, dimension, x, y, z, yaw, pitch, game_mode, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+		`INSERT INTO players (uuid, name, dimension, x, y, z, yaw, pitch, game_mode, health, food, saturation, inventory, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
 		 ON CONFLICT (uuid)
 		 DO UPDATE SET name=EXCLUDED.name, dimension=EXCLUDED.dimension,
 		   x=EXCLUDED.x, y=EXCLUDED.y, z=EXCLUDED.z,
 		   yaw=EXCLUDED.yaw, pitch=EXCLUDED.pitch,
-		   game_mode=EXCLUDED.game_mode, updated_at=EXCLUDED.updated_at`,
+		   game_mode=EXCLUDED.game_mode, health=EXCLUDED.health,
+		   food=EXCLUDED.food, saturation=EXCLUDED.saturation,
+		   inventory=EXCLUDED.inventory,
+		   updated_at=EXCLUDED.updated_at`,
 		state.UUID, state.Name, state.Dimension, state.X, state.Y, state.Z,
-		state.Yaw, state.Pitch, state.GameMode,
+		state.Yaw, state.Pitch, state.GameMode, state.Health, state.Food, state.Saturation, invJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("pgstore: save player %s: %w", state.Name, err)

@@ -264,7 +264,7 @@ func (h *MovementHandler) handleSneakFlag(player *game.Player, flags int32) {
 // trackFall tracks vertical movement for fall damage.
 // Called on every position update with old Y, new Y, and the onGround flag.
 func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onGround bool) {
-	if player.Dead || player.GameMode == 1 { // no fall damage in creative
+	if player.Dead || player.IsInvulnerable() {
 		return
 	}
 

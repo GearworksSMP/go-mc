@@ -45,9 +45,11 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		return
 	}
 
-	// Apply 1.0 damage (bare hand)
+	// Look up weapon damage from held item
+	heldName := ItemNameByID(attacker.Inventory[attacker.HeldSlot+36].ID)
+	damage := GetWeaponDamage(heldName)
 	if h.SurvivalHandler != nil {
-		h.SurvivalHandler.ApplyDamage(h.Manager, target, 1.0, h.SurvivalHandler.AttackDamageTypeID)
+		h.SurvivalHandler.ApplyDamage(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID)
 	}
 
 	// Add exhaustion for attacking
@@ -74,6 +76,22 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 			pk.Short(velY),
 			pk.Short(velZ),
 		))
+	}
+
+	// Decrement tool durability on attack (swords lose 1, other tools lose 2)
+	slot := int(attacker.HeldSlot) + 36
+	invItem := &attacker.Inventory[slot]
+	if invItem.MaxDurability > 0 {
+		itemName := ItemNameByID(invItem.ID)
+		if IsSword(itemName) {
+			invItem.Durability--
+		} else {
+			invItem.Durability -= 2
+		}
+		if invItem.Durability <= 0 {
+			*invItem = game.ItemStack{} // tool breaks
+		}
+		SendSlotUpdate(attacker, slot)
 	}
 
 	h.logf("Player %s attacked %s", attacker.Name, target.Name)

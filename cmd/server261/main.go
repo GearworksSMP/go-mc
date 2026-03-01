@@ -115,10 +115,14 @@ func main() {
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	foodHandler := &handler.FoodHandler{Logger: logger}
+	gp.foodHandler = foodHandler
 	tickLoop := game.NewTickLoop(
 		game.TickHandlerFunc(func(tick int64) {
 			gp.keepalive.Tick(tick, players)
 			survHandler.HungerTick(players, tick)
+			survHandler.VoidDamageTick(players, sfGen.MinY)
+			foodHandler.Tick(players)
 		}),
 	)
 
@@ -186,6 +190,7 @@ type gamePlay struct {
 
 	keepalive       handler.KeepaliveHandler
 	survivalHandler *handler.SurvivalHandler
+	foodHandler     *handler.FoodHandler
 	commandGraph    *command.Graph
 }
 
@@ -212,6 +217,21 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		} else if ps != nil {
 			spawnX, spawnY, spawnZ = ps.X, ps.Y, ps.Z
 			spawnYaw, spawnPitch = ps.Yaw, ps.Pitch
+			player.Health = ps.Health
+			player.Food = ps.Food
+			player.Saturation = ps.Saturation
+			// Restore inventory
+			for i, slot := range ps.Inventory {
+				if i >= len(player.Inventory) {
+					break
+				}
+				player.Inventory[i] = game.ItemStack{
+					ID:            slot.ID,
+					Count:         slot.Count,
+					Durability:    slot.Durability,
+					MaxDurability: slot.MaxDurability,
+				}
+			}
 			g.logf("Loaded saved position for %s: (%.1f, %.1f, %.1f)", name, spawnX, spawnY, spawnZ)
 		}
 	}
@@ -231,17 +251,31 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		if g.playerStore != nil {
 			px, py, pz := player.Position()
 			pyaw, ppitch := player.Rotation()
+			// Convert inventory to store format
+			invSlots := make([]store.ItemSlot, len(player.Inventory))
+			for i, s := range player.Inventory {
+				invSlots[i] = store.ItemSlot{
+					ID:            s.ID,
+					Count:         s.Count,
+					Durability:    s.Durability,
+					MaxDurability: s.MaxDurability,
+				}
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
-				UUID:      id,
-				Name:      name,
-				Dimension: "overworld",
-				X:         px,
-				Y:         py,
-				Z:         pz,
-				Yaw:       pyaw,
-				Pitch:     ppitch,
-				GameMode:  int(player.GameMode),
+				UUID:       id,
+				Name:       name,
+				Dimension:  "overworld",
+				X:          px,
+				Y:          py,
+				Z:          pz,
+				Yaw:        pyaw,
+				Pitch:      ppitch,
+				GameMode:   int(player.GameMode),
+				Health:     player.Health,
+				Food:       player.Food,
+				Saturation: player.Saturation,
+				Inventory:  invSlots,
 			})
 			cancel()
 			if err != nil {
@@ -293,6 +327,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
+	// Send full inventory contents so the client sees any items
+	handler.SendFullInventory(player)
+
 	// Send initial health/food/saturation HUD
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundSetHealth,
@@ -314,6 +351,16 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
+	// Server brand — shows in F3 debug screen
+	if err := conn.WritePacket(pk.Marshal(
+		packetid.ClientboundCustomPayload,
+		pk.Identifier("minecraft:brand"),
+		pk.String("gearworks-go"),
+	)); err != nil {
+		g.logf("Error sending brand to %s: %v", name, err)
+		return
+	}
+
 	// Command tree for tab-completion hints
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundCommands, g.commandGraph,
@@ -326,6 +373,17 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	// Must happen AFTER JoinGame + chunks so the client's level is initialized.
 	handler.BroadcastPlayerJoin(g.players, player)
 	handler.SendExistingPlayers(g.players, player)
+
+	// Tab list header/footer
+	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}
+	tabFooter := chat.Message{Text: fmt.Sprintf("\n%d player(s) online", g.players.Count()), Color: "gray"}
+	if err := conn.WritePacket(pk.Marshal(
+		packetid.ClientboundTabList,
+		tabHeader, tabFooter,
+	)); err != nil {
+		g.logf("Error sending TabList to %s: %v", name, err)
+		return
+	}
 
 	// Packet read loop with handlers
 	g.packetLoop(player)
@@ -411,6 +469,9 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		Manager: g.players,
 		Logger:  g.logger,
 	}
+	invHandler := &handler.InventoryHandler{
+		Logger: g.logger,
+	}
 	cmdExecutor := &handler.CommandExecutor{
 		Manager:         g.players,
 		Logger:          g.logger,
@@ -469,6 +530,12 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 			continue
 		}
 		if blockHandler.HandlePacket(player, p) {
+			continue
+		}
+		if g.foodHandler.HandlePacket(player, p) {
+			continue
+		}
+		if invHandler.HandlePacket(player, p) {
 			continue
 		}
 		if g.keepalive.HandlePacket(player, p) {
