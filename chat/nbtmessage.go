@@ -21,15 +21,46 @@ func (m Message) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (m Message) TagType() byte {
+	if m.isSimpleText() {
+		return nbt.TagString
+	}
 	return nbt.TagCompound
 }
 
+// isSimpleText returns true if the message is plain text with no formatting,
+// extras, or translation — suitable for encoding as a bare NBT string.
+func (m Message) isSimpleText() bool {
+	return m.Translate == "" && m.Color == "" &&
+		!m.Bold && !m.Italic && !m.UnderLined && !m.StrikeThrough && !m.Obfuscated &&
+		len(m.Extra) == 0 && m.ClickEvent == nil && m.HoverEvent == nil &&
+		m.Font == "" && m.Insertion == ""
+}
+
 func (m Message) MarshalNBT(w io.Writer) error {
-	if m.Translate != "" {
-		return nbt.NewEncoder(w).Encode(translateMsg(m), "")
+	// Encode value into a buffer using network-format NBT. The encoder writes
+	// [tag type byte][payload]. We strip the tag type byte since the outer
+	// encoder already wrote it before calling MarshalNBT.
+	var buf bytes.Buffer
+	enc := nbt.NewEncoder(&buf)
+	enc.NetworkFormat(true)
+
+	var err error
+	if m.isSimpleText() {
+		err = enc.Encode(m.Text, "")
+	} else if m.Translate != "" {
+		err = enc.Encode(translateMsg(m), "")
 	} else {
-		return nbt.NewEncoder(w).Encode(rawMsgStruct(m), "")
+		err = enc.Encode(rawMsgStruct(m), "")
 	}
+	if err != nil {
+		return err
+	}
+
+	data := buf.Bytes()
+	if len(data) > 1 {
+		_, err = w.Write(data[1:]) // skip the tag type byte
+	}
+	return err
 }
 
 func (m *Message) UnmarshalNBT(tagType byte, r nbt.DecoderReader) error {

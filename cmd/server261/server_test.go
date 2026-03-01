@@ -11,6 +11,9 @@ import (
 
 	"github.com/Tnze/go-mc/bot"
 	"github.com/Tnze/go-mc/data/packetid"
+	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/gen"
+	"github.com/Tnze/go-mc/game/mem"
 	mcnet "github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/server"
@@ -35,8 +38,12 @@ func startTestServer(t *testing.T) string {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	regs := buildRegistries()
+	sfGen := gen.DefaultSuperflat()
+	world := mem.NewWorld(sfGen, sfGen.Sections, sfGen.MinY)
+	players := game.NewPlayerManager()
+
 	srv := server.Server{
-		ListPingHandler: &pingHandler{},
+		ListPingHandler: &pingHandler{players: players},
 		LoginHandler: &server.MojangLoginHandler{
 			OnlineMode: false,
 			Threshold:  256,
@@ -49,7 +56,7 @@ func startTestServer(t *testing.T) string {
 			KnownPackEntries: vanillaRegistryKeys(),
 			Tags:             vanillaConfigTags(),
 		},
-		GamePlay: &gamePlay{logger: nil},
+		GamePlay: &gamePlay{logger: nil, world: world, players: players, gen: sfGen},
 	}
 
 	// Start server in background
@@ -119,8 +126,9 @@ func TestPingAndList(t *testing.T) {
 		resp.Version.Name, resp.Version.Protocol)
 }
 
-// TestChunkBlockContent connects to the running server at port 25565 OR starts
-// its own server, receives chunks, and verifies section data in 26.1 format.
+// TestChunkBlockContent connects to the server, receives chunks, and verifies
+// section data in 26.1 format. The server now uses a superflat world with
+// bedrock(1) + dirt(2) + grass_block(1) starting at Y=-64 (section 0).
 func TestChunkBlockContent(t *testing.T) {
 	addr := startTestServer(t)
 
@@ -253,58 +261,35 @@ func TestChunkBlockContent(t *testing.T) {
 done:
 
 	t.Logf("Received %d chunks", len(chunks))
+	if len(chunks) < 49 {
+		t.Fatalf("Expected at least 49 chunks, got %d", len(chunks))
+	}
 
-	stoneChunks := 0
-	emptyChunks := 0
+	// Verify all chunks are superflat: section 0 has blocks, sections 1-23 empty
 	for _, c := range chunks {
-		isStone := c.x >= -1 && c.x <= 0 && c.z >= -1 && c.z <= 0
 		if c.heightmaps != 3 {
 			t.Errorf("Chunk (%d,%d): expected 3 heightmap entries, got %d", c.x, c.z, c.heightmaps)
 		}
 
-		// 26.1 format: 6 bytes per section (no VarInt data prefix)
-		expectedLen := 24 * 6
-		if c.dataLen != expectedLen {
-			t.Errorf("Chunk (%d,%d): section data len=%d, want %d", c.x, c.z, c.dataLen, expectedLen)
+		// Section 0: bedrock(1) + dirt(2) + grass_block(1) = 4 layers = 1024 blocks
+		sec0 := c.sections[0]
+		if sec0.blockCount != 1024 {
+			t.Errorf("Chunk (%d,%d) section 0: blockCount=%d, want 1024", c.x, c.z, sec0.blockCount)
+		}
+		// Section 0 should have a multi-value palette (bitsPerEntry=4)
+		if sec0.statesBitsPerEntry != 4 {
+			t.Errorf("Chunk (%d,%d) section 0: statesBitsPerEntry=%d, want 4", c.x, c.z, sec0.statesBitsPerEntry)
 		}
 
-		if isStone {
-			stoneChunks++
-			sec := c.sections[10]
-			if sec.blockCount != 4096 {
-				t.Errorf("Stone chunk (%d,%d) section 10: blockCount=%d, want 4096", c.x, c.z, sec.blockCount)
-			}
-			if sec.statesSingleValue != 1 {
-				t.Errorf("Stone chunk (%d,%d) section 10: stateValue=%d, want 1 (stone)", c.x, c.z, sec.statesSingleValue)
-			}
-			t.Logf("  Stone chunk (%d,%d) section 10: blockCount=%d stateValue=%d ✓",
-				c.x, c.z, sec.blockCount, sec.statesSingleValue)
-
-			for idx, s := range c.sections {
-				if idx == 10 {
-					continue
-				}
-				if s.blockCount != 0 {
-					t.Errorf("Stone chunk (%d,%d) section %d: blockCount=%d, want 0", c.x, c.z, idx, s.blockCount)
-				}
-			}
-		} else {
-			emptyChunks++
-			for idx, s := range c.sections {
-				if s.blockCount != 0 {
-					t.Errorf("Empty chunk (%d,%d) section %d: blockCount=%d, want 0", c.x, c.z, idx, s.blockCount)
-				}
+		// Sections 1-23 should all be empty (blockCount=0)
+		for idx := 1; idx < 24; idx++ {
+			s := c.sections[idx]
+			if s.blockCount != 0 {
+				t.Errorf("Chunk (%d,%d) section %d: blockCount=%d, want 0", c.x, c.z, idx, s.blockCount)
 			}
 		}
 	}
-
-	if stoneChunks != 4 {
-		t.Errorf("Expected 4 stone chunks, got %d", stoneChunks)
-	}
-	if emptyChunks != 45 {
-		t.Errorf("Expected 45 empty chunks, got %d", emptyChunks)
-	}
-	t.Logf("PASS: %d stone chunks, %d empty chunks — all section data verified in 26.1 format", stoneChunks, emptyChunks)
+	t.Logf("PASS: %d superflat chunks verified — section 0 has 1024 blocks, sections 1-23 empty", len(chunks))
 }
 
 type sectionInfo struct {
@@ -419,6 +404,132 @@ func TestLoginAndConfig(t *testing.T) {
 	defer client.Close()
 
 	t.Log("PASS: Login + Configuration phase succeeded")
+}
+
+// TestNeoForgeConfigPhase simulates a NeoForge client connecting during the
+// configuration phase. NeoForge clients send extra CustomPayload packets
+// (minecraft:register, c:version, c:register) before responding to
+// SelectKnownPacks, and may send more before FinishConfiguration. The server
+// must silently discard these and complete the config phase normally.
+func TestNeoForgeConfigPhase(t *testing.T) {
+	addr := startTestServer(t)
+
+	conn, err := mcnet.DialMC(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	port := 25565
+	fmt.Sscanf(addr, "127.0.0.1:%d", &port)
+
+	// Handshake
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.VarInt(server.ProtocolVersion),
+		pk.String("127.0.0.1"),
+		pk.UnsignedShort(uint16(port)),
+		pk.VarInt(2), // login
+	))
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	// Login Start
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.String("NeoForgeBot"),
+		pk.UUID{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99},
+	))
+	if err != nil {
+		t.Fatalf("login start: %v", err)
+	}
+
+	phase := "login"
+	var p pk.Packet
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < 5000; i++ {
+		select {
+		case <-timeout:
+			t.Fatalf("timeout after 10s (phase=%s)", phase)
+		default:
+		}
+
+		err = conn.ReadPacket(&p)
+		if err != nil {
+			t.Fatalf("read packet %d (%s): %v", i, phase, err)
+		}
+
+		switch phase {
+		case "login":
+			if p.ID == 0x03 { // SetCompression
+				var threshold pk.VarInt
+				p.Scan(&threshold)
+				conn.SetThreshold(int(threshold))
+			}
+			if p.ID == 0x02 { // LoginSuccess
+				// Send LoginAcknowledged to transition to config
+				conn.WritePacket(pk.Marshal(0x03))
+				phase = "config"
+			}
+
+		case "config":
+			if p.ID == int32(packetid.ClientboundConfigSelectKnownPacks) {
+				// NeoForge client sends extra CustomPayload packets BEFORE
+				// responding to SelectKnownPacks.
+
+				// 1. minecraft:register — channel list (null-separated)
+				channels := []byte("minecraft:brand\x00c:version\x00c:register")
+				conn.WritePacket(pk.Marshal(
+					int32(packetid.ServerboundConfigCustomPayload),
+					pk.Identifier("minecraft:register"),
+					pk.PluginMessageData(channels),
+				))
+
+				// 2. c:version — convention API version (VarInt 1)
+				conn.WritePacket(pk.Marshal(
+					int32(packetid.ServerboundConfigCustomPayload),
+					pk.Identifier("c:version"),
+					pk.PluginMessageData([]byte{0x01}), // VarInt(1)
+				))
+
+				// 3. c:register — convention channel registration
+				cChannels := []byte("c:version\x00c:register")
+				conn.WritePacket(pk.Marshal(
+					int32(packetid.ServerboundConfigCustomPayload),
+					pk.Identifier("c:register"),
+					pk.PluginMessageData(cChannels),
+				))
+
+				// Now respond to SelectKnownPacks normally
+				conn.WritePacket(pk.Marshal(int32(packetid.ServerboundConfigSelectKnownPacks),
+					pk.VarInt(1),
+					pk.String("minecraft"),
+					pk.String("core"),
+					pk.String("26.1-snapshot-2"),
+				))
+			}
+			if p.ID == int32(packetid.ClientboundConfigFinishConfiguration) {
+				// NeoForge may send another CustomPayload before ack
+				conn.WritePacket(pk.Marshal(
+					int32(packetid.ServerboundConfigCustomPayload),
+					pk.Identifier("neoforge:register"),
+					pk.PluginMessageData([]byte{}),
+				))
+
+				// Now send FinishConfiguration ack
+				conn.WritePacket(pk.Marshal(int32(packetid.ServerboundConfigFinishConfiguration)))
+				phase = "play"
+			}
+
+		case "play":
+			// We entered play phase — verify we get JoinGame
+			if p.ID == int32(packetid.ClientboundLogin) {
+				t.Log("PASS: NeoForge config phase completed — received JoinGame in play phase")
+				return
+			}
+		}
+	}
+	t.Fatal("Did not receive JoinGame packet in play phase")
 }
 
 // TestRawHandshake tests the lowest-level protocol exchange manually.

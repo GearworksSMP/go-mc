@@ -48,3 +48,4 @@ func TestStoneID(t *testing.T) {
 	}
 	fmt.Printf("  Non-air block count: %d\n", count)
 }
+

@@ -58,15 +58,22 @@ func (t *Type) Decorate(content Message, d *Decoration) (msg Message) {
 }
 
 func (t *Type) ReadFrom(r io.Reader) (n int64, err error) {
-	var hasTargetName pk.Boolean
-	n1, err := (*pk.VarInt)(&t.ID).ReadFrom(r)
+	// "ID or" encoding: wire value is registryID + 1 (0 = inline definition).
+	var wireID pk.VarInt
+	n1, err := wireID.ReadFrom(r)
 	if err != nil {
 		return n1, err
 	}
+	if wireID == 0 {
+		return n1, fmt.Errorf("inline chat type definitions are not supported")
+	}
+	t.ID = int32(wireID) - 1
+
 	n2, err := t.SenderName.ReadFrom(r)
 	if err != nil {
 		return n1 + n2, fmt.Errorf("read sender name error: %w", err)
 	}
+	var hasTargetName pk.Boolean
 	n3, err := hasTargetName.ReadFrom(r)
 	if err != nil {
 		return n1 + n2 + n3, fmt.Errorf("read has target name error: %w", err)
@@ -80,8 +87,10 @@ func (t *Type) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 func (t *Type) WriteTo(w io.Writer) (n int64, err error) {
+	// "ID or" encoding: wire value is registryID + 1 (0 = inline definition).
 	hasTargetName := pk.Boolean(t.TargetName != nil)
-	n1, err := (*pk.VarInt)(&t.ID).WriteTo(w)
+	wireID := pk.VarInt(t.ID + 1)
+	n1, err := wireID.WriteTo(w)
 	if err != nil {
 		return n1, err
 	}

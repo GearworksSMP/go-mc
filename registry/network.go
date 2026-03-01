@@ -38,8 +38,11 @@ func (reg *Registry[E]) ReadFrom(r io.Reader) (int64, error) {
 			if err != nil {
 				return n + n1 + n2 + n3, err
 			}
-			reg.Put(string(key), data)
 		}
+		// Always register the entry (even with has_data=false) to maintain
+		// correct indices. Tags reference entries by index, so skipping
+		// has_data=false entries would make all subsequent IDs wrong.
+		reg.Put(string(key), data)
 
 		n += n1 + n2 + n3
 	}

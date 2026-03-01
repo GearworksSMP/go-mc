@@ -20,6 +20,7 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/server/command"
 	"github.com/Tnze/go-mc/game/dbworld"
 	"github.com/Tnze/go-mc/game/gen"
 	"github.com/Tnze/go-mc/game/handler"
@@ -75,12 +76,21 @@ func main() {
 	// Build minimal registries for 26.1-snapshot-2
 	regs := buildRegistries()
 
+	survHandler := &handler.SurvivalHandler{
+		Logger:             logger,
+		FallDamageTypeID:   2, // minecraft:fall (3rd registered)
+		AttackDamageTypeID: 3, // minecraft:player_attack (4th registered)
+		VoidDamageTypeID:   4, // minecraft:out_of_world (5th registered)
+	}
+
 	gp := &gamePlay{
-		logger:      logger,
-		world:       world,
-		players:     players,
-		gen:         sfGen,
-		playerStore: playerStore,
+		logger:          logger,
+		world:           world,
+		players:         players,
+		gen:             sfGen,
+		playerStore:     playerStore,
+		survivalHandler: survHandler,
+		commandGraph:    handler.BuildCommandGraph(),
 	}
 
 	srv := server.Server{
@@ -108,6 +118,7 @@ func main() {
 	tickLoop := game.NewTickLoop(
 		game.TickHandlerFunc(func(tick int64) {
 			gp.keepalive.Tick(tick, players)
+			survHandler.HungerTick(players, tick)
 		}),
 	)
 
@@ -173,7 +184,9 @@ type gamePlay struct {
 	gen         *gen.SuperflatGenerator
 	playerStore store.PlayerStore
 
-	keepalive handler.KeepaliveHandler
+	keepalive       handler.KeepaliveHandler
+	survivalHandler *handler.SurvivalHandler
+	commandGraph    *command.Graph
 }
 
 func (g *gamePlay) logf(format string, args ...any) {
@@ -185,6 +198,7 @@ func (g *gamePlay) logf(format string, args ...any) {
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
 	eid := g.players.NextEntityID()
 	player := game.NewPlayer(name, id, eid, conn)
+	player.Properties = properties
 	spawnX, spawnY, spawnZ := 0.5, g.gen.SpawnY(), 0.5
 	var spawnYaw, spawnPitch float32
 
@@ -208,7 +222,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 
 	g.players.Add(player)
 	g.logf("Player %s (%s) joined [protocol=%d, eid=%d]", name, id, protocol, eid)
+
 	defer func() {
+		// Broadcast leave before removing from manager
+		handler.BroadcastPlayerLeave(g.players, player)
+
 		// Save player state on disconnect
 		if g.playerStore != nil {
 			px, py, pz := player.Position()
@@ -223,7 +241,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 				Z:         pz,
 				Yaw:       pyaw,
 				Pitch:     ppitch,
-				GameMode:  1,
+				GameMode:  int(player.GameMode),
 			})
 			cancel()
 			if err != nil {
@@ -241,10 +259,10 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
-	// PlayerAbilities — required for creative mode flight/instant break
+	// PlayerAbilities — survival mode: no special abilities
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerAbilities,
-		pk.Byte(0x0D),    // flags: invulnerable(0x01) | allowFlying(0x04) | creativeMode(0x08)
+		pk.Byte(0x00),    // flags: none (survival)
 		pk.Float(0.05),   // fly speed
 		pk.Float(0.1),    // field of view modifier
 	)); err != nil {
@@ -275,6 +293,40 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
+	// Send initial health/food/saturation HUD
+	if err := conn.WritePacket(pk.Marshal(
+		packetid.ClientboundSetHealth,
+		pk.Float(player.Health),
+		pk.VarInt(player.Food),
+		pk.Float(player.Saturation),
+	)); err != nil {
+		g.logf("Error sending SetHealth to %s: %v", name, err)
+		return
+	}
+
+	// ServerData — MOTD + optional icon (enforcesSecureChat was removed in 1.20.5+)
+	if err := conn.WritePacket(pk.Marshal(
+		packetid.ClientboundServerData,
+		chat.Text(""),      // MOTD
+		pk.Boolean(false),  // has icon
+	)); err != nil {
+		g.logf("Error sending ServerData to %s: %v", name, err)
+		return
+	}
+
+	// Command tree for tab-completion hints
+	if err := conn.WritePacket(pk.Marshal(
+		packetid.ClientboundCommands, g.commandGraph,
+	)); err != nil {
+		g.logf("Error sending Commands to %s: %v", name, err)
+		return
+	}
+
+	// Broadcast new player to existing players & send existing players to new player
+	// Must happen AFTER JoinGame + chunks so the client's level is initialized.
+	handler.BroadcastPlayerJoin(g.players, player)
+	handler.SendExistingPlayers(g.players, player)
+
 	// Packet read loop with handlers
 	g.packetLoop(player)
 }
@@ -296,14 +348,14 @@ func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
 		pk.VarInt(0),               // dimension type = index 0
 		pk.Identifier("minecraft:overworld"),
 		pk.Long(0),                 // hashed seed
-		pk.UnsignedByte(1),         // gamemode: creative
+		pk.UnsignedByte(0),         // gamemode: survival
 		pk.Byte(-1),                // previous gamemode: none
 		pk.Boolean(false),          // is debug
 		pk.Boolean(true),           // is flat
 		pk.Boolean(false),          // has death location
 		pk.VarInt(0),               // portal cooldown
 		pk.VarInt(63),              // sea level
-		pk.Boolean(false),          // enforces secure chat
+		pk.Boolean(true),           // enforces secure chat (suppresses "can't be verified" toast; safe because we only use DisguisedChat/SystemChat)
 	))
 }
 
@@ -348,13 +400,41 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		MinY:  g.gen.MinY,
 	}
 	movHandler := &handler.MovementHandler{
+		World:           g.world,
+		Manager:         g.players,
+		Logger:          g.logger,
+		Encoder:         cs,
+		SurvivalHandler: g.survivalHandler,
+	}
+	blockHandler := &handler.BlockHandler{
 		World:   g.world,
 		Manager: g.players,
 		Logger:  g.logger,
-		Encoder: cs,
+	}
+	cmdExecutor := &handler.CommandExecutor{
+		Manager:         g.players,
+		Logger:          g.logger,
+		SurvivalHandler: g.survivalHandler,
 	}
 	chatHandler := &handler.ChatHandler{
+		Manager:  g.players,
+		Logger:   g.logger,
+		Commands: cmdExecutor,
+	}
+	animHandler := &handler.AnimationHandler{
 		Manager: g.players,
+	}
+	combatHandler := &handler.CombatHandler{
+		Manager:         g.players,
+		SurvivalHandler: g.survivalHandler,
+		Logger:          g.logger,
+	}
+	respawnHandler := &handler.RespawnHandler{
+		Manager: g.players,
+		World:   g.world,
+		SpawnY:  g.gen.SpawnY(),
+		MinY:    g.gen.MinY,
+		Logger:  g.logger,
 	}
 
 	// Keepalive sender goroutine (sends every 15s)
@@ -388,7 +468,19 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		if movHandler.HandlePacket(player, p) {
 			continue
 		}
+		if blockHandler.HandlePacket(player, p) {
+			continue
+		}
 		if g.keepalive.HandlePacket(player, p) {
+			continue
+		}
+		if animHandler.HandlePacket(player, p) {
+			continue
+		}
+		if combatHandler.HandlePacket(player, p) {
+			continue
+		}
+		if respawnHandler.HandlePacket(player, p) {
 			continue
 		}
 		if chatHandler.HandlePacket(player, p) {
@@ -470,6 +562,21 @@ func buildRegistries() registry.Registries {
 	})
 	regs.DamageType.Put("minecraft:generic_kill", registry.DamageType{
 		MessageID:  "genericKill",
+		Scaling:    "never",
+		Exhaustion: 0.0,
+	})
+	regs.DamageType.Put("minecraft:fall", registry.DamageType{
+		MessageID:  "fall",
+		Scaling:    "when_caused_by_living_non_player",
+		Exhaustion: 0.0,
+	})
+	regs.DamageType.Put("minecraft:player_attack", registry.DamageType{
+		MessageID:  "player",
+		Scaling:    "when_caused_by_living_non_player",
+		Exhaustion: 0.1,
+	})
+	regs.DamageType.Put("minecraft:out_of_world", registry.DamageType{
+		MessageID:  "outOfWorld",
 		Scaling:    "never",
 		Exhaustion: 0.0,
 	})

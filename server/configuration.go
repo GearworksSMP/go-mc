@@ -2,6 +2,7 @@ package server
 
 import (
 	"io"
+	"log"
 	"reflect"
 
 	"github.com/Tnze/go-mc/chat"
@@ -87,6 +88,10 @@ type Configurations struct {
 	// Tags holds registry tag data to send in ClientboundConfigUpdateTags.
 	// Tag references (#tag) must already be resolved to concrete entry indices.
 	Tags []RegistryTagData
+
+	// Logger, if set, enables debug logging of discarded packets during the
+	// configuration phase (e.g. NeoForge CustomPayload packets).
+	Logger *log.Logger
 }
 
 // AcceptConfig handles the configuration phase. If KnownPacks is set, it uses
@@ -120,7 +125,11 @@ func (c *Configurations) AcceptConfig(conn *net.Conn) error {
 				}
 				break
 			}
-			// Discard other packets (ClientInformation, CustomPayload, etc.)
+			if c.Logger != nil && packetid.ServerboundPacketID(p.ID) == packetid.ServerboundConfigCustomPayload {
+				var channel pk.Identifier
+				p.Scan(&channel)
+				c.Logger.Printf("Config: discarded CustomPayload channel=%s (pre-knownpacks)", channel)
+			}
 		}
 
 		// If the client knows our core pack, it has built-in registry data.
@@ -150,8 +159,10 @@ func (c *Configurations) AcceptConfig(conn *net.Conn) error {
 		}
 	}
 
-	// Send UpdateTags if tag data is configured.
-	if len(c.Tags) > 0 {
+	// Send UpdateTags if tag data is configured and the client knows the packs.
+	// Tag entry IDs reference indices in the full vanilla registries, so they are
+	// only valid when the client loaded those registries via known packs.
+	if useKnownPacks && len(c.Tags) > 0 {
 		if err := writeUpdateTagsPacket(conn, c.Tags); err != nil {
 			return err
 		}
@@ -171,7 +182,11 @@ func (c *Configurations) AcceptConfig(conn *net.Conn) error {
 		if packetid.ServerboundPacketID(p.ID) == packetid.ServerboundConfigFinishConfiguration {
 			return nil
 		}
-		// Discard other packets
+		if c.Logger != nil && packetid.ServerboundPacketID(p.ID) == packetid.ServerboundConfigCustomPayload {
+			var channel pk.Identifier
+			p.Scan(&channel)
+			c.Logger.Printf("Config: discarded CustomPayload channel=%s (pre-finish)", channel)
+		}
 	}
 }
 

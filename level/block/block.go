@@ -74,17 +74,19 @@ func init() {
 		panic(err)
 	}
 	ToStateID = make(map[Block]StateID, len(states))
-	StateList = make([]Block, 0, len(states))
-	for _, state := range states {
+	StateList = make([]Block, len(states))
+	for i, state := range states {
 		block, err := state.Block()
 		if err != nil {
-			panic(err)
+			// Unknown block type — leave StateList[i] as nil to maintain
+			// correct state ID indices for known blocks.
+			continue
 		}
 		if _, ok := ToStateID[block]; ok {
 			panic(fmt.Errorf("state %#v already exists", block))
 		}
-		ToStateID[block] = StateID(len(StateList))
-		StateList = append(StateList, block)
+		ToStateID[block] = StateID(i)
+		StateList[i] = block
 	}
 	BitsPerBlock = bits.Len(uint(len(StateList)))
 }

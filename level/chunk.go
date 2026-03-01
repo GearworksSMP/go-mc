@@ -210,6 +210,10 @@ func writeStatesPalette(paletteData *PaletteContainer[BlocksState]) (palette []s
 	var buffer bytes.Buffer
 	for i, v := range rawPalette {
 		b := block.StateList[v]
+		if b == nil {
+			palette[i].Name = "minecraft:air"
+			continue
+		}
 		palette[i].Name = b.ID()
 
 		buffer.Reset()

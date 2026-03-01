@@ -1,0 +1,105 @@
+package handler
+
+import (
+	"github.com/Tnze/go-mc/data/packetid"
+	"github.com/Tnze/go-mc/game"
+	pk "github.com/Tnze/go-mc/net/packet"
+	"github.com/Tnze/go-mc/yggdrasil/user"
+)
+
+// SendPlayerInfo sends ClientboundPlayerInfoUpdate (add_player + gamemode + listed)
+// for 'about' to 'target'.
+func SendPlayerInfo(target, about *game.Player) {
+	// Actions bitset: bit 0 = add_player, bit 2 = gamemode, bit 3 = listed
+	actions := pk.NewFixedBitSet(6)
+	actions.Set(0, true) // add player
+	actions.Set(2, true) // update gamemode
+	actions.Set(3, true) // update listed
+
+	props := make([]user.Property, len(about.Properties))
+	copy(props, about.Properties)
+
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundPlayerInfoUpdate,
+		actions,
+		pk.VarInt(1),              // count = 1
+		pk.UUID(about.UUID),       // player UUID
+		pk.String(about.Name),     // player name
+		pk.Array(props),           // properties (skin textures)
+		pk.VarInt(about.GameMode), // gamemode
+		pk.Boolean(true),          // listed = true
+	))
+}
+
+// SendSpawnPlayer sends ClientboundAddEntity (type=124, Player) for 'about' to 'target'.
+// 26.1 format: eid, uuid, type, x, y, z, LpVec3(movement), pitch, yaw, headYaw, data.
+// Velocity is encoded as LpVec3: a single 0x00 byte means zero velocity.
+func SendSpawnPlayer(target, about *game.Player) {
+	x, y, z := about.Position()
+	yaw, pitch := about.Rotation()
+
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(about.EID),        // entity ID
+		pk.UUID(about.UUID),         // entity UUID
+		pk.VarInt(155),              // entity type = Player (26.1-snapshot-2)
+		pk.Double(x),                // x
+		pk.Double(y),                // y
+		pk.Double(z),                // z
+		pk.UnsignedByte(0),          // LpVec3 zero velocity (single 0x00 byte)
+		pk.Angle(degToAngle(pitch)), // xRot (pitch)
+		pk.Angle(degToAngle(yaw)),   // yRot (yaw)
+		pk.Angle(degToAngle(yaw)),   // yHeadRot (head yaw)
+		pk.VarInt(0),                // data
+	))
+}
+
+// BroadcastPlayerJoin sends PlayerInfoUpdate + AddEntity + metadata for 'joined' to all OTHER players.
+func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
+	manager.ForEach(func(p *game.Player) {
+		if p.UUID == joined.UUID {
+			return
+		}
+		SendPlayerInfo(p, joined)
+		SendSpawnPlayer(p, joined)
+		SendFullPlayerMetadata(p, joined)
+	})
+}
+
+// SendExistingPlayers sends PlayerInfoUpdate + AddEntity + metadata for all existing players to 'newPlayer'.
+func SendExistingPlayers(manager *game.PlayerManager, newPlayer *game.Player) {
+	manager.ForEach(func(p *game.Player) {
+		if p.UUID == newPlayer.UUID {
+			return
+		}
+		SendPlayerInfo(newPlayer, p)
+		SendSpawnPlayer(newPlayer, p)
+		SendFullPlayerMetadata(newPlayer, p)
+	})
+}
+
+// BroadcastPlayerLeave sends RemoveEntities + PlayerInfoRemove for 'left' to all remaining players.
+func BroadcastPlayerLeave(manager *game.PlayerManager, left *game.Player) {
+	manager.ForEach(func(p *game.Player) {
+		if p.UUID == left.UUID {
+			return
+		}
+		// RemoveEntities
+		p.WritePacket(pk.Marshal(
+			packetid.ClientboundRemoveEntities,
+			pk.VarInt(1),            // count
+			pk.VarInt(left.EID),     // entity ID
+		))
+		// PlayerInfoRemove
+		p.WritePacket(pk.Marshal(
+			packetid.ClientboundPlayerInfoRemove,
+			pk.VarInt(1),            // count
+			pk.UUID(left.UUID),      // UUID
+		))
+	})
+}
+
+// degToAngle converts degrees to a protocol Angle (1/256 of a full turn).
+func degToAngle(deg float32) int8 {
+	return int8(int32(deg*256.0/360.0) & 0xFF)
+}
