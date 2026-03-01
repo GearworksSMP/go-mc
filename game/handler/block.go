@@ -25,9 +25,12 @@ var faceOffsets = [6][3]int{
 
 // BlockHandler processes block break/place packets and creative inventory.
 type BlockHandler struct {
-	World   game.World
-	Manager *game.PlayerManager
-	Logger  *log.Logger
+	World        game.World
+	Manager      *game.PlayerManager
+	Logger       *log.Logger
+	ItemEntities *ItemEntityManager
+	Chests       *ChestManager
+	Furnaces     *FurnaceManager
 }
 
 // HandlePacket processes a single packet for the given player.
@@ -121,6 +124,13 @@ func (h *BlockHandler) dropFromHotbar(player *game.Player, dropAll bool) {
 		return
 	}
 
+	dropCount := int32(1)
+	if dropAll {
+		dropCount = invItem.Count
+	}
+
+	itemID := invItem.ID
+
 	if dropAll {
 		*invItem = game.ItemStack{}
 	} else {
@@ -130,6 +140,12 @@ func (h *BlockHandler) dropFromHotbar(player *game.Player, dropAll bool) {
 		}
 	}
 	SendSlotUpdate(player, slot)
+
+	// Spawn item entity at player position
+	if h.ItemEntities != nil {
+		px, py, pz := player.Position()
+		h.ItemEntities.SpawnItem(h.Manager, px, py+1.3, pz, itemID, dropCount, 40)
+	}
 }
 
 // handleUseItemOn handles ServerboundUseItemOn (block placement).
@@ -150,15 +166,28 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 		return
 	}
 
-	// Check if the clicked block is a crafting table (and player isn't sneaking)
+	// Check if the clicked block is interactive (and player isn't sneaking)
 	if !player.Sneaking {
 		stateID, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
 		if err == nil {
 			blockName := BlockNameFromState(int(stateID))
-			if blockName == "crafting_table" {
+			switch blockName {
+			case "crafting_table":
 				h.openCraftingTable(player)
 				h.sendAck(player, int32(sequence))
 				return
+			case "chest":
+				if h.Chests != nil {
+					h.Chests.OpenChest(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "furnace":
+				if h.Furnaces != nil {
+					h.Furnaces.OpenFurnace(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
 			}
 		}
 	}
@@ -270,7 +299,7 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 
 	// Drop item in survival mode
 	if player.GameMode == 0 && oldState > 0 {
-		h.dropBlockItem(player, int(oldState))
+		h.dropBlockItem(player, int(oldState), x, y, z)
 		// Decrement tool durability
 		h.decrementToolDurability(player)
 	}
@@ -278,21 +307,40 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 	h.logf("Player %s broke block at (%d, %d, %d)", player.Name, x, y, z)
 }
 
-// dropBlockItem adds the broken block's item to the player's inventory and sends the slot update.
-func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int) {
-	if stateID >= len(block.StateList) || block.StateList[stateID] == nil {
+// dropBlockItem spawns a dropped item entity for the broken block, or adds directly
+// to inventory if no ItemEntityManager is available.
+func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int, x, y, z int) {
+	blockName := BlockNameFromState(stateID)
+	if blockName == "" {
 		return
 	}
-	blockName := block.StateList[stateID].ID()
-	itemID, ok := blockToItemID(blockName)
-	if !ok {
+
+	// Check tool requirements
+	heldName := ItemNameByID(player.Inventory[player.HeldSlot+36].ID)
+	if !CanHarvestBlock(blockName, heldName) {
+		return // wrong tool — no drop
+	}
+
+	// Get the drop item name (may differ from block name)
+	dropName, drops := GetBlockDropItemName(blockName)
+	if !drops {
+		return // block drops nothing
+	}
+
+	itemID := itemIDByName(dropName)
+	if itemID <= 0 {
 		return
 	}
-	slot := player.Inventory.AddItem(itemID, 1)
-	if slot < 0 {
-		return // inventory full
+
+	if h.ItemEntities != nil {
+		h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, itemID, 1, 10)
+	} else {
+		slot := player.Inventory.AddItem(itemID, 1)
+		if slot < 0 {
+			return
+		}
+		SendSlotUpdate(player, slot)
 	}
-	SendSlotUpdate(player, slot)
 }
 
 // validateBreakTime checks whether the player has spent enough time mining a block.

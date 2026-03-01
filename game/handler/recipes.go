@@ -276,6 +276,131 @@ func init() {
 		"iron_ingot", "", "iron_ingot",
 		"", "iron_ingot", "",
 	}, "bucket", 1))
+
+	// -----------------------------------------------------------------------
+	// Armor recipes (4 tiers × 4 pieces)
+	// -----------------------------------------------------------------------
+	armorMaterials := []struct {
+		material string
+		prefix   string
+	}{
+		{"leather", "leather"},
+		{"iron_ingot", "iron"},
+		{"gold_ingot", "golden"},
+		{"diamond", "diamond"},
+	}
+	for _, am := range armorMaterials {
+		m := am.material
+		pfx := am.prefix
+		// Helmet: MMM / M_M (3x2)
+		allRecipes = append(allRecipes, shaped(3, 2, []string{m, m, m, m, "", m}, pfx+"_helmet", 1))
+		// Chestplate: M_M / MMM / MMM (3x3)
+		allRecipes = append(allRecipes, shaped(3, 3, []string{m, "", m, m, m, m, m, m, m}, pfx+"_chestplate", 1))
+		// Leggings: MMM / M_M / M_M (3x3)
+		allRecipes = append(allRecipes, shaped(3, 3, []string{m, m, m, m, "", m, m, "", m}, pfx+"_leggings", 1))
+		// Boots: M_M / M_M (3x2)
+		allRecipes = append(allRecipes, shaped(3, 2, []string{m, "", m, m, "", m}, pfx+"_boots", 1))
+	}
+
+	// -----------------------------------------------------------------------
+	// Wood products (per plank type)
+	// -----------------------------------------------------------------------
+	for _, p := range plankTypes {
+		base := p[:len(p)-len("_planks")]
+		// Door: MM / MM / MM (2x3) → 3
+		allRecipes = append(allRecipes, shaped(2, 3, []string{p, p, p, p, p, p}, base+"_door", 3))
+		// Trapdoor: MMM / MMM (3x2) → 2
+		allRecipes = append(allRecipes, shaped(3, 2, []string{p, p, p, p, p, p}, base+"_trapdoor", 2))
+		// Fence: MSM / MSM (3x2) → 3
+		allRecipes = append(allRecipes, shaped(3, 2, []string{p, "stick", p, p, "stick", p}, base+"_fence", 3))
+		// Fence gate: SMS / SMS (3x2) → 1
+		allRecipes = append(allRecipes, shaped(3, 2, []string{"stick", p, "stick", "stick", p, "stick"}, base+"_fence_gate", 1))
+		// Sign: MMM / MMM / _S_ (3x3) → 3
+		allRecipes = append(allRecipes, shaped(3, 3, []string{p, p, p, p, p, p, "", "stick", ""}, base+"_sign", 3))
+		// Slab: MMM (3x1) → 6
+		allRecipes = append(allRecipes, shaped(3, 1, []string{p, p, p}, base+"_slab", 6))
+		// Stairs: M__ / MM_ / MMM (3x3) → 4
+		allRecipes = append(allRecipes, shaped(3, 3, []string{p, "", "", p, p, "", p, p, p}, base+"_stairs", 4))
+		// Boat: M_M / MMM (3x2) → 1
+		allRecipes = append(allRecipes, shaped(3, 2, []string{p, "", p, p, p, p}, base+"_boat", 1))
+	}
+
+	// -----------------------------------------------------------------------
+	// Stone products
+	// -----------------------------------------------------------------------
+	// Stone slab: SSS (3x1) → 6
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"cobblestone", "cobblestone", "cobblestone"}, "cobblestone_slab", 6))
+	// Stone stairs: S__ / SS_ / SSS (3x3) → 4
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"cobblestone", "", "",
+		"cobblestone", "cobblestone", "",
+		"cobblestone", "cobblestone", "cobblestone",
+	}, "cobblestone_stairs", 4))
+
+	// -----------------------------------------------------------------------
+	// Miscellaneous recipes
+	// -----------------------------------------------------------------------
+	// Ladder: S_S / SSS / S_S (3x3) → 3
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stick", "", "stick",
+		"stick", "stick", "stick",
+		"stick", "", "stick",
+	}, "ladder", 3))
+
+	// Bed: WWW / PPP (3x2) → 1 (white wool + oak planks)
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"white_wool", "white_wool", "white_wool",
+		"oak_planks", "oak_planks", "oak_planks",
+	}, "white_bed", 1))
+
+	// Iron bars: III / III (3x2) → 16
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"iron_ingot", "iron_ingot", "iron_ingot",
+		"iron_ingot", "iron_ingot", "iron_ingot",
+	}, "iron_bars", 16))
+
+	// Glass pane: GGG / GGG (3x2) → 16
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"glass", "glass", "glass",
+		"glass", "glass", "glass",
+	}, "glass_pane", 16))
+
+	// Compass: _I_ / IRI / _I_ (3x3) → 1
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "iron_ingot", "",
+		"iron_ingot", "redstone", "iron_ingot",
+		"", "iron_ingot", "",
+	}, "compass", 1))
+
+	// Clock: _G_ / GRG / _G_ (3x3) → 1
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "gold_ingot", "",
+		"gold_ingot", "redstone", "gold_ingot",
+		"", "gold_ingot", "",
+	}, "clock", 1))
+
+	// Shield: PIP / PPP / _P_ (3x3) → 1
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "iron_ingot", "oak_planks",
+		"oak_planks", "oak_planks", "oak_planks",
+		"", "oak_planks", "",
+	}, "shield", 1))
+
+	// Arrow: F / S / E (1x3) → 4
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"flint", "stick", "feather"}, "arrow", 4))
+
+	// Bread: WWW (3x1) → 1
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"wheat", "wheat", "wheat"}, "bread", 1))
+
+	// Paper: SSS (3x1) → 3
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"sugar_cane", "sugar_cane", "sugar_cane"}, "paper", 3))
+
+	// Book: shapeless(paper, paper, paper, leather) → 1
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"paper", "paper", "paper", "leather"},
+		ResultName:  "book",
+		ResultCount: 1,
+	})
 }
 
 // pressurePlateName returns the pressure plate item name for a plank type.

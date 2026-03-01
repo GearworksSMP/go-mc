@@ -83,6 +83,10 @@ func main() {
 		VoidDamageTypeID:   4, // minecraft:out_of_world (5th registered)
 	}
 
+	chestMgr := handler.NewChestManager()
+	itemEntities := handler.NewItemEntityManager(players)
+	furnaceMgr := handler.NewFurnaceManager(players)
+
 	gp := &gamePlay{
 		logger:          logger,
 		world:           world,
@@ -91,6 +95,9 @@ func main() {
 		playerStore:     playerStore,
 		survivalHandler: survHandler,
 		commandGraph:    handler.BuildCommandGraph(),
+		chests:          chestMgr,
+		itemEntities:    itemEntities,
+		furnaces:        furnaceMgr,
 	}
 
 	srv := server.Server{
@@ -123,6 +130,8 @@ func main() {
 			survHandler.HungerTick(players, tick)
 			survHandler.VoidDamageTick(players, sfGen.MinY)
 			foodHandler.Tick(players)
+			itemEntities.Tick(tick)
+			furnaceMgr.Tick()
 		}),
 	)
 
@@ -192,6 +201,9 @@ type gamePlay struct {
 	survivalHandler *handler.SurvivalHandler
 	foodHandler     *handler.FoodHandler
 	commandGraph    *command.Graph
+	chests          *handler.ChestManager
+	itemEntities    *handler.ItemEntityManager
+	furnaces        *handler.FurnaceManager
 }
 
 func (g *gamePlay) logf(format string, args ...any) {
@@ -374,6 +386,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	handler.BroadcastPlayerJoin(g.players, player)
 	handler.SendExistingPlayers(g.players, player)
 
+	// Send existing item entities to the new player
+	g.itemEntities.SendExistingItems(player)
+
 	// Tab list header/footer
 	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}
 	tabFooter := chat.Message{Text: fmt.Sprintf("\n%d player(s) online", g.players.Count()), Color: "gray"}
@@ -465,12 +480,17 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		SurvivalHandler: g.survivalHandler,
 	}
 	blockHandler := &handler.BlockHandler{
-		World:   g.world,
-		Manager: g.players,
-		Logger:  g.logger,
+		World:        g.world,
+		Manager:      g.players,
+		Logger:       g.logger,
+		ItemEntities: g.itemEntities,
+		Chests:       g.chests,
+		Furnaces:     g.furnaces,
 	}
 	invHandler := &handler.InventoryHandler{
-		Logger: g.logger,
+		Logger:   g.logger,
+		Chests:   g.chests,
+		Furnaces: g.furnaces,
 	}
 	cmdExecutor := &handler.CommandExecutor{
 		Manager:         g.players,

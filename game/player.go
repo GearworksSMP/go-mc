@@ -241,9 +241,14 @@ type Player struct {
 	// Eating animation state
 	EatingStart time.Time // zero = not eating
 
-	// Crafting table state
-	OpenWindowID int           // 0 = none, 1 = crafting table
-	CraftingGrid [9]ItemStack  // temporary 3x3 crafting grid
+	// Combat cooldown
+	LastAttackTime time.Time
+
+	// Container window state
+	OpenWindowID   int           // 0=none, 1=crafting table, 2=chest, 3=furnace
+	CraftingGrid   [9]ItemStack  // temporary 3x3 crafting grid
+	OpenChestPos   [3]int        // world position of open chest
+	OpenFurnacePos [3]int        // world position of open furnace
 }
 
 // NewPlayer creates a new Player with the given connection info.

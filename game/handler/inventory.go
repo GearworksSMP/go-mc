@@ -11,7 +11,9 @@ import (
 
 // InventoryHandler processes inventory interaction packets.
 type InventoryHandler struct {
-	Logger *log.Logger
+	Logger   *log.Logger
+	Chests   *ChestManager
+	Furnaces *FurnaceManager
 }
 
 // HandlePacket processes a single packet for the given player.
@@ -107,6 +109,40 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		}
 		updateCraftingResult3x3(player)
 		SendCraftingWindowContent(player)
+		return
+	}
+
+	if windowID == 2 && player.OpenWindowID == 2 && h.Chests != nil {
+		cs := h.Chests.Get(player.OpenChestPos[0], player.OpenChestPos[1], player.OpenChestPos[2])
+		if cs != nil {
+			switch mode {
+			case 0:
+				h.handleChestClick(player, cs, slot, int(button))
+			case 1:
+				h.handleChestShiftClick(player, cs, slot)
+			case 2:
+				h.handleChestNumberKey(player, cs, slot, int(button))
+			case 4:
+				h.handleChestDrop(player, cs, slot, int(button))
+			}
+			SendChestWindowContent(player, cs)
+		}
+		return
+	}
+
+	if windowID == 3 && player.OpenWindowID == 3 && h.Furnaces != nil {
+		fs := h.Furnaces.getOrCreate(player.OpenFurnacePos[0], player.OpenFurnacePos[1], player.OpenFurnacePos[2])
+		switch mode {
+		case 0:
+			h.handleFurnaceClick(player, fs, slot, int(button))
+		case 1:
+			h.handleFurnaceShiftClick(player, fs, slot)
+		case 2:
+			h.handleFurnaceNumberKey(player, fs, slot, int(button))
+		case 4:
+			h.handleFurnaceDrop(player, fs, slot, int(button))
+		}
+		SendFurnaceWindowContent(player, fs)
 		return
 	}
 
@@ -336,7 +372,8 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		player.CursorItem = game.ItemStack{}
 	}
 
-	if player.OpenWindowID == 1 {
+	switch player.OpenWindowID {
+	case 1:
 		// Closing crafting table — return 3x3 grid items to inventory
 		for i := range player.CraftingGrid {
 			itm := &player.CraftingGrid[i]
@@ -345,8 +382,9 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 				*itm = game.ItemStack{}
 			}
 		}
-		player.OpenWindowID = 0
-	} else {
+	case 2, 3:
+		// Closing chest or furnace — no items to return (they stay in container)
+	default:
 		// Closing player inventory — return 2x2 crafting grid items (slots 1-4)
 		for i := 1; i <= 4; i++ {
 			itm := &player.Inventory[i]
@@ -358,6 +396,7 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		player.Inventory[0] = game.ItemStack{} // clear crafting result
 	}
 
+	player.OpenWindowID = 0
 	SendFullInventory(player)
 }
 
@@ -731,6 +770,340 @@ func SendCraftingWindowContent(player *game.Player) {
 		slots,
 		cursor,
 	))
+}
+
+// ---------------------------------------------------------------------------
+// Chest (window ID 2) handlers
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleChestClick(player *game.Player, cs *ChestState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := ChestSlot(player, cs, slot)
+	if invItem == nil {
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleChestShiftClick(player *game.Player, cs *ChestState, slot int) {
+	src := ChestSlot(player, cs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	if slot >= 0 && slot <= 26 {
+		// Chest → player inventory (9-44)
+		moveToPlayerInv(player, src)
+	} else if slot >= 27 && slot <= 53 {
+		// Main inv → chest first, then hotbar
+		if !moveToChest(cs, src) {
+			moveToRange(player, src, 36, 44)
+		}
+	} else if slot >= 54 && slot <= 62 {
+		// Hotbar → chest first, then main
+		if !moveToChest(cs, src) {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+func (h *InventoryHandler) handleChestNumberKey(player *game.Player, cs *ChestState, slot, button int) {
+	hotbarSlot := button + 36
+	if hotbarSlot < 36 || hotbarSlot > 44 {
+		return
+	}
+	src := ChestSlot(player, cs, slot)
+	if src == nil {
+		return
+	}
+	*src, player.Inventory[hotbarSlot] = player.Inventory[hotbarSlot], *src
+}
+
+func (h *InventoryHandler) handleChestDrop(player *game.Player, cs *ChestState, slot, button int) {
+	if slot == -999 {
+		if button == 0 && player.CursorItem.Count > 0 {
+			player.CursorItem.Count--
+			if player.CursorItem.Count <= 0 {
+				player.CursorItem = game.ItemStack{}
+			}
+		} else if button == 1 {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+	src := ChestSlot(player, cs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
+	}
+}
+
+// moveToChest tries to move src into the chest. Returns true if fully moved.
+func moveToChest(cs *ChestState, src *game.ItemStack) bool {
+	// Try stacking first
+	for i := 0; i < 27; i++ {
+		dst := &cs.Items[i]
+		if dst.ID == src.ID && dst.Count > 0 && dst.Count < 64 && dst.MaxDurability == 0 {
+			space := int32(64) - dst.Count
+			if space >= src.Count {
+				dst.Count += src.Count
+				*src = game.ItemStack{}
+				return true
+			}
+			dst.Count = 64
+			src.Count -= space
+		}
+	}
+	for i := 0; i < 27; i++ {
+		dst := &cs.Items[i]
+		if dst.ID == 0 || dst.Count <= 0 {
+			*dst = *src
+			*src = game.ItemStack{}
+			return true
+		}
+	}
+	return false
+}
+
+// moveToPlayerInv moves src into player inventory slots 9-44.
+func moveToPlayerInv(player *game.Player, src *game.ItemStack) {
+	moveToRange(player, src, 9, 44)
+}
+
+// moveToRange moves src into player.Inventory[start..end].
+func moveToRange(player *game.Player, src *game.ItemStack, start, end int) {
+	// Try stacking
+	for i := start; i <= end; i++ {
+		dst := &player.Inventory[i]
+		if dst.ID == src.ID && dst.Count > 0 && dst.Count < 64 && dst.MaxDurability == 0 {
+			space := int32(64) - dst.Count
+			if space >= src.Count {
+				dst.Count += src.Count
+				*src = game.ItemStack{}
+				return
+			}
+			dst.Count = 64
+			src.Count -= space
+		}
+	}
+	for i := start; i <= end; i++ {
+		dst := &player.Inventory[i]
+		if dst.ID == 0 || dst.Count <= 0 {
+			*dst = *src
+			*src = game.ItemStack{}
+			return
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Furnace (window ID 3) handlers
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleFurnaceClick(player *game.Player, fs *FurnaceState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := FurnaceSlot(player, fs, slot)
+	if invItem == nil {
+		return
+	}
+
+	// Slot 2 (output) is take-only
+	if slot == 2 {
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			return
+		}
+		if player.CursorItem.ID != 0 && player.CursorItem.ID != invItem.ID {
+			return
+		}
+		if player.CursorItem.ID == invItem.ID && player.CursorItem.Count+invItem.Count > 64 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			player.CursorItem = *invItem
+		} else {
+			player.CursorItem.Count += invItem.Count
+		}
+		*invItem = game.ItemStack{}
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleFurnaceShiftClick(player *game.Player, fs *FurnaceState, slot int) {
+	src := FurnaceSlot(player, fs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot == 0 || slot == 1 || slot == 2:
+		// Furnace slot → player inventory
+		moveToPlayerInv(player, src)
+	case slot >= 3 && slot <= 29:
+		// Main inv → try to put smeltable in input, fuel in fuel slot, else hotbar
+		itemName := ItemNameByID(src.ID)
+		if _, ok := smeltingRecipes[itemName]; ok {
+			putInFurnaceSlot(&fs.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&fs.Fuel, src)
+		} else {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 30 && slot <= 38:
+		// Hotbar → try smeltable/fuel, else main inv
+		itemName := ItemNameByID(src.ID)
+		if _, ok := smeltingRecipes[itemName]; ok {
+			putInFurnaceSlot(&fs.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&fs.Fuel, src)
+		} else {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+func (h *InventoryHandler) handleFurnaceNumberKey(player *game.Player, fs *FurnaceState, slot, button int) {
+	hotbarSlot := button + 36
+	if hotbarSlot < 36 || hotbarSlot > 44 {
+		return
+	}
+	src := FurnaceSlot(player, fs, slot)
+	if src == nil {
+		return
+	}
+	// Don't allow swapping into output slot
+	if slot == 2 {
+		return
+	}
+	*src, player.Inventory[hotbarSlot] = player.Inventory[hotbarSlot], *src
+}
+
+func (h *InventoryHandler) handleFurnaceDrop(player *game.Player, fs *FurnaceState, slot, button int) {
+	if slot == -999 {
+		if button == 0 && player.CursorItem.Count > 0 {
+			player.CursorItem.Count--
+			if player.CursorItem.Count <= 0 {
+				player.CursorItem = game.ItemStack{}
+			}
+		} else if button == 1 {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+	src := FurnaceSlot(player, fs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
+	}
+}
+
+// putInFurnaceSlot tries to put src into a furnace slot (input or fuel).
+func putInFurnaceSlot(dst *game.ItemStack, src *game.ItemStack) {
+	if dst.ID == 0 || dst.Count <= 0 {
+		*dst = *src
+		*src = game.ItemStack{}
+	} else if dst.ID == src.ID && dst.Count < 64 {
+		space := int32(64) - dst.Count
+		if space >= src.Count {
+			dst.Count += src.Count
+			*src = game.ItemStack{}
+		} else {
+			dst.Count = 64
+			src.Count -= space
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Generic click handler for chest/furnace slots (shared logic)
+// ---------------------------------------------------------------------------
+
+func genericClick(player *game.Player, invItem *game.ItemStack, button int) {
+	if button == 0 { // Left click
+		if player.CursorItem.ID == 0 && invItem.ID == 0 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			player.CursorItem = *invItem
+			*invItem = game.ItemStack{}
+		} else if invItem.ID == 0 {
+			*invItem = player.CursorItem
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.ID == invItem.ID && invItem.MaxDurability == 0 {
+			space := int32(64) - invItem.Count
+			if space >= player.CursorItem.Count {
+				invItem.Count += player.CursorItem.Count
+				player.CursorItem = game.ItemStack{}
+			} else {
+				invItem.Count = 64
+				player.CursorItem.Count -= space
+			}
+		} else {
+			player.CursorItem, *invItem = *invItem, player.CursorItem
+		}
+	} else { // Right click
+		if player.CursorItem.ID == 0 && invItem.ID == 0 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			half := (invItem.Count + 1) / 2
+			player.CursorItem = game.ItemStack{ID: invItem.ID, Count: half,
+				Durability: invItem.Durability, MaxDurability: invItem.MaxDurability}
+			invItem.Count -= half
+			if invItem.Count <= 0 {
+				*invItem = game.ItemStack{}
+			}
+		} else if invItem.ID == 0 || invItem.ID == player.CursorItem.ID {
+			if invItem.ID == 0 {
+				*invItem = game.ItemStack{ID: player.CursorItem.ID, Count: 0}
+			}
+			if invItem.Count < 64 {
+				invItem.Count++
+				player.CursorItem.Count--
+				if player.CursorItem.Count <= 0 {
+					player.CursorItem = game.ItemStack{}
+				}
+			}
+		} else {
+			player.CursorItem, *invItem = *invItem, player.CursorItem
+		}
+	}
 }
 
 func (h *InventoryHandler) logf(format string, args ...any) {

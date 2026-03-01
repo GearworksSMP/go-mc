@@ -342,6 +342,123 @@ func GetWeaponDamage(itemName string) float32 {
 	return 1.0
 }
 
+// GetWeaponCooldown returns the attack cooldown period in seconds for a weapon.
+// Vanilla values: sword=0.625, axe=1.0, shovel=1.0, pickaxe=0.833,
+// hoe=varies by tier, other/hand=0.25.
+func GetWeaponCooldown(itemName string) float64 {
+	if c, ok := weaponCooldown[itemName]; ok {
+		return c
+	}
+	return 0.25 // bare hand / non-weapon
+}
+
+var weaponCooldown = map[string]float64{
+	// Swords: 0.625s (1.6 attacks/s)
+	"wooden_sword": 0.625, "stone_sword": 0.625, "iron_sword": 0.625,
+	"golden_sword": 0.625, "diamond_sword": 0.625, "netherite_sword": 0.625,
+	// Axes: 1.0s (1.0 attacks/s)
+	"wooden_axe": 1.0, "stone_axe": 1.0, "iron_axe": 1.0,
+	"golden_axe": 1.0, "diamond_axe": 1.0, "netherite_axe": 1.0,
+	// Shovels: 1.0s
+	"wooden_shovel": 1.0, "stone_shovel": 1.0, "iron_shovel": 1.0,
+	"golden_shovel": 1.0, "diamond_shovel": 1.0, "netherite_shovel": 1.0,
+	// Pickaxes: 0.833s (1.2 attacks/s)
+	"wooden_pickaxe": 0.833, "stone_pickaxe": 0.833, "iron_pickaxe": 0.833,
+	"golden_pickaxe": 0.833, "diamond_pickaxe": 0.833, "netherite_pickaxe": 0.833,
+	// Hoes: varies by tier
+	"wooden_hoe": 1.0, "stone_hoe": 0.5, "iron_hoe": 0.333,
+	"golden_hoe": 1.0, "diamond_hoe": 0.25, "netherite_hoe": 0.25,
+}
+
+// CanHarvestBlock returns true if the held item can harvest the block (gets drops).
+// Blocks with a minimum tier requirement need a pickaxe of at least that tier.
+func CanHarvestBlock(blockName, heldItemName string) bool {
+	minTier, needsTier := minTierForDrop[blockName]
+	if !needsTier {
+		// Check if it needs the correct tool type at all
+		pref, needsTool := preferredTool[blockName]
+		if !needsTool {
+			return true // no tool requirement
+		}
+		tool := GetToolInfo(heldItemName)
+		if tool == nil || tool.Type != pref {
+			return false // wrong tool or bare hand
+		}
+		return true
+	}
+	// Needs a pickaxe of at least minTier
+	tool := GetToolInfo(heldItemName)
+	if tool == nil || tool.Type != ToolPickaxe {
+		return false
+	}
+	return tierLevel(tool.Tier) >= minTier
+}
+
+// tierLevel returns a numeric level for tier comparison.
+func tierLevel(t ToolTier) int {
+	switch t {
+	case TierWood, TierGold:
+		return 0
+	case TierStone:
+		return 1
+	case TierIron:
+		return 2
+	case TierDiamond:
+		return 3
+	case TierNetherite:
+		return 4
+	}
+	return 0
+}
+
+// GetBlockDropItemName returns the item name that a block drops.
+// Returns ("", false) if the block should drop nothing.
+func GetBlockDropItemName(blockName string) (string, bool) {
+	if drop, ok := blockDropOverrides[blockName]; ok {
+		if drop == "" {
+			return "", false // drops nothing
+		}
+		return drop, true
+	}
+	return blockName, true // drops itself
+}
+
+// minTierForDrop maps blocks to minimum pickaxe tier level needed to get drops.
+// Level: 0=wood/gold, 1=stone, 2=iron, 3=diamond, 4=netherite.
+var minTierForDrop = map[string]int{
+	// Any pickaxe (tier 0)
+	"stone": 0, "cobblestone": 0, "mossy_cobblestone": 0,
+	"granite": 0, "diorite": 0, "andesite": 0,
+	"stone_bricks": 0, "deepslate": 0, "cobbled_deepslate": 0,
+	"sandstone": 0, "terracotta": 0, "bricks": 0,
+	"coal_ore": 0, "copper_ore": 0,
+	"iron_block": 0, "gold_block": 0,
+	// Stone+ (tier 1)
+	"iron_ore": 1, "lapis_ore": 1,
+	// Iron+ (tier 2)
+	"gold_ore": 2, "diamond_ore": 2, "emerald_ore": 2, "redstone_ore": 2,
+	"diamond_block": 2,
+	// Diamond+ (tier 3)
+	"obsidian": 3, "crying_obsidian": 3, "netherite_block": 3,
+}
+
+// blockDropOverrides maps blocks to the item they drop instead of themselves.
+// An empty string means the block drops nothing.
+var blockDropOverrides = map[string]string{
+	"stone":        "cobblestone",
+	"coal_ore":     "coal",
+	"diamond_ore":  "diamond",
+	"iron_ore":     "raw_iron",
+	"gold_ore":     "raw_gold",
+	"copper_ore":   "raw_copper",
+	"lapis_ore":    "lapis_lazuli",
+	"redstone_ore": "redstone",
+	"emerald_ore":  "emerald",
+	"grass_block":  "dirt",
+	"grass":        "", // tall grass drops nothing
+	"tall_grass":   "", // tall grass drops nothing
+}
+
 var weaponDamage = map[string]float32{
 	// Swords: wood=4, stone=5, iron=6, gold=4, diamond=7, netherite=8
 	"wooden_sword":    4,

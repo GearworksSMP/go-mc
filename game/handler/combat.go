@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"math"
+	"time"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
@@ -47,7 +48,24 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 
 	// Look up weapon damage from held item
 	heldName := ItemNameByID(attacker.Inventory[attacker.HeldSlot+36].ID)
-	damage := GetWeaponDamage(heldName)
+	baseDamage := GetWeaponDamage(heldName)
+
+	// Compute attack strength from cooldown (vanilla formula)
+	cooldownPeriod := GetWeaponCooldown(heldName)
+	timeSince := time.Since(attacker.LastAttackTime).Seconds()
+	strength := timeSince / cooldownPeriod
+	if strength > 1 {
+		strength = 1
+	}
+	if strength < 0 {
+		strength = 0
+	}
+
+	// Vanilla damage formula: damage = baseDamage * (0.2 + strength^2 * 0.8)
+	damage := baseDamage * float32(0.2+strength*strength*0.8)
+
+	attacker.LastAttackTime = time.Now()
+
 	if h.SurvivalHandler != nil {
 		h.SurvivalHandler.ApplyDamage(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID)
 	}
@@ -62,11 +80,9 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	dz := tz - az
 	dist := math.Sqrt(dx*dx + dz*dz)
 	if dist > 0 {
-		// Normalize and scale to knockback velocity
-		// Minecraft velocity: 1 block/tick = 8000 units
 		scale := 4000.0 / dist
 		velX := int16(dx * scale)
-		velY := int16(3000) // upward knockback
+		velY := int16(3000)
 		velZ := int16(dz * scale)
 
 		target.WritePacket(pk.Marshal(
@@ -78,23 +94,25 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		))
 	}
 
-	// Decrement tool durability on attack (swords lose 1, other tools lose 2)
-	slot := int(attacker.HeldSlot) + 36
-	invItem := &attacker.Inventory[slot]
-	if invItem.MaxDurability > 0 {
-		itemName := ItemNameByID(invItem.ID)
-		if IsSword(itemName) {
-			invItem.Durability--
-		} else {
-			invItem.Durability -= 2
+	// Only apply durability loss when strength >= 0.9 (near-full charge)
+	if strength >= 0.9 {
+		slot := int(attacker.HeldSlot) + 36
+		invItem := &attacker.Inventory[slot]
+		if invItem.MaxDurability > 0 {
+			itemName := ItemNameByID(invItem.ID)
+			if IsSword(itemName) {
+				invItem.Durability--
+			} else {
+				invItem.Durability -= 2
+			}
+			if invItem.Durability <= 0 {
+				*invItem = game.ItemStack{} // tool breaks
+			}
+			SendSlotUpdate(attacker, slot)
 		}
-		if invItem.Durability <= 0 {
-			*invItem = game.ItemStack{} // tool breaks
-		}
-		SendSlotUpdate(attacker, slot)
 	}
 
-	h.logf("Player %s attacked %s", attacker.Name, target.Name)
+	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f)", attacker.Name, target.Name, strength, damage)
 }
 
 func (h *CombatHandler) logf(format string, args ...any) {
