@@ -401,6 +401,100 @@ func init() {
 		ResultName:  "book",
 		ResultCount: 1,
 	})
+
+	// -----------------------------------------------------------------------
+	// Crop/food recipes
+	// -----------------------------------------------------------------------
+	// Sugar cane → Sugar (shapeless 1:1)
+	allRecipes = append(allRecipes, shapeless1("sugar_cane", "sugar", 1))
+
+	// Pumpkin pie: shapeless(pumpkin, sugar, egg) → 1
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"pumpkin", "sugar", "egg"},
+		ResultName:  "pumpkin_pie",
+		ResultCount: 1,
+	})
+
+	// Cookie: wheat + cocoa_beans + wheat (3x1) → 8
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"wheat", "cocoa_beans", "wheat"}, "cookie", 8))
+
+	// Melon block: 9 melon slices (3x3) → 1
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"melon_slice", "melon_slice", "melon_slice",
+		"melon_slice", "melon_slice", "melon_slice",
+		"melon_slice", "melon_slice", "melon_slice",
+	}, "melon", 1))
+
+	// Cake: MMM / SES / WWW (3x3) where M=milk_bucket, S=sugar, E=egg, W=wheat
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"milk_bucket", "milk_bucket", "milk_bucket",
+		"sugar", "egg", "sugar",
+		"wheat", "wheat", "wheat",
+	}, "cake", 1))
+
+	// -----------------------------------------------------------------------
+	// Missing utility recipes
+	// -----------------------------------------------------------------------
+	// String ×4 → Wool (2x2)
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"string", "string",
+		"string", "string",
+	}, "white_wool", 1))
+
+	// Flint and steel: shapeless(iron_ingot, flint) → 1
+	allRecipes = append(allRecipes, shapeless2("iron_ingot", "flint", "flint_and_steel", 1))
+
+	// Golden apple: GGG / GAG / GGG (3x3) where G=gold_ingot, A=apple
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"gold_ingot", "gold_ingot", "gold_ingot",
+		"gold_ingot", "apple", "gold_ingot",
+		"gold_ingot", "gold_ingot", "gold_ingot",
+	}, "golden_apple", 1))
+
+	// Eye of ender: shapeless(blaze_powder, ender_pearl) → 1
+	allRecipes = append(allRecipes, shapeless2("blaze_powder", "ender_pearl", "ender_eye", 1))
+
+	// TNT: G S G / S G S / G S G (3x3) where G=gunpowder, S=sand
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"gunpowder", "sand", "gunpowder",
+		"sand", "gunpowder", "sand",
+		"gunpowder", "sand", "gunpowder",
+	}, "tnt", 1))
+
+	// Redstone torch: redstone + stick (1x2)
+	allRecipes = append(allRecipes, shaped(1, 2, []string{"redstone", "stick"}, "redstone_torch", 1))
+
+	// Beacon: GGG / GNG / OOO (3x3) where G=glass, N=nether_star, O=obsidian
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"glass", "glass", "glass",
+		"glass", "nether_star", "glass",
+		"obsidian", "obsidian", "obsidian",
+	}, "beacon", 1))
+
+	// -----------------------------------------------------------------------
+	// Rail/minecart recipes
+	// -----------------------------------------------------------------------
+	// Rail: I_I / ISI / I_I (3x3) where I=iron_ingot, S=stick → 16
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_ingot", "", "iron_ingot",
+		"iron_ingot", "stick", "iron_ingot",
+		"iron_ingot", "", "iron_ingot",
+	}, "rail", 16))
+
+	// Minecart: I_I / III (3x2) where I=iron_ingot → 1
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"iron_ingot", "", "iron_ingot",
+		"iron_ingot", "iron_ingot", "iron_ingot",
+	}, "minecart", 1))
+
+	// -----------------------------------------------------------------------
+	// Missing block recipes
+	// -----------------------------------------------------------------------
+	// Stone bricks: SSSS (2x2) where S=stone → 4
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"stone", "stone",
+		"stone", "stone",
+	}, "stone_bricks", 4))
 }
 
 // pressurePlateName returns the pressure plate item name for a plank type.

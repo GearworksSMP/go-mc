@@ -144,10 +144,11 @@ func (a Slot261Array) WriteTo(w io.Writer) (n int64, err error) {
 
 // ItemStack represents a single item slot.
 type ItemStack struct {
-	ID            int32 // 0 = empty
+	ID            int32            // 0 = empty
 	Count         int32
-	Durability    int32 // remaining durability (tools only)
-	MaxDurability int32 // max durability (tools only; 0 = not a tool)
+	Durability    int32            // remaining durability (tools only)
+	MaxDurability int32            // max durability (tools only; 0 = not a tool)
+	Enchantments  map[string]int32 `json:"enchantments,omitempty"` // server-side only
 }
 
 // ToSlot converts an ItemStack to a Slot261 for wire encoding.
@@ -187,6 +188,30 @@ func (inv *Inventory) AddItem(id, count int32) int {
 	return -1
 }
 
+// EnchantOfferData stores a single enchantment offer.
+type EnchantOfferData struct {
+	RequiredLevel int32
+	EnchantID     string
+	EnchantLevel  int32
+}
+
+// EnchantSessionData stores an active enchanting session.
+type EnchantSessionData struct {
+	TablePos [3]int
+	WindowID int
+	Offers   [3]EnchantOfferData
+}
+
+// AnvilSessionData stores an active anvil UI session.
+type AnvilSessionData struct {
+	WindowID   int
+	RenameText string
+	Input      ItemStack // slot 0 (left)
+	Material   ItemStack // slot 1 (right)
+	Output     ItemStack // slot 2 (result)
+	RepairCost int32     // XP level cost
+}
+
 // Player represents a connected player with their state.
 type Player struct {
 	Name       string
@@ -197,7 +222,8 @@ type Player struct {
 	mu   sync.Mutex
 	X, Y, Z    float64
 	Yaw, Pitch float32
-	OnGround   bool
+	OnGround    bool
+	WasOnGround bool
 
 	// LoadedChunks tracks which chunks have been sent to this player.
 	LoadedChunks map[ChunkPos]bool
@@ -241,14 +267,29 @@ type Player struct {
 	// Eating animation state
 	EatingStart time.Time // zero = not eating
 
+	// Experience
+	Experience      float32 // 0.0-1.0 bar progress
+	ExperienceLevel int32   // current level
+	ExperienceTotal int32   // total XP collected
+
 	// Combat cooldown
-	LastAttackTime time.Time
+	LastAttackTime    time.Time
+	LastDamageMessage string // death message override (e.g. "X was slain by Y")
+
+	// Shield blocking state
+	Blocking bool
+
+	// Spawn point (bed)
+	SpawnX, SpawnY, SpawnZ float64
+	HasSpawnPoint          bool
 
 	// Container window state
 	OpenWindowID   int           // 0=none, 1=crafting table, 2=chest, 3=furnace
 	CraftingGrid   [9]ItemStack  // temporary 3x3 crafting grid
 	OpenChestPos   [3]int        // world position of open chest
 	OpenFurnacePos [3]int        // world position of open furnace
+	EnchantSession *EnchantSessionData // active enchanting table session
+	AnvilSession   *AnvilSessionData   // active anvil UI session
 }
 
 // NewPlayer creates a new Player with the given connection info.

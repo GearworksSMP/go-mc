@@ -9,6 +9,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -39,19 +40,48 @@ import (
 
 func main() {
 	logger := log.New(os.Stdout, "[Server] ", log.LstdFlags)
-
-	// Create superflat world
-	sfGen := gen.DefaultSuperflat()
 	players := game.NewPlayerManager()
+
+	// Choose world generator: terrain (default) or superflat
+	var worldGen game.ChunkGenerator
+	var sections, minY int
+	var spawnY float64
+	var isFlat bool
+
+	if os.Getenv("WORLD_TYPE") == "flat" {
+		sfGen := gen.DefaultSuperflat()
+		worldGen = sfGen
+		sections = sfGen.Sections
+		minY = sfGen.MinY
+		spawnY = sfGen.SpawnY()
+		isFlat = true
+		logger.Printf("Using superflat world generator")
+	} else {
+		seed := int64(12345)
+		if s := os.Getenv("WORLD_SEED"); s != "" {
+			// Simple string→int64 hash
+			for _, c := range s {
+				seed = seed*31 + int64(c)
+			}
+		}
+		tGen := gen.NewTerrainGenerator(seed)
+		worldGen = tGen
+		sections = tGen.Sections
+		minY = tGen.MinY
+		spawnY = tGen.SpawnY()
+		logger.Printf("Using terrain world generator (seed=%d)", seed)
+	}
 
 	var world game.World
 	var playerStore store.PlayerStore
+	var pg *pgstore.PGStore
 	var dbw *dbworld.World // nil when using mem.World
 
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		logger.Printf("Connecting to PostgreSQL...")
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		pg, err := pgstore.New(ctx, dbURL)
+		var err error
+		pg, err = pgstore.New(ctx, dbURL)
 		cancel()
 		if err != nil {
 			logger.Fatalf("Database connection failed: %v", err)
@@ -66,11 +96,11 @@ func main() {
 		cancel2()
 		logger.Printf("Database ready")
 
-		dbw = dbworld.NewWorld(pg, sfGen, sfGen.Sections, sfGen.MinY, "overworld", logger)
+		dbw = dbworld.NewWorld(pg, worldGen, sections, minY, "overworld", logger)
 		world = dbw
 		playerStore = pg
 	} else {
-		world = mem.NewWorld(sfGen, sfGen.Sections, sfGen.MinY)
+		world = mem.NewWorld(worldGen, sections, minY)
 	}
 
 	// Build minimal registries for 26.1-snapshot-2
@@ -83,22 +113,59 @@ func main() {
 		VoidDamageTypeID:   4, // minecraft:out_of_world (5th registered)
 	}
 
+	keepInventory := false
+
 	chestMgr := handler.NewChestManager()
 	itemEntities := handler.NewItemEntityManager(players)
 	furnaceMgr := handler.NewFurnaceManager(players)
+	timeMgr := &handler.TimeManager{}
+	arrowMgr := handler.NewArrowManager(players, survHandler, world)
+	mobMgr := handler.NewMobManager(players, timeMgr, world, minY, survHandler, itemEntities)
+	mobMgr.ArrowMgr = arrowMgr
+
+	enchantMgr := handler.NewEnchantManager(world)
+	anvilMgr := handler.NewAnvilManager(world)
+	villagerMgr := handler.NewVillagerManager(mobMgr, players)
+	fluidMgr := handler.NewFluidManager(world, players)
+	fallingMgr := handler.NewFallingBlockManager(world, players)
+	treeMgr := handler.NewTreeGrowthManager(world, players)
+	cropMgr := handler.NewCropManager(world, players)
+	weatherMgr := handler.NewWeatherManager(players)
+
+	survHandler.ItemEntities = itemEntities
+	survHandler.KeepInventory = &keepInventory
 
 	gp := &gamePlay{
 		logger:          logger,
 		world:           world,
 		players:         players,
-		gen:             sfGen,
+		sections:        sections,
+		minY:            minY,
+		spawnY:          spawnY,
+		isFlat:          isFlat,
 		playerStore:     playerStore,
+		pgStore:         pg,
 		survivalHandler: survHandler,
 		commandGraph:    handler.BuildCommandGraph(),
 		chests:          chestMgr,
 		itemEntities:    itemEntities,
 		furnaces:        furnaceMgr,
+		timeMgr:         timeMgr,
+		mobMgr:          mobMgr,
+		arrowMgr:        arrowMgr,
+		fluidMgr:        fluidMgr,
+		fallingMgr:      fallingMgr,
+		treeMgr:         treeMgr,
+		cropMgr:         cropMgr,
+		weatherMgr:      weatherMgr,
+		enchantMgr:      enchantMgr,
+		anvilMgr:        anvilMgr,
+		villagerMgr:     villagerMgr,
+		keepInventory:   &keepInventory,
 	}
+
+	// Load block entities (chests, furnaces) from DB
+	gp.loadBlockEntities()
 
 	srv := server.Server{
 		Logger:          logger,
@@ -128,10 +195,18 @@ func main() {
 		game.TickHandlerFunc(func(tick int64) {
 			gp.keepalive.Tick(tick, players)
 			survHandler.HungerTick(players, tick)
-			survHandler.VoidDamageTick(players, sfGen.MinY)
+			survHandler.VoidDamageTick(players, minY)
 			foodHandler.Tick(players)
 			itemEntities.Tick(tick)
 			furnaceMgr.Tick()
+			timeMgr.Tick(tick, players)
+			mobMgr.Tick(tick)
+			arrowMgr.Tick(tick)
+			fluidMgr.Tick(tick)
+			fallingMgr.Tick(tick)
+			treeMgr.Tick(tick)
+			cropMgr.Tick(tick)
+			weatherMgr.Tick(tick)
 		}),
 	)
 
@@ -194,8 +269,12 @@ type gamePlay struct {
 	logger      *log.Logger
 	world       game.World
 	players     *game.PlayerManager
-	gen         *gen.SuperflatGenerator
+	sections    int
+	minY        int
+	spawnY      float64
+	isFlat      bool
 	playerStore store.PlayerStore
+	pgStore     *pgstore.PGStore // nil when not using DB
 
 	keepalive       handler.KeepaliveHandler
 	survivalHandler *handler.SurvivalHandler
@@ -204,6 +283,18 @@ type gamePlay struct {
 	chests          *handler.ChestManager
 	itemEntities    *handler.ItemEntityManager
 	furnaces        *handler.FurnaceManager
+	timeMgr         *handler.TimeManager
+	mobMgr          *handler.MobManager
+	arrowMgr        *handler.ArrowManager
+	fluidMgr        *handler.FluidManager
+	fallingMgr      *handler.FallingBlockManager
+	treeMgr         *handler.TreeGrowthManager
+	cropMgr         *handler.CropManager
+	weatherMgr      *handler.WeatherManager
+	enchantMgr      *handler.EnchantManager
+	anvilMgr        *handler.AnvilManager
+	villagerMgr     *handler.VillagerManager
+	keepInventory   *bool
 }
 
 func (g *gamePlay) logf(format string, args ...any) {
@@ -212,11 +303,95 @@ func (g *gamePlay) logf(format string, args ...any) {
 	}
 }
 
+// saveBlockEntity serializes and saves a chest or furnace to PostgreSQL.
+func (g *gamePlay) saveBlockEntity(containerType string, pos [3]int) {
+	if g.pgStore == nil {
+		return
+	}
+	var data []byte
+	var err error
+	switch containerType {
+	case "chest":
+		cs := g.chests.Get(pos[0], pos[1], pos[2])
+		if cs == nil {
+			return
+		}
+		data, err = json.Marshal(cs.Items)
+	case "furnace":
+		fs := g.furnaces.Get(pos[0], pos[1], pos[2])
+		if fs == nil {
+			return
+		}
+		data, err = json.Marshal(map[string]interface{}{
+			"input":      fs.Input,
+			"fuel":       fs.Fuel,
+			"output":     fs.Output,
+			"burn_time":  fs.BurnTime,
+			"max_burn":   fs.MaxBurnTime,
+			"cook_time":  fs.CookTime,
+		})
+	default:
+		return
+	}
+	if err != nil {
+		g.logf("Failed to marshal %s at %v: %v", containerType, pos, err)
+		return
+	}
+	if err := g.pgStore.SaveBlockEntity(context.Background(), "overworld", pos[0], pos[1], pos[2], containerType, data); err != nil {
+		g.logf("Failed to save %s at %v: %v", containerType, pos, err)
+	}
+}
+
+// loadBlockEntities loads all block entities from DB and populates chest/furnace managers.
+func (g *gamePlay) loadBlockEntities() {
+	if g.pgStore == nil {
+		return
+	}
+	entities, err := g.pgStore.LoadBlockEntities(context.Background(), "overworld")
+	if err != nil {
+		g.logf("Failed to load block entities: %v", err)
+		return
+	}
+	for _, e := range entities {
+		switch e.Type {
+		case "chest":
+			var items [27]game.ItemStack
+			if err := json.Unmarshal(e.Data, &items); err != nil {
+				g.logf("Failed to unmarshal chest at (%d,%d,%d): %v", e.X, e.Y, e.Z, err)
+				continue
+			}
+			cs := g.chests.GetOrCreate(e.X, e.Y, e.Z)
+			cs.Items = items
+		case "furnace":
+			var fdata struct {
+				Input    game.ItemStack `json:"input"`
+				Fuel     game.ItemStack `json:"fuel"`
+				Output   game.ItemStack `json:"output"`
+				BurnTime int32          `json:"burn_time"`
+				MaxBurn  int32          `json:"max_burn"`
+				CookTime int32          `json:"cook_time"`
+			}
+			if err := json.Unmarshal(e.Data, &fdata); err != nil {
+				g.logf("Failed to unmarshal furnace at (%d,%d,%d): %v", e.X, e.Y, e.Z, err)
+				continue
+			}
+			fs := g.furnaces.GetOrCreate(e.X, e.Y, e.Z)
+			fs.Input = fdata.Input
+			fs.Fuel = fdata.Fuel
+			fs.Output = fdata.Output
+			fs.BurnTime = fdata.BurnTime
+			fs.MaxBurnTime = fdata.MaxBurn
+			fs.CookTime = fdata.CookTime
+		}
+	}
+	g.logf("Loaded %d block entities from database", len(entities))
+}
+
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
 	eid := g.players.NextEntityID()
 	player := game.NewPlayer(name, id, eid, conn)
 	player.Properties = properties
-	spawnX, spawnY, spawnZ := 0.5, g.gen.SpawnY(), 0.5
+	spawnX, spawnYVal, spawnZ := 0.5, g.spawnY, 0.5
 	var spawnYaw, spawnPitch float32
 
 	// Load saved position if DB is available
@@ -227,11 +402,19 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		if err != nil {
 			g.logf("Warning: failed to load player %s state: %v", name, err)
 		} else if ps != nil {
-			spawnX, spawnY, spawnZ = ps.X, ps.Y, ps.Z
+			spawnX, spawnYVal, spawnZ = ps.X, ps.Y, ps.Z
 			spawnYaw, spawnPitch = ps.Yaw, ps.Pitch
 			player.Health = ps.Health
 			player.Food = ps.Food
 			player.Saturation = ps.Saturation
+			player.Experience = ps.Experience
+			player.ExperienceLevel = ps.ExperienceLevel
+			player.ExperienceTotal = ps.ExperienceTotal
+			// Restore spawn point
+			player.HasSpawnPoint = ps.HasSpawnPoint
+			player.SpawnX = ps.SpawnX
+			player.SpawnY = ps.SpawnY
+			player.SpawnZ = ps.SpawnZ
 			// Restore inventory
 			for i, slot := range ps.Inventory {
 				if i >= len(player.Inventory) {
@@ -244,11 +427,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 					MaxDurability: slot.MaxDurability,
 				}
 			}
-			g.logf("Loaded saved position for %s: (%.1f, %.1f, %.1f)", name, spawnX, spawnY, spawnZ)
+			g.logf("Loaded saved position for %s: (%.1f, %.1f, %.1f)", name, spawnX, spawnYVal, spawnZ)
 		}
 	}
 
-	player.SetPosition(spawnX, spawnY, spawnZ)
+	player.SetPosition(spawnX, spawnYVal, spawnZ)
 	player.SetRotation(spawnYaw, spawnPitch)
 	player.ViewDistance = 10
 
@@ -275,19 +458,26 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
-				UUID:       id,
-				Name:       name,
-				Dimension:  "overworld",
-				X:          px,
-				Y:          py,
-				Z:          pz,
-				Yaw:        pyaw,
-				Pitch:      ppitch,
-				GameMode:   int(player.GameMode),
-				Health:     player.Health,
-				Food:       player.Food,
-				Saturation: player.Saturation,
-				Inventory:  invSlots,
+				UUID:            id,
+				Name:            name,
+				Dimension:       "overworld",
+				X:               px,
+				Y:               py,
+				Z:               pz,
+				Yaw:             pyaw,
+				Pitch:           ppitch,
+				GameMode:        int(player.GameMode),
+				Health:          player.Health,
+				Food:            player.Food,
+				Saturation:      player.Saturation,
+				Inventory:       invSlots,
+				Experience:      player.Experience,
+				ExperienceLevel: player.ExperienceLevel,
+				ExperienceTotal: player.ExperienceTotal,
+				SpawnX:          player.SpawnX,
+				SpawnY:          player.SpawnY,
+				SpawnZ:          player.SpawnZ,
+				HasSpawnPoint:   player.HasSpawnPoint,
 			})
 			cancel()
 			if err != nil {
@@ -321,7 +511,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		packetid.ClientboundPlayerPosition,
 		pk.VarInt(1),             // teleport ID
 		pk.Double(spawnX),        // x
-		pk.Double(spawnY),        // y
+		pk.Double(spawnYVal),     // y
 		pk.Double(spawnZ),        // z
 		pk.Double(0),             // vel_x
 		pk.Double(0),             // vel_y
@@ -351,6 +541,17 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	)); err != nil {
 		g.logf("Error sending SetHealth to %s: %v", name, err)
 		return
+	}
+
+	// Send initial experience
+	handler.SendExperience(player)
+
+	// Send current world time
+	g.timeMgr.SendTime(player)
+
+	// Send current weather state
+	if g.weatherMgr != nil {
+		g.weatherMgr.SendWeather(player)
 	}
 
 	// ServerData — MOTD + optional icon (enforcesSecureChat was removed in 1.20.5+)
@@ -386,8 +587,10 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	handler.BroadcastPlayerJoin(g.players, player)
 	handler.SendExistingPlayers(g.players, player)
 
-	// Send existing item entities to the new player
+	// Send existing item entities, mobs, and arrows to the new player
 	g.itemEntities.SendExistingItems(player)
+	g.mobMgr.SendExistingMobs(player)
+	g.arrowMgr.SendExistingArrows(player)
 
 	// Tab list header/footer
 	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}
@@ -424,7 +627,7 @@ func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
 		pk.UnsignedByte(0),         // gamemode: survival
 		pk.Byte(-1),                // previous gamemode: none
 		pk.Boolean(false),          // is debug
-		pk.Boolean(true),           // is flat
+		pk.Boolean(g.isFlat),       // is flat
 		pk.Boolean(false),          // has death location
 		pk.VarInt(0),               // portal cooldown
 		pk.VarInt(63),              // sea level
@@ -458,7 +661,7 @@ func (g *gamePlay) sendSpawnSequence(player *game.Player) error {
 	// 3. Send initial chunks from the world
 	cs := &handler.ChunkSender{
 		World: g.world,
-		MinY:  g.gen.MinY,
+		MinY:  g.minY,
 	}
 	if err := cs.SendInitialChunks(player); err != nil {
 		return fmt.Errorf("initial chunks: %w", err)
@@ -470,7 +673,7 @@ func (g *gamePlay) sendSpawnSequence(player *game.Player) error {
 func (g *gamePlay) packetLoop(player *game.Player) {
 	cs := &handler.ChunkSender{
 		World: g.world,
-		MinY:  g.gen.MinY,
+		MinY:  g.minY,
 	}
 	movHandler := &handler.MovementHandler{
 		World:           g.world,
@@ -478,6 +681,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		Logger:          g.logger,
 		Encoder:         cs,
 		SurvivalHandler: g.survivalHandler,
+		CropMgr:         g.cropMgr,
 	}
 	blockHandler := &handler.BlockHandler{
 		World:        g.world,
@@ -486,16 +690,41 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		ItemEntities: g.itemEntities,
 		Chests:       g.chests,
 		Furnaces:     g.furnaces,
+		TimeMgr:      g.timeMgr,
+		FluidMgr:     g.fluidMgr,
+		FallingMgr:   g.fallingMgr,
+		TreeMgr:      g.treeMgr,
+		CropMgr:      g.cropMgr,
+		EnchantMgr:   g.enchantMgr,
+		AnvilMgr:     g.anvilMgr,
+	}
+	if g.pgStore != nil {
+		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
+			if blockName == "chest" || blockName == "furnace" {
+				go g.pgStore.DeleteBlockEntity(context.Background(), "overworld", x, y, z)
+			}
+		}
 	}
 	invHandler := &handler.InventoryHandler{
-		Logger:   g.logger,
-		Chests:   g.chests,
-		Furnaces: g.furnaces,
+		Logger:      g.logger,
+		Chests:      g.chests,
+		Furnaces:    g.furnaces,
+		EnchantMgr:  g.enchantMgr,
+		AnvilMgr:    g.anvilMgr,
+		VillagerMgr: g.villagerMgr,
+	}
+	if g.pgStore != nil {
+		invHandler.OnContainerClose = func(containerType string, pos [3]int) {
+			go g.saveBlockEntity(containerType, pos)
+		}
 	}
 	cmdExecutor := &handler.CommandExecutor{
 		Manager:         g.players,
 		Logger:          g.logger,
 		SurvivalHandler: g.survivalHandler,
+		TimeMgr:         g.timeMgr,
+		WeatherMgr:      g.weatherMgr,
+		KeepInventory:   g.keepInventory,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:  g.players,
@@ -508,13 +737,15 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 	combatHandler := &handler.CombatHandler{
 		Manager:         g.players,
 		SurvivalHandler: g.survivalHandler,
+		MobManager:      g.mobMgr,
+		VillagerMgr:     g.villagerMgr,
 		Logger:          g.logger,
 	}
 	respawnHandler := &handler.RespawnHandler{
 		Manager: g.players,
 		World:   g.world,
-		SpawnY:  g.gen.SpawnY(),
-		MinY:    g.gen.MinY,
+		SpawnY:  g.spawnY,
+		MinY:    g.minY,
 		Logger:  g.logger,
 	}
 

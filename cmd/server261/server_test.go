@@ -13,6 +13,7 @@ import (
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	"github.com/Tnze/go-mc/game/gen"
+	"github.com/Tnze/go-mc/game/handler"
 	"github.com/Tnze/go-mc/game/mem"
 	mcnet "github.com/Tnze/go-mc/net"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -56,7 +57,16 @@ func startTestServer(t *testing.T) string {
 			KnownPackEntries: vanillaRegistryKeys(),
 			Tags:             vanillaConfigTags(),
 		},
-		GamePlay: &gamePlay{logger: nil, world: world, players: players, gen: sfGen},
+		GamePlay: &gamePlay{
+			logger:   nil,
+			world:    world,
+			players:  players,
+			sections: sfGen.Sections,
+			minY:     sfGen.MinY,
+			spawnY:   sfGen.SpawnY(),
+			isFlat:   true,
+			timeMgr:  &handler.TimeManager{},
+		},
 	}
 
 	// Start server in background

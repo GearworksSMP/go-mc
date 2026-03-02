@@ -129,6 +129,10 @@ The vanilla 26.1 server sends packets in this order (verified by packet capture)
 - **`bytes.Buffer.Bytes()` returns shared memory.** If you call `buf.Bytes()`, then `buf.Reset()` and write new data, the original slice is overwritten. Always copy with `append([]byte(nil), buf.Bytes()...)` if you need to keep the data.
 - **`level/chunk.go` WriteTo uses the old format.** The `Chunk.WriteTo()` and `lightData.WriteTo()` methods still write NBT heightmaps and Trust Edges. For 26.1, the `cmd/server261` server hand-crafts chunk packets instead.
 
+## Reference Data
+
+`reference/` contains Minecraft Wiki XML dumps organized by category (blocks, items, mobs, gameplay, enchantments, biomes, etc.). Use these as reference when implementing game mechanics. Focus exclusively on **Java Edition** behavior — ignore Bedrock Edition differences. Re-export with `reference/export_wiki.py` if needed.
+
 ## External Documentation
 
 `external-docs/` contains downloaded wiki pages for the Create mod, useful as reference when porting Create mod functionality to Go.

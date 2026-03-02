@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"math"
+	"math/rand"
 	"time"
 
 	"github.com/Tnze/go-mc/chat"
@@ -13,10 +14,12 @@ import (
 
 // SurvivalHandler manages health, damage, hunger, and related survival mechanics.
 type SurvivalHandler struct {
-	Logger           *log.Logger
-	FallDamageTypeID int32
+	Logger             *log.Logger
+	FallDamageTypeID   int32
 	AttackDamageTypeID int32
-	VoidDamageTypeID int32
+	VoidDamageTypeID   int32
+	ItemEntities       *ItemEntityManager
+	KeepInventory      *bool
 }
 
 // SendSetHealth sends the health/food/saturation HUD update to a player.
@@ -33,6 +36,43 @@ func SendSetHealth(player *game.Player) {
 func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32) {
 	if player.Dead || player.IsInvulnerable() {
 		return
+	}
+
+	// Shield blocking: absorbs all damage
+	if player.Blocking && isHoldingShield(player) {
+		reduceShieldDurability(player)
+		// Play shield block sound
+		px, py, pz := player.Position()
+		BroadcastSound(manager, SoundShieldBlock, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+		return
+	}
+
+	// Calculate armor protection
+	armorPoints := 0
+	for _, slot := range []int{5, 6, 7, 8} {
+		armorPoints += GetArmorProtection(ItemNameByID(player.Inventory[slot].ID))
+	}
+	if armorPoints > 0 {
+		reduction := float32(armorPoints) / 25.0
+		if reduction > 0.8 {
+			reduction = 0.8
+		}
+		damage *= (1 - reduction)
+	}
+
+	// Protection enchantment: sum from all armor pieces, 4% reduction per level (cap 80%)
+	protectionTotal := int32(0)
+	for _, slot := range []int{5, 6, 7, 8} {
+		if player.Inventory[slot].Enchantments != nil {
+			protectionTotal += player.Inventory[slot].Enchantments["protection"]
+		}
+	}
+	if protectionTotal > 0 {
+		protReduction := float32(protectionTotal) * 0.04
+		if protReduction > 0.8 {
+			protReduction = 0.8
+		}
+		damage *= (1 - protReduction)
 	}
 
 	player.Health -= damage
@@ -66,21 +106,92 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		p.WritePacket(damagePkt)
 	})
 
+	// Play player hurt sound
+	px, py, pz := player.Position()
+	BroadcastSound(manager, SoundPlayerHurt, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+
 	// Update health HUD
 	SendSetHealth(player)
+
+	// Update health display above player
+	BroadcastHealthTag(manager, player)
+
+	// Reduce armor durability (unbreaking enchant: skip with probability level/(level+1))
+	armorChanged := false
+	for _, slot := range []int{5, 6, 7, 8} {
+		if player.Inventory[slot].MaxDurability > 0 && player.Inventory[slot].ID > 0 {
+			unbreakLvl := int32(0)
+			if player.Inventory[slot].Enchantments != nil {
+				unbreakLvl = player.Inventory[slot].Enchantments["unbreaking"]
+			}
+			if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
+				continue // unbreaking saved this durability point
+			}
+			player.Inventory[slot].Durability--
+			if player.Inventory[slot].Durability <= 0 {
+				player.Inventory[slot] = game.ItemStack{} // armor breaks
+			}
+			SendSlotUpdate(player, slot)
+			armorChanged = true
+		}
+	}
+	if armorChanged {
+		BroadcastEquipment(manager, player)
+	}
 
 	if player.Health <= 0 {
 		s.handleDeath(manager, player)
 	}
 }
 
+// ApplyDamageFrom reduces player health from a named attacker and handles death with a PvP message.
+func (s *SurvivalHandler) ApplyDamageFrom(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32, attackerName string) {
+	player.LastDamageMessage = player.Name + " was slain by " + attackerName
+	s.ApplyDamage(manager, player, damage, damageTypeID)
+}
+
 // handleDeath handles player death: sends combat kill and death animation.
 func (s *SurvivalHandler) handleDeath(manager *game.PlayerManager, player *game.Player) {
+	msg := player.Name + " died"
+	if player.LastDamageMessage != "" {
+		msg = player.LastDamageMessage
+		player.LastDamageMessage = ""
+	}
+	s.handleDeathWithMessage(manager, player, msg)
+}
+
+// dropPlayerInventory drops all inventory items as entities and resets XP.
+func (s *SurvivalHandler) dropPlayerInventory(manager *game.PlayerManager, player *game.Player) {
+	if s.KeepInventory != nil && *s.KeepInventory {
+		return
+	}
+	px, py, pz := player.Position()
+	for i := 5; i <= 45; i++ { // armor(5-8) + main(9-35) + hotbar(36-44) + offhand(45)
+		item := &player.Inventory[i]
+		if item.ID <= 0 || item.Count <= 0 {
+			continue
+		}
+		if s.ItemEntities != nil {
+			s.ItemEntities.SpawnItem(manager, px, py+1, pz, item.ID, item.Count, 40)
+		}
+		*item = game.ItemStack{}
+	}
+	// Reset XP
+	player.Experience = 0
+	player.ExperienceLevel = 0
+	player.ExperienceTotal = 0
+}
+
+// handleDeathWithMessage handles player death with a custom death message.
+func (s *SurvivalHandler) handleDeathWithMessage(manager *game.PlayerManager, player *game.Player, deathMessage string) {
+	// Drop inventory before marking dead
+	s.dropPlayerInventory(manager, player)
+
 	player.Dead = true
 	player.Health = 0
 
 	// Send combat kill to the dying player
-	deathMsg := chat.Text(player.Name + " died")
+	deathMsg := chat.Text(deathMessage)
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerCombatKill,
 		pk.VarInt(player.EID),
@@ -88,11 +199,6 @@ func (s *SurvivalHandler) handleDeath(manager *game.PlayerManager, player *game.
 	))
 
 	// Broadcast entity event (death animation = event 3) to all players
-	// EntityEvent uses Int (not VarInt) for entity ID and Byte for event
-	eidBytes := [4]byte{
-		byte(player.EID >> 24), byte(player.EID >> 16),
-		byte(player.EID >> 8), byte(player.EID),
-	}
 	manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pk.Marshal(
 			packetid.ClientboundEntityEvent,
@@ -100,15 +206,35 @@ func (s *SurvivalHandler) handleDeath(manager *game.PlayerManager, player *game.
 			pk.Byte(3), // death
 		))
 	})
-	_ = eidBytes
 
-	s.logf("Player %s died", player.Name)
+	// Play player death sound
+	px, py, pz := player.Position()
+	BroadcastSound(manager, SoundPlayerDeath, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+
+	// Broadcast death message to all players
+	broadcastMsg := chat.Message{Text: deathMessage, Color: "red"}
+	deathChatPkt := pk.Marshal(
+		packetid.ClientboundSystemChat,
+		broadcastMsg,
+		pk.Boolean(false),
+	)
+	manager.ForEach(func(p *game.Player) {
+		p.WritePacket(deathChatPkt)
+	})
+
+	s.logf("Player %s died: %s", player.Name, deathMessage)
 }
 
 // Kill forces a player death regardless of game mode.
 func (s *SurvivalHandler) Kill(manager *game.PlayerManager, player *game.Player) {
 	player.Health = 0
 	s.handleDeath(manager, player)
+}
+
+// KillWithMessage forces a player death with a custom death message.
+func (s *SurvivalHandler) KillWithMessage(manager *game.PlayerManager, player *game.Player, message string) {
+	player.Health = 0
+	s.handleDeathWithMessage(manager, player, message)
 }
 
 // HungerTick processes hunger mechanics for all players.
@@ -162,6 +288,7 @@ func (s *SurvivalHandler) HungerTick(manager *game.PlayerManager, tick int64) {
 
 		if changed {
 			SendSetHealth(p)
+			BroadcastHealthTag(manager, p)
 		}
 	})
 }
@@ -175,8 +302,7 @@ func (s *SurvivalHandler) VoidDamageTick(manager *game.PlayerManager, minY int) 
 		}
 		_, y, _ := p.Position()
 		if y < float64(minY)-64 {
-			s.Kill(manager, p)
-			s.logf("Player %s fell out of the world", p.Name)
+			s.KillWithMessage(manager, p, p.Name+" fell out of the world")
 		} else if y < float64(minY) {
 			s.ApplyDamage(manager, p, 0.2, s.VoidDamageTypeID)
 		}
@@ -220,13 +346,24 @@ func (h *FoodHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		return true
 	}
 
+	// Check offhand for shield when hand=1
 	slot := int(player.HeldSlot) + 36
+	if int(hand) == 1 {
+		slot = 45
+	}
 	invItem := &player.Inventory[slot]
 	if invItem.ID <= 0 || invItem.Count <= 0 {
 		return true
 	}
 
 	itemName := ItemNameByID(invItem.ID)
+
+	// Shield use: start blocking
+	if itemName == "shield" {
+		player.Blocking = true
+		return true
+	}
+
 	food := LookupFood(itemName)
 	if food == nil {
 		return true // not food
@@ -302,5 +439,33 @@ func CancelEating(player *game.Player) {
 func (h *FoodHandler) logf(format string, args ...any) {
 	if h.Logger != nil {
 		h.Logger.Printf(format, args...)
+	}
+}
+
+// isHoldingShield returns true if the player has a shield in mainhand or offhand.
+func isHoldingShield(player *game.Player) bool {
+	offhand := ItemNameByID(player.Inventory[45].ID)
+	if offhand == "shield" {
+		return true
+	}
+	mainhand := ItemNameByID(player.Inventory[player.HeldSlot+36].ID)
+	return mainhand == "shield"
+}
+
+// reduceShieldDurability reduces shield durability by 1.
+func reduceShieldDurability(player *game.Player) {
+	// Check offhand first, then mainhand
+	for _, slot := range []int{45, int(player.HeldSlot) + 36} {
+		if ItemNameByID(player.Inventory[slot].ID) == "shield" {
+			if player.Inventory[slot].MaxDurability > 0 {
+				player.Inventory[slot].Durability--
+				if player.Inventory[slot].Durability <= 0 {
+					player.Inventory[slot] = game.ItemStack{}
+					player.Blocking = false
+				}
+				SendSlotUpdate(player, slot)
+			}
+			return
+		}
 	}
 }

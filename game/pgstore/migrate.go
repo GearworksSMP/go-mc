@@ -46,6 +46,28 @@ var migrations = []string{
 	// Version 2 → 3: add inventory column
 	`ALTER TABLE players ADD COLUMN IF NOT EXISTS inventory JSONB;
 	UPDATE schema_version SET version = 3;`,
+
+	// Version 3 → 4: add block_entities table and XP columns
+	`CREATE TABLE IF NOT EXISTS block_entities (
+		dimension TEXT NOT NULL DEFAULT 'overworld',
+		x INTEGER NOT NULL,
+		y INTEGER NOT NULL,
+		z INTEGER NOT NULL,
+		type TEXT NOT NULL,
+		data JSONB NOT NULL,
+		PRIMARY KEY (dimension, x, y, z)
+	);
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS experience REAL NOT NULL DEFAULT 0;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS experience_level INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS experience_total INTEGER NOT NULL DEFAULT 0;
+	UPDATE schema_version SET version = 4;`,
+
+	// Version 4 → 5: add spawn point columns
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS spawn_x DOUBLE PRECISION NOT NULL DEFAULT 0;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS spawn_y DOUBLE PRECISION NOT NULL DEFAULT 0;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS spawn_z DOUBLE PRECISION NOT NULL DEFAULT 0;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS has_spawn_point BOOLEAN NOT NULL DEFAULT false;
+	UPDATE schema_version SET version = 5;`,
 }
 
 // Migrate runs all pending schema migrations.

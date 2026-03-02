@@ -175,11 +175,71 @@ var blockHardness = map[string]float64{
 	"bricks":             2.0,
 	"sandstone":          0.8,
 
+	// Interactive blocks
+	"oak_door":           3.0,
+	"spruce_door":        3.0,
+	"birch_door":         3.0,
+	"jungle_door":        3.0,
+	"acacia_door":        3.0,
+	"dark_oak_door":      3.0,
+	"cherry_door":        3.0,
+	"mangrove_door":      3.0,
+	"bamboo_door":        3.0,
+	"crimson_door":       3.0,
+	"warped_door":        3.0,
+	"iron_door":          5.0,
+	"lever":              0.5,
+	"stone_button":       0.5,
+	"oak_button":         0.5,
+	"spruce_button":      0.5,
+	"birch_button":       0.5,
+	"jungle_button":      0.5,
+	"acacia_button":      0.5,
+	"dark_oak_button":    0.5,
+
+	// Chest, furnace, bed
+	"chest":              2.5,
+	"furnace":            3.5,
+	"red_bed":            0.2,
+
 	// Unbreakable
 	"bedrock":            -1,
 	"end_portal_frame":   -1,
 	"barrier":            -1,
 	"command_block":      -1,
+
+	// Crops (instant break)
+	"wheat":              0,
+	"carrots":            0,
+	"potatoes":           0,
+	"beetroots":          0,
+
+	// Trapdoors
+	"oak_trapdoor":       3.0,
+	"spruce_trapdoor":    3.0,
+	"birch_trapdoor":     3.0,
+	"jungle_trapdoor":    3.0,
+	"acacia_trapdoor":    3.0,
+	"cherry_trapdoor":    3.0,
+	"dark_oak_trapdoor":  3.0,
+	"mangrove_trapdoor":  3.0,
+	"bamboo_trapdoor":    3.0,
+	"crimson_trapdoor":   3.0,
+	"warped_trapdoor":    3.0,
+	"iron_trapdoor":      5.0,
+
+	// Fence gates
+	"oak_fence_gate":       2.0,
+	"spruce_fence_gate":    2.0,
+	"birch_fence_gate":     2.0,
+	"jungle_fence_gate":    2.0,
+	"acacia_fence_gate":    2.0,
+	"cherry_fence_gate":    2.0,
+	"dark_oak_fence_gate":  2.0,
+	"mangrove_fence_gate":  2.0,
+	"bamboo_fence_gate":    2.0,
+	"crimson_fence_gate":   2.0,
+	"warped_fence_gate":    2.0,
 
 	// Leaves and plants
 	"oak_leaves":         0.2,
@@ -457,6 +517,116 @@ var blockDropOverrides = map[string]string{
 	"grass_block":  "dirt",
 	"grass":        "", // tall grass drops nothing
 	"tall_grass":   "", // tall grass drops nothing
+	// Crops are handled separately by dropCropItems
+	"wheat":        "",
+	"carrots":      "",
+	"potatoes":     "",
+	"beetroots":    "",
+}
+
+// ArmorType identifies an armor piece slot.
+type ArmorType int
+
+const (
+	ArmorHelmet ArmorType = iota
+	ArmorChestplate
+	ArmorLeggings
+	ArmorBoots
+)
+
+// ArmorInfo describes an armor item's type and material.
+type ArmorInfo struct {
+	Type     ArmorType
+	Material string // "leather", "iron", "gold", "diamond"
+}
+
+// GetArmorInfo returns the ArmorInfo for an item name, or nil if not armor.
+func GetArmorInfo(itemName string) *ArmorInfo {
+	if info, ok := armorItems[itemName]; ok {
+		return &info
+	}
+	return nil
+}
+
+// IsArmor returns true if the item is an armor piece.
+func IsArmor(itemName string) bool {
+	_, ok := armorItems[itemName]
+	return ok
+}
+
+// ArmorSlotFor returns the inventory slot index for an armor type.
+// Helmet=5, Chestplate=6, Leggings=7, Boots=8.
+func ArmorSlotFor(armorType ArmorType) int {
+	switch armorType {
+	case ArmorHelmet:
+		return 5
+	case ArmorChestplate:
+		return 6
+	case ArmorLeggings:
+		return 7
+	case ArmorBoots:
+		return 8
+	}
+	return -1
+}
+
+// GetArmorProtection returns the defense points for an armor item name.
+func GetArmorProtection(itemName string) int {
+	if p, ok := armorProtection[itemName]; ok {
+		return p
+	}
+	return 0
+}
+
+// GetArmorDurability returns the max durability for an armor item name, or 0 if not armor.
+func GetArmorDurability(itemName string) int32 {
+	if d, ok := armorMaxDurability[itemName]; ok {
+		return d
+	}
+	return 0
+}
+
+var armorItems = map[string]ArmorInfo{
+	"leather_helmet":      {ArmorHelmet, "leather"},
+	"leather_chestplate":  {ArmorChestplate, "leather"},
+	"leather_leggings":    {ArmorLeggings, "leather"},
+	"leather_boots":       {ArmorBoots, "leather"},
+	"golden_helmet":       {ArmorHelmet, "gold"},
+	"golden_chestplate":   {ArmorChestplate, "gold"},
+	"golden_leggings":     {ArmorLeggings, "gold"},
+	"golden_boots":        {ArmorBoots, "gold"},
+	"iron_helmet":         {ArmorHelmet, "iron"},
+	"iron_chestplate":     {ArmorChestplate, "iron"},
+	"iron_leggings":       {ArmorLeggings, "iron"},
+	"iron_boots":          {ArmorBoots, "iron"},
+	"diamond_helmet":      {ArmorHelmet, "diamond"},
+	"diamond_chestplate":  {ArmorChestplate, "diamond"},
+	"diamond_leggings":    {ArmorLeggings, "diamond"},
+	"diamond_boots":       {ArmorBoots, "diamond"},
+}
+
+var armorProtection = map[string]int{
+	"leather_helmet": 1, "leather_chestplate": 3, "leather_leggings": 2, "leather_boots": 1,
+	"golden_helmet": 2, "golden_chestplate": 5, "golden_leggings": 3, "golden_boots": 1,
+	"iron_helmet": 2, "iron_chestplate": 6, "iron_leggings": 5, "iron_boots": 2,
+	"diamond_helmet": 3, "diamond_chestplate": 8, "diamond_leggings": 6, "diamond_boots": 3,
+}
+
+var armorMaxDurability = map[string]int32{
+	"leather_helmet": 55, "leather_chestplate": 80, "leather_leggings": 75, "leather_boots": 65,
+	"golden_helmet": 77, "golden_chestplate": 112, "golden_leggings": 105, "golden_boots": 91,
+	"iron_helmet": 165, "iron_chestplate": 240, "iron_leggings": 225, "iron_boots": 195,
+	"diamond_helmet": 363, "diamond_chestplate": 528, "diamond_leggings": 495, "diamond_boots": 429,
+}
+
+// shieldMaxDurability is the max durability of a shield.
+const shieldMaxDurability int32 = 336
+
+// bucketActions maps bucket items to their fluid type or "pickup" for empty buckets.
+var bucketActions = map[string]string{
+	"water_bucket": "water",
+	"lava_bucket":  "lava",
+	"bucket":       "pickup",
 }
 
 var weaponDamage = map[string]float32{

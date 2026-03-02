@@ -24,3 +24,4 @@ data/packetid/generate.go
 /.cache/
 /.claude/
 chunk_*.bin
+/reference/

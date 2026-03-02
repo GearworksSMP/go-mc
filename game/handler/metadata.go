@@ -3,8 +3,10 @@ package handler
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -13,10 +15,12 @@ import (
 // Entity metadata serializer IDs (26.1-snapshot-2).
 // See https://minecraft.wiki/w/Java_Edition_protocol/Entity_metadata
 const (
-	metaSerializerByte  = 0
-	metaSerializerInt   = 1
-	metaSerializerFloat = 3
-	metaSerializerPose  = 20
+	metaSerializerByte    = 0
+	metaSerializerInt     = 1
+	metaSerializerFloat   = 3
+	metaSerializerOptChat = 6
+	metaSerializerBoolean = 8
+	metaSerializerPose    = 20
 )
 
 // MetadataWriter builds entity metadata entries.
@@ -41,6 +45,29 @@ func (w *MetadataWriter) WriteFloat(index uint8, value float32) {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], math.Float32bits(value))
 	w.buf.Write(b[:])
+}
+
+// WriteBoolean writes a BOOLEAN metadata entry.
+func (w *MetadataWriter) WriteBoolean(index uint8, value bool) {
+	w.writeIndex(index, metaSerializerBoolean)
+	if value {
+		w.buf.WriteByte(1)
+	} else {
+		w.buf.WriteByte(0)
+	}
+}
+
+// WriteOptChat writes an Optional Chat metadata entry.
+// If msg is non-empty, writes Boolean(true) + chat JSON as NBT.
+func (w *MetadataWriter) WriteOptChat(index uint8, msg chat.Message) {
+	w.writeIndex(index, metaSerializerOptChat)
+	if msg.Text == "" {
+		w.buf.WriteByte(0) // not present
+		return
+	}
+	w.buf.WriteByte(1) // present
+	// Write chat as NBT compound (simplified: just string tag)
+	msg.WriteTo(&w.buf)
 }
 
 // WritePose writes a POSE metadata entry (VarInt enum).
@@ -89,13 +116,42 @@ func SendEntityMetadata(target *game.Player, entityID int32, data []byte) {
 }
 
 // SendFullPlayerMetadata sends initial metadata for a player to target.
-// Includes: entity flags (index 0), pose (index 6), and skin parts (index 16).
+// Includes: entity flags (index 0), custom name (index 2), custom name visible (index 3),
+// pose (index 6), and skin parts (index 16).
 func SendFullPlayerMetadata(target, about *game.Player) {
 	var w MetadataWriter
-	w.WriteByte(0, EntityFlags(about))                       // entity flags
-	w.WritePose(6, playerPose(about))                        // pose
-	w.WriteByte(16, int8(about.SkinParts))                   // displayed skin parts
+	w.WriteByte(0, EntityFlags(about))          // entity flags
+	w.WriteOptChat(2, healthDisplayText(about)) // custom name
+	w.WriteBoolean(3, true)                     // custom name visible
+	w.WritePose(6, playerPose(about))           // pose
+	w.WriteByte(16, int8(about.SkinParts))      // displayed skin parts
 	SendEntityMetadata(target, about.EID, w.Bytes())
+}
+
+// healthDisplayText returns a chat message showing the player's health.
+func healthDisplayText(p *game.Player) chat.Message {
+	hearts := int(p.Health + 0.5)
+	if hearts < 0 {
+		hearts = 0
+	}
+	return chat.Message{
+		Text:  fmt.Sprintf("%s  %d", p.Name, hearts),
+		Color: "red",
+	}
+}
+
+// BroadcastHealthTag sends updated health display to all other players.
+func BroadcastHealthTag(manager *game.PlayerManager, player *game.Player) {
+	var w MetadataWriter
+	w.WriteOptChat(2, healthDisplayText(player))
+	w.WriteBoolean(3, true)
+	data := w.Bytes()
+
+	manager.ForEach(func(p *game.Player) {
+		if p.UUID != player.UUID {
+			SendEntityMetadata(p, player.EID, data)
+		}
+	})
 }
 
 // BroadcastEntityFlags broadcasts updated entity flags + pose to all other players.

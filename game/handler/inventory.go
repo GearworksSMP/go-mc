@@ -11,9 +11,13 @@ import (
 
 // InventoryHandler processes inventory interaction packets.
 type InventoryHandler struct {
-	Logger   *log.Logger
-	Chests   *ChestManager
-	Furnaces *FurnaceManager
+	Logger           *log.Logger
+	Chests           *ChestManager
+	Furnaces         *FurnaceManager
+	EnchantMgr       *EnchantManager
+	AnvilMgr         *AnvilManager
+	VillagerMgr      *VillagerManager
+	OnContainerClose func(containerType string, pos [3]int) // called when chest/furnace closed
 }
 
 // HandlePacket processes a single packet for the given player.
@@ -26,6 +30,17 @@ func (h *InventoryHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 	case packetid.ServerboundContainerClose:
 		h.handleContainerClose(player, p)
 		return true
+	case packetid.ServerboundContainerButtonClick:
+		h.handleContainerButtonClick(player, p)
+		return true
+	case packetid.ServerboundRenameItem:
+		HandleRenameItem(player, p)
+		return true
+	case packetid.ServerboundSelectTrade:
+		if h.VillagerMgr != nil {
+			return h.VillagerMgr.HandleSelectTrade(player, p)
+		}
+		return false
 	}
 	return false
 }
@@ -125,13 +140,17 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 			case 4:
 				h.handleChestDrop(player, cs, slot, int(button))
 			}
-			SendChestWindowContent(player, cs)
+			if cs.Partner != nil {
+				SendDoubleChestWindowContent(player, cs)
+			} else {
+				SendChestWindowContent(player, cs)
+			}
 		}
 		return
 	}
 
 	if windowID == 3 && player.OpenWindowID == 3 && h.Furnaces != nil {
-		fs := h.Furnaces.getOrCreate(player.OpenFurnacePos[0], player.OpenFurnacePos[1], player.OpenFurnacePos[2])
+		fs := h.Furnaces.GetOrCreate(player.OpenFurnacePos[0], player.OpenFurnacePos[1], player.OpenFurnacePos[2])
 		switch mode {
 		case 0:
 			h.handleFurnaceClick(player, fs, slot, int(button))
@@ -143,6 +162,27 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 			h.handleFurnaceDrop(player, fs, slot, int(button))
 		}
 		SendFurnaceWindowContent(player, fs)
+		return
+	}
+
+	if player.AnvilSession != nil && int(windowID) == player.AnvilSession.WindowID && player.OpenWindowID == player.AnvilSession.WindowID {
+		switch mode {
+		case 0:
+			h.handleAnvilClick(player, slot, int(button))
+		case 1:
+			h.handleAnvilShiftClick(player, slot)
+		case 2:
+			h.handleAnvilNumberKey(player, slot, int(button))
+		case 4:
+			h.handleAnvilDrop(player, slot, int(button))
+		}
+		ComputeAnvilResult(player)
+		SendAnvilWindowContent(player)
+		return
+	}
+
+	if int(windowID) == MerchantWindowID && player.OpenWindowID == MerchantWindowID && h.VillagerMgr != nil {
+		h.handleMerchantClick(player, slot, int(button), int(mode))
 		return
 	}
 
@@ -198,6 +238,19 @@ func (h *InventoryHandler) handleNormalClick(player *game.Player, slot, button i
 	}
 
 	invItem := &player.Inventory[slot]
+
+	// Armor slot restrictions: only allow correct armor type in slots 5-8
+	if slot >= 5 && slot <= 8 && player.CursorItem.ID > 0 {
+		cursorName := ItemNameByID(player.CursorItem.ID)
+		armorInfo := GetArmorInfo(cursorName)
+		if armorInfo == nil || ArmorSlotFor(armorInfo.Type) != slot {
+			// Not the correct armor piece for this slot — only allow picking up
+			if button == 0 && invItem.ID > 0 {
+				player.CursorItem, *invItem = *invItem, player.CursorItem
+			}
+			return
+		}
+	}
 
 	if button == 0 { // Left click
 		if player.CursorItem.ID == 0 && invItem.ID == 0 {
@@ -274,6 +327,35 @@ func (h *InventoryHandler) handleShiftClick(player *game.Player, slot int) {
 		return
 	}
 
+	// Auto-equip armor on shift-click
+	srcName := ItemNameByID(src.ID)
+	if armorInfo := GetArmorInfo(srcName); armorInfo != nil && slot >= 9 {
+		targetSlot := ArmorSlotFor(armorInfo.Type)
+		if targetSlot >= 5 && targetSlot <= 8 {
+			dst := &player.Inventory[targetSlot]
+			if dst.ID == 0 || dst.Count <= 0 {
+				*dst = *src
+				*src = game.ItemStack{}
+			} else {
+				// Swap with existing armor
+				*src, *dst = *dst, *src
+			}
+			return
+		}
+	}
+
+	// Shield goes to offhand slot 45
+	if srcName == "shield" && slot >= 9 && slot != 45 {
+		dst := &player.Inventory[45]
+		if dst.ID == 0 || dst.Count <= 0 {
+			*dst = *src
+			*src = game.ItemStack{}
+		} else {
+			*src, *dst = *dst, *src
+		}
+		return
+	}
+
 	if slot >= 36 && slot <= 44 {
 		// Hotbar → main inventory (9-35)
 		h.moveItem(player, slot, 9, 35)
@@ -281,7 +363,7 @@ func (h *InventoryHandler) handleShiftClick(player *game.Player, slot int) {
 		// Main inventory → hotbar (36-44)
 		h.moveItem(player, slot, 36, 44)
 	} else if slot >= 1 && slot <= 8 {
-		// Crafting area → main/hotbar (9-44)
+		// Crafting area/armor → main/hotbar (9-44)
 		h.moveItem(player, slot, 9, 44)
 	}
 }
@@ -382,8 +464,35 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 				*itm = game.ItemStack{}
 			}
 		}
-	case 2, 3:
-		// Closing chest or furnace — no items to return (they stay in container)
+	case 2:
+		// Closing chest — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("chest", player.OpenChestPos)
+		}
+	case 3:
+		// Closing furnace — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("furnace", player.OpenFurnacePos)
+		}
+	case 10:
+		// Closing enchanting table — clear session
+		player.EnchantSession = nil
+	case MerchantWindowID:
+		// Closing merchant window
+		if h.VillagerMgr != nil {
+			h.VillagerMgr.OnMerchantClose(player)
+		}
+	case 11:
+		// Closing anvil — return input/material items to inventory
+		if player.AnvilSession != nil {
+			if player.AnvilSession.Input.ID > 0 && player.AnvilSession.Input.Count > 0 {
+				player.Inventory.AddItem(player.AnvilSession.Input.ID, player.AnvilSession.Input.Count)
+			}
+			if player.AnvilSession.Material.ID > 0 && player.AnvilSession.Material.Count > 0 {
+				player.Inventory.AddItem(player.AnvilSession.Material.ID, player.AnvilSession.Material.Count)
+			}
+			player.AnvilSession = nil
+		}
 	default:
 		// Closing player inventory — return 2x2 crafting grid items (slots 1-4)
 		for i := 1; i <= 4; i++ {
@@ -586,6 +695,20 @@ func (h *InventoryHandler) handleCraftingTableShiftClick(player *game.Player, sl
 	src := craftingTableSlot(player, slot)
 	if src == nil || src.ID == 0 || src.Count <= 0 {
 		return
+	}
+
+	// Auto-equip armor on shift-click from grid or inventory areas
+	srcName := ItemNameByID(src.ID)
+	if armorInfo := GetArmorInfo(srcName); armorInfo != nil {
+		targetSlot := ArmorSlotFor(armorInfo.Type)
+		if targetSlot >= 5 && targetSlot <= 8 {
+			dst := &player.Inventory[targetSlot]
+			if dst.ID == 0 || dst.Count <= 0 {
+				*dst = *src
+				*src = game.ItemStack{}
+				return
+			}
+		}
 	}
 
 	if slot >= 1 && slot <= 9 {
@@ -802,18 +925,31 @@ func (h *InventoryHandler) handleChestShiftClick(player *game.Player, cs *ChestS
 		return
 	}
 
-	if slot >= 0 && slot <= 26 {
-		// Chest → player inventory (9-44)
-		moveToPlayerInv(player, src)
-	} else if slot >= 27 && slot <= 53 {
-		// Main inv → chest first, then hotbar
-		if !moveToChest(cs, src) {
-			moveToRange(player, src, 36, 44)
+	if cs.Partner != nil {
+		// Double chest: 0-53 = chest, 54-80 = main, 81-89 = hotbar
+		if slot >= 0 && slot <= 53 {
+			moveToPlayerInv(player, src)
+		} else if slot >= 54 && slot <= 80 {
+			if !moveToDoubleChest(cs, src) {
+				moveToRange(player, src, 36, 44)
+			}
+		} else if slot >= 81 && slot <= 89 {
+			if !moveToDoubleChest(cs, src) {
+				moveToRange(player, src, 9, 35)
+			}
 		}
-	} else if slot >= 54 && slot <= 62 {
-		// Hotbar → chest first, then main
-		if !moveToChest(cs, src) {
-			moveToRange(player, src, 9, 35)
+	} else {
+		// Single chest: 0-26 = chest, 27-53 = main, 54-62 = hotbar
+		if slot >= 0 && slot <= 26 {
+			moveToPlayerInv(player, src)
+		} else if slot >= 27 && slot <= 53 {
+			if !moveToChest(cs, src) {
+				moveToRange(player, src, 36, 44)
+			}
+		} else if slot >= 54 && slot <= 62 {
+			if !moveToChest(cs, src) {
+				moveToRange(player, src, 9, 35)
+			}
 		}
 	}
 }
@@ -878,6 +1014,38 @@ func moveToChest(cs *ChestState, src *game.ItemStack) bool {
 			*dst = *src
 			*src = game.ItemStack{}
 			return true
+		}
+	}
+	return false
+}
+
+// moveToDoubleChest tries to move src into a double chest (both halves). Returns true if fully moved.
+func moveToDoubleChest(cs *ChestState, src *game.ItemStack) bool {
+	left, right := doubleChestOrder(cs)
+	// Try left half first, then right
+	for _, half := range []*ChestState{left, right} {
+		for i := 0; i < 27; i++ {
+			dst := &half.Items[i]
+			if dst.ID == src.ID && dst.Count > 0 && dst.Count < 64 && dst.MaxDurability == 0 {
+				space := int32(64) - dst.Count
+				if space >= src.Count {
+					dst.Count += src.Count
+					*src = game.ItemStack{}
+					return true
+				}
+				dst.Count = 64
+				src.Count -= space
+			}
+		}
+	}
+	for _, half := range []*ChestState{left, right} {
+		for i := 0; i < 27; i++ {
+			dst := &half.Items[i]
+			if dst.ID == 0 || dst.Count <= 0 {
+				*dst = *src
+				*src = game.ItemStack{}
+				return true
+			}
 		}
 	}
 	return false
@@ -1106,8 +1274,310 @@ func genericClick(player *game.Player, invItem *game.ItemStack, button int) {
 	}
 }
 
+// handleContainerButtonClick handles ServerboundContainerButtonClick.
+// Used for enchanting table button clicks.
+func (h *InventoryHandler) handleContainerButtonClick(player *game.Player, p pk.Packet) {
+	var windowID pk.VarInt
+	var buttonID pk.VarInt
+	if err := p.Scan(&windowID, &buttonID); err != nil {
+		return
+	}
+	if h.EnchantMgr != nil && player.EnchantSession != nil && int(windowID) == player.EnchantSession.WindowID {
+		h.EnchantMgr.HandleEnchantButton(player, int(buttonID))
+	}
+}
+
 func (h *InventoryHandler) logf(format string, args ...any) {
 	if h.Logger != nil {
 		h.Logger.Printf(format, args...)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Merchant (window ID 20) handlers
+// ---------------------------------------------------------------------------
+
+// handleMerchantClick processes clicks in the merchant (villager) window.
+// The merchant window has 3 virtual slots (0=input1, 1=input2, 2=result)
+// plus the player's main inventory (3-29) and hotbar (30-38).
+// The actual trade execution is handled server-side via ExecuteTrade.
+func (h *InventoryHandler) handleMerchantClick(player *game.Player, slot, button, mode int) {
+	if h.VillagerMgr == nil {
+		return
+	}
+
+	// Clicking on result slot (2) triggers trade execution
+	if slot == 2 && (mode == 0 || mode == 1) {
+		// Find the first non-exhausted trade to execute.
+		// In practice, the client should have sent ServerboundSelectTrade before clicking.
+		idx := h.VillagerMgr.GetOpenTradeIndex(player)
+		if idx >= 0 {
+			h.VillagerMgr.ExecuteTrade(player, idx)
+		}
+		return
+	}
+
+	// For player inventory slots (3-38), handle normally
+	invItem := MerchantSlot(player, slot)
+	if invItem == nil {
+		// Virtual slots 0-1 or out of range: ignore clicks on input slots
+		// (Minecraft's merchant window doesn't let players put items in manually through clicks)
+		return
+	}
+
+	switch mode {
+	case 0:
+		genericClick(player, invItem, button)
+	case 1:
+		// Shift-click: move items between main/hotbar
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			return
+		}
+		if slot >= 3 && slot <= 29 {
+			moveToRange(player, invItem, 36, 44)
+		} else if slot >= 30 && slot <= 38 {
+			moveToRange(player, invItem, 9, 35)
+		}
+	case 2:
+		// Number key swap
+		hotbarSlot := button + 36
+		if hotbarSlot >= 36 && hotbarSlot <= 44 {
+			*invItem, player.Inventory[hotbarSlot] = player.Inventory[hotbarSlot], *invItem
+		}
+	case 4:
+		// Drop
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			return
+		}
+		if button == 0 {
+			invItem.Count--
+			if invItem.Count <= 0 {
+				*invItem = game.ItemStack{}
+			}
+		} else if button == 1 {
+			*invItem = game.ItemStack{}
+		}
+	}
+
+	SendMerchantWindowContent(player)
+}
+
+// ---------------------------------------------------------------------------
+// Anvil (window ID 11) handlers
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleAnvilClick(player *game.Player, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	// Slot 2 (output) — take-only, requires XP
+	if slot == 2 {
+		h.handleAnvilOutputClick(player)
+		return
+	}
+
+	invItem := AnvilSlot(player, slot)
+	if invItem == nil {
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleAnvilOutputClick(player *game.Player) {
+	if player.AnvilSession == nil {
+		return
+	}
+
+	output := player.AnvilSession.Output
+	if output.ID <= 0 || output.Count <= 0 {
+		return
+	}
+
+	cost := player.AnvilSession.RepairCost
+	if cost <= 0 {
+		return
+	}
+
+	// Check XP
+	if player.ExperienceLevel < cost {
+		return
+	}
+
+	// Can the cursor accept this item?
+	if player.CursorItem.ID != 0 && player.CursorItem.ID != output.ID {
+		return
+	}
+	if player.CursorItem.ID == output.ID && player.CursorItem.Count+output.Count > 64 {
+		return
+	}
+
+	// Consume XP
+	player.ExperienceLevel -= cost
+	if player.ExperienceLevel < 0 {
+		player.ExperienceLevel = 0
+	}
+	SendExperience(player)
+
+	// Give result to cursor
+	if player.CursorItem.ID == 0 {
+		player.CursorItem = output
+	} else {
+		player.CursorItem.Count += output.Count
+	}
+
+	// Consume input and material
+	player.AnvilSession.Input = game.ItemStack{}
+	player.AnvilSession.Material = game.ItemStack{}
+	player.AnvilSession.Output = game.ItemStack{}
+	player.AnvilSession.RepairCost = 0
+	player.AnvilSession.RenameText = ""
+}
+
+func (h *InventoryHandler) handleAnvilShiftClick(player *game.Player, slot int) {
+	if slot == 2 {
+		h.handleAnvilOutputShiftClick(player)
+		return
+	}
+
+	src := AnvilSlot(player, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	if slot == 0 || slot == 1 {
+		// Anvil input/material → player inventory
+		moveToPlayerInv(player, src)
+	} else if slot >= 3 && slot <= 29 {
+		// Main inv → try anvil input first, then material, else hotbar
+		if player.AnvilSession != nil {
+			if player.AnvilSession.Input.ID == 0 || player.AnvilSession.Input.Count <= 0 {
+				player.AnvilSession.Input = *src
+				*src = game.ItemStack{}
+				return
+			}
+			if player.AnvilSession.Material.ID == 0 || player.AnvilSession.Material.Count <= 0 {
+				player.AnvilSession.Material = *src
+				*src = game.ItemStack{}
+				return
+			}
+		}
+		moveToRange(player, src, 36, 44)
+	} else if slot >= 30 && slot <= 38 {
+		// Hotbar → try anvil input first, then material, else main inv
+		if player.AnvilSession != nil {
+			if player.AnvilSession.Input.ID == 0 || player.AnvilSession.Input.Count <= 0 {
+				player.AnvilSession.Input = *src
+				*src = game.ItemStack{}
+				return
+			}
+			if player.AnvilSession.Material.ID == 0 || player.AnvilSession.Material.Count <= 0 {
+				player.AnvilSession.Material = *src
+				*src = game.ItemStack{}
+				return
+			}
+		}
+		moveToRange(player, src, 9, 35)
+	}
+}
+
+func (h *InventoryHandler) handleAnvilOutputShiftClick(player *game.Player) {
+	if player.AnvilSession == nil {
+		return
+	}
+
+	output := player.AnvilSession.Output
+	if output.ID <= 0 || output.Count <= 0 {
+		return
+	}
+
+	cost := player.AnvilSession.RepairCost
+	if cost <= 0 {
+		return
+	}
+
+	// Check XP
+	if player.ExperienceLevel < cost {
+		return
+	}
+
+	// Try to move to inventory
+	addedSlot := player.Inventory.AddItem(output.ID, output.Count)
+	if addedSlot < 0 {
+		return // inventory full
+	}
+
+	// Consume XP
+	player.ExperienceLevel -= cost
+	if player.ExperienceLevel < 0 {
+		player.ExperienceLevel = 0
+	}
+	SendExperience(player)
+
+	// Consume input and material
+	player.AnvilSession.Input = game.ItemStack{}
+	player.AnvilSession.Material = game.ItemStack{}
+	player.AnvilSession.Output = game.ItemStack{}
+	player.AnvilSession.RepairCost = 0
+	player.AnvilSession.RenameText = ""
+}
+
+func (h *InventoryHandler) handleAnvilNumberKey(player *game.Player, slot, button int) {
+	hotbarSlot := button + 36
+	if hotbarSlot < 36 || hotbarSlot > 44 {
+		return
+	}
+
+	// Don't allow number-key swap into the output slot
+	if slot == 2 {
+		return
+	}
+
+	src := AnvilSlot(player, slot)
+	if src == nil {
+		return
+	}
+
+	*src, player.Inventory[hotbarSlot] = player.Inventory[hotbarSlot], *src
+}
+
+func (h *InventoryHandler) handleAnvilDrop(player *game.Player, slot, button int) {
+	if slot == -999 {
+		if button == 0 && player.CursorItem.Count > 0 {
+			player.CursorItem.Count--
+			if player.CursorItem.Count <= 0 {
+				player.CursorItem = game.ItemStack{}
+			}
+		} else if button == 1 {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	// Don't allow dropping from output slot
+	if slot == 2 {
+		return
+	}
+
+	src := AnvilSlot(player, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
 	}
 }

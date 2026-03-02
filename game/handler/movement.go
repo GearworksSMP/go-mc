@@ -3,9 +3,11 @@ package handler
 
 import (
 	"log"
+	"math"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -16,6 +18,7 @@ type MovementHandler struct {
 	Logger          *log.Logger
 	Encoder         *ChunkSender
 	SurvivalHandler *SurvivalHandler
+	CropMgr         *CropManager
 }
 
 // HandlePacket processes a single packet for the given player.
@@ -29,6 +32,7 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			return true
 		}
 		onGround := (int32(flags) & 0x01) != 0
+		wasOnGround := player.OnGround
 		player.OnGround = onGround
 		oldX, oldY, oldZ := player.Position()
 		oldChunk := player.ChunkPos()
@@ -40,6 +44,15 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		h.handleSneakFlag(player, int32(flags))
 		h.trackFall(player, oldY, float64(y), onGround)
 		AddSprintExhaustion(player, float64(x)-oldX, float64(z)-oldZ)
+		// Jump exhaustion
+		if wasOnGround && !onGround && float64(y) > oldY+0.1 {
+			if player.Sprinting {
+				player.Exhaustion += 0.2 // sprint jump
+			} else {
+				player.Exhaustion += 0.05 // normal jump
+			}
+		}
+		player.WasOnGround = wasOnGround
 		h.broadcastPos(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
 		return true
 
@@ -51,6 +64,7 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			return true
 		}
 		onGround := (int32(flags) & 0x01) != 0
+		wasOnGround := player.OnGround
 		player.OnGround = onGround
 		oldX, oldY, oldZ := player.Position()
 		oldChunk := player.ChunkPos()
@@ -63,6 +77,15 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		h.handleSneakFlag(player, int32(flags))
 		h.trackFall(player, oldY, float64(y), onGround)
 		AddSprintExhaustion(player, float64(x)-oldX, float64(z)-oldZ)
+		// Jump exhaustion
+		if wasOnGround && !onGround && float64(y) > oldY+0.1 {
+			if player.Sprinting {
+				player.Exhaustion += 0.2 // sprint jump
+			} else {
+				player.Exhaustion += 0.05 // normal jump
+			}
+		}
+		player.WasOnGround = wasOnGround
 		h.broadcastPosRot(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z), float32(yaw), float32(pitch))
 		return true
 
@@ -282,7 +305,34 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		if fallDist > 3 {
 			damage := float32(fallDist - 3)
 			if h.SurvivalHandler != nil {
+				player.LastDamageMessage = player.Name + " fell from a high place"
 				h.SurvivalHandler.ApplyDamage(h.Manager, player, damage, h.SurvivalHandler.FallDamageTypeID)
+			}
+		}
+
+		// Farmland trampling: any significant fall converts farmland to dirt
+		if fallDist > 0.5 {
+			bx := int(math.Floor(player.X))
+			by := int(math.Floor(player.Y)) - 1
+			bz := int(math.Floor(player.Z))
+			if state, err := h.World.GetBlock(bx, by, bz); err == nil {
+				blockName := BlockNameFromState(int(state))
+				if blockName == "farmland" {
+					dirtID, ok := block.ToStateID[block.Dirt{}]
+					if ok {
+						h.World.SetBlock(bx, by, bz, dirtID)
+						broadcastBlockUpdateDirect(h.Manager, bx, by, bz, int32(dirtID))
+					}
+					// Break crop on top if any
+					if h.CropMgr != nil {
+						aboveState, err := h.World.GetBlock(bx, by+1, bz)
+						if err == nil && isCropBlock(BlockNameFromState(int(aboveState))) {
+							h.World.SetBlock(bx, by+1, bz, 0)
+							broadcastBlockUpdateDirect(h.Manager, bx, by+1, bz, 0)
+							h.CropMgr.UnregisterCrop(bx, by+1, bz)
+						}
+					}
+				}
 			}
 		}
 	}

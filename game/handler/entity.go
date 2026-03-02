@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"bytes"
+
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -54,8 +57,15 @@ func SendSpawnPlayer(target, about *game.Player) {
 	))
 }
 
-// BroadcastPlayerJoin sends PlayerInfoUpdate + AddEntity + metadata for 'joined' to all OTHER players.
+// BroadcastPlayerJoin sends PlayerInfoUpdate + AddEntity + metadata for 'joined' to all OTHER players,
+// and broadcasts a join message.
 func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
+	joinMsg := chat.Message{Text: joined.Name + " joined the game", Color: "yellow"}
+	joinPkt := pk.Marshal(
+		packetid.ClientboundSystemChat,
+		joinMsg,
+		pk.Boolean(false),
+	)
 	manager.ForEach(func(p *game.Player) {
 		if p.UUID == joined.UUID {
 			return
@@ -63,6 +73,8 @@ func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
 		SendPlayerInfo(p, joined)
 		SendSpawnPlayer(p, joined)
 		SendFullPlayerMetadata(p, joined)
+		SendEquipment(p, joined)
+		p.WritePacket(joinPkt)
 	})
 }
 
@@ -75,11 +87,19 @@ func SendExistingPlayers(manager *game.PlayerManager, newPlayer *game.Player) {
 		SendPlayerInfo(newPlayer, p)
 		SendSpawnPlayer(newPlayer, p)
 		SendFullPlayerMetadata(newPlayer, p)
+		SendEquipment(newPlayer, p)
 	})
 }
 
-// BroadcastPlayerLeave sends RemoveEntities + PlayerInfoRemove for 'left' to all remaining players.
+// BroadcastPlayerLeave sends RemoveEntities + PlayerInfoRemove for 'left' to all remaining players,
+// and broadcasts a leave message.
 func BroadcastPlayerLeave(manager *game.PlayerManager, left *game.Player) {
+	leaveMsg := chat.Message{Text: left.Name + " left the game", Color: "yellow"}
+	leavePkt := pk.Marshal(
+		packetid.ClientboundSystemChat,
+		leaveMsg,
+		pk.Boolean(false),
+	)
 	manager.ForEach(func(p *game.Player) {
 		if p.UUID == left.UUID {
 			return
@@ -96,6 +116,58 @@ func BroadcastPlayerLeave(manager *game.PlayerManager, left *game.Player) {
 			pk.VarInt(1),            // count
 			pk.UUID(left.UUID),      // UUID
 		))
+		p.WritePacket(leavePkt)
+	})
+}
+
+// SendEquipment sends ClientboundSetEquipment for 'about' to 'target'.
+// Equipment slots: 0=mainhand, 1=offhand, 2=boots, 3=leggings, 4=chestplate, 5=helmet.
+func SendEquipment(target, about *game.Player) {
+	type equipEntry struct {
+		wireSlot byte
+		invSlot  int
+	}
+	entries := []equipEntry{
+		{0, int(about.HeldSlot) + 36}, // mainhand
+		{1, 45},                        // offhand
+		{2, 8},                         // boots
+		{3, 7},                         // leggings
+		{4, 6},                         // chestplate
+		{5, 5},                         // helmet
+	}
+
+	var buf []byte
+	for i, e := range entries {
+		slotByte := e.wireSlot
+		if i < len(entries)-1 {
+			slotByte |= 0x80 // set MSB for all except last
+		}
+		buf = append(buf, slotByte)
+		s := about.Inventory[e.invSlot].ToSlot()
+		slotBytes := encodeSlot261(s)
+		buf = append(buf, slotBytes...)
+	}
+
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundSetEquipment,
+		pk.VarInt(about.EID),
+		pk.PluginMessageData(buf),
+	))
+}
+
+// encodeSlot261 encodes a Slot261 to bytes.
+func encodeSlot261(s game.Slot261) []byte {
+	var buf bytes.Buffer
+	s.WriteTo(&buf)
+	return buf.Bytes()
+}
+
+// BroadcastEquipment sends equipment of 'player' to all other players.
+func BroadcastEquipment(manager *game.PlayerManager, player *game.Player) {
+	manager.ForEach(func(p *game.Player) {
+		if p.UUID != player.UUID {
+			SendEquipment(p, player)
+		}
 	})
 }
 

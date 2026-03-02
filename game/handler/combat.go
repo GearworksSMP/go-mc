@@ -10,10 +10,12 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-// CombatHandler handles player-vs-player attacks via ServerboundInteract.
+// CombatHandler handles player-vs-player and player-vs-mob attacks via ServerboundInteract.
 type CombatHandler struct {
 	Manager         *game.PlayerManager
 	SurvivalHandler *SurvivalHandler
+	MobManager      *MobManager
+	VillagerMgr     *VillagerManager
 	Logger          *log.Logger
 }
 
@@ -32,17 +34,48 @@ func (h *CombatHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 
 	if action == 1 { // attack
 		h.handleAttack(player, int32(entityID))
+	} else if action == 0 { // interact (right-click)
+		h.handleInteract(player, int32(entityID))
 	}
 	return true
 }
 
-func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
-	if attacker.Dead {
+func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
+	if player.Dead {
 		return
 	}
 
-	target := h.Manager.GetByEID(targetEID)
-	if target == nil || target.Dead {
+	// Check for villager interaction (right-click to trade)
+	if h.VillagerMgr != nil && h.VillagerMgr.IsVillager(targetEID) {
+		h.VillagerMgr.OpenMerchantUI(player, targetEID)
+		return
+	}
+
+	// Check for passive mob feeding
+	if h.MobManager != nil && h.MobManager.IsPassiveMob(targetEID) {
+		mobType := h.MobManager.GetMobType(targetEID)
+		heldSlot := int(player.HeldSlot) + 36
+		heldItem := &player.Inventory[heldSlot]
+		if heldItem.ID > 0 {
+			heldName := ItemNameByID(heldItem.ID)
+			if isBreedingFood(mobType, heldName) {
+				if h.MobManager.FeedMob(targetEID) {
+					// Consume one food item in survival
+					if player.GameMode == 0 {
+						heldItem.Count--
+						if heldItem.Count <= 0 {
+							*heldItem = game.ItemStack{}
+						}
+						SendSlotUpdate(player, heldSlot)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
+	if attacker.Dead {
 		return
 	}
 
@@ -61,13 +94,35 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		strength = 0
 	}
 
+	// Sharpness enchantment: +0.5*level + 0.5 damage
+	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
+	if heldItem.Enchantments != nil {
+		if sharpLvl := heldItem.Enchantments["sharpness"]; sharpLvl > 0 {
+			baseDamage += float32(sharpLvl)*0.5 + 0.5
+		}
+	}
+
 	// Vanilla damage formula: damage = baseDamage * (0.2 + strength^2 * 0.8)
 	damage := baseDamage * float32(0.2+strength*strength*0.8)
 
 	attacker.LastAttackTime = time.Now()
 
+	// Try mob target first
+	if h.MobManager != nil && h.MobManager.DamageMob(attacker, targetEID, damage) {
+		attacker.Exhaustion += 0.1
+		h.applyDurabilityLoss(attacker, heldName, strength)
+		h.logf("Player %s attacked mob EID=%d (strength=%.2f, damage=%.1f)", attacker.Name, targetEID, strength, damage)
+		return
+	}
+
+	// Try player target
+	target := h.Manager.GetByEID(targetEID)
+	if target == nil || target.Dead {
+		return
+	}
+
 	if h.SurvivalHandler != nil {
-		h.SurvivalHandler.ApplyDamage(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID)
+		h.SurvivalHandler.ApplyDamageFrom(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID, attacker.Name)
 	}
 
 	// Add exhaustion for attacking
@@ -94,7 +149,12 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		))
 	}
 
-	// Only apply durability loss when strength >= 0.9 (near-full charge)
+	h.applyDurabilityLoss(attacker, heldName, strength)
+	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f)", attacker.Name, target.Name, strength, damage)
+}
+
+// applyDurabilityLoss reduces tool durability after a near-full-charge attack.
+func (h *CombatHandler) applyDurabilityLoss(attacker *game.Player, heldName string, strength float64) {
 	if strength >= 0.9 {
 		slot := int(attacker.HeldSlot) + 36
 		invItem := &attacker.Inventory[slot]
@@ -111,8 +171,6 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 			SendSlotUpdate(attacker, slot)
 		}
 	}
-
-	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f)", attacker.Name, target.Name, strength, damage)
 }
 
 func (h *CombatHandler) logf(format string, args ...any) {

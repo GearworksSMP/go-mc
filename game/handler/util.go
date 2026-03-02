@@ -42,13 +42,19 @@ func BlockNameFromState(stateID int) string {
 	return name
 }
 
-// NewItemStack creates an ItemStack, auto-setting durability if the item is a tool.
+// NewItemStack creates an ItemStack, auto-setting durability if the item is a tool, armor, or shield.
 func NewItemStack(id, count int32) game.ItemStack {
 	s := game.ItemStack{ID: id, Count: count}
 	name := ItemNameByID(id)
 	if maxDur := GetMaxDurabilityByItem(name); maxDur > 0 {
 		s.Durability = maxDur
 		s.MaxDurability = maxDur
+	} else if maxDur := GetArmorDurability(name); maxDur > 0 {
+		s.Durability = maxDur
+		s.MaxDurability = maxDur
+	} else if name == "shield" {
+		s.Durability = shieldMaxDurability
+		s.MaxDurability = shieldMaxDurability
 	}
 	return s
 }

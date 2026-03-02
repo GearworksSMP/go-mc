@@ -36,7 +36,8 @@ func NewFurnaceManager(manager *game.PlayerManager) *FurnaceManager {
 	}
 }
 
-func (fm *FurnaceManager) getOrCreate(x, y, z int) *FurnaceState {
+// GetOrCreate returns the furnace state at the given position, creating it if needed.
+func (fm *FurnaceManager) GetOrCreate(x, y, z int) *FurnaceState {
 	pos := [3]int{x, y, z}
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
@@ -48,9 +49,17 @@ func (fm *FurnaceManager) getOrCreate(x, y, z int) *FurnaceState {
 	return fs
 }
 
+// Get returns the furnace state at the given position, or nil.
+func (fm *FurnaceManager) Get(x, y, z int) *FurnaceState {
+	pos := [3]int{x, y, z}
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	return fm.Furnaces[pos]
+}
+
 // OpenFurnace opens a furnace window for the player.
 func (fm *FurnaceManager) OpenFurnace(player *game.Player, x, y, z int) {
-	fs := fm.getOrCreate(x, y, z)
+	fs := fm.GetOrCreate(x, y, z)
 
 	player.OpenWindowID = 3
 	player.OpenFurnacePos = [3]int{x, y, z}
@@ -201,6 +210,16 @@ func (fm *FurnaceManager) Tick() {
 						fs.Input = game.ItemStack{}
 					}
 					fs.CookTime = 0
+
+					// Award smelting XP to the nearest viewer
+					xp := getSmeltingXP(resultName)
+					if xp > 0 {
+						fm.Manager.ForEach(func(p *game.Player) {
+							if p.OpenWindowID == 3 && p.OpenFurnacePos == fs.Pos {
+								AddExperience(p, xp)
+							}
+						})
+					}
 				}
 			}
 		} else {
@@ -308,4 +327,23 @@ var fuelBurnTicks = map[string]int32{
 	"wooden_shovel":  200,
 	"wooden_hoe":     200,
 	"wooden_sword":   200,
+}
+
+// smeltingXP maps result item name to XP awarded per smelt (integer approximation).
+var smeltingXP = map[string]int32{
+	"iron_ingot":   1,
+	"gold_ingot":   1,
+	"copper_ingot": 1,
+	"stone":        1,
+	"glass":        1,
+	"brick":        1,
+	"charcoal":     1,
+}
+
+// getSmeltingXP returns the XP to award for smelting the given result item.
+func getSmeltingXP(resultName string) int32 {
+	if xp, ok := smeltingXP[resultName]; ok {
+		return xp
+	}
+	return 0
 }

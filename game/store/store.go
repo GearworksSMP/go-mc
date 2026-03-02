@@ -33,17 +33,32 @@ type ItemSlot struct {
 
 // PlayerState holds the persistent state of a player.
 type PlayerState struct {
-	UUID       uuid.UUID
-	Name       string
-	Dimension  string
-	X, Y, Z   float64
-	Yaw        float32
-	Pitch      float32
-	GameMode   int
-	Health     float32
-	Food       int32
-	Saturation float32
-	Inventory  []ItemSlot
+	UUID            uuid.UUID
+	Name            string
+	Dimension       string
+	X, Y, Z         float64
+	Yaw             float32
+	Pitch           float32
+	GameMode        int
+	Health          float32
+	Food            int32
+	Saturation      float32
+	Inventory       []ItemSlot
+	Experience      float32
+	ExperienceLevel int32
+	ExperienceTotal int32
+	SpawnX          float64
+	SpawnY          float64
+	SpawnZ          float64
+	HasSpawnPoint   bool
+}
+
+// BlockEntityData holds a serialized block entity and its position.
+type BlockEntityData struct {
+	Dimension string
+	X, Y, Z   int
+	Type      string
+	Data      []byte // JSON
 }
 
 // PlayerStore provides persistent storage for player state.

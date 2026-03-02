@@ -64,15 +64,22 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 		pk.Byte(0),                                // dataKept: nothing kept
 	))
 
-	// Teleport to spawn
-	spawnX, spawnZ := 0.5, 0.5
-	player.SetPosition(spawnX, h.SpawnY, spawnZ)
+	// Determine spawn location (bed or world spawn)
+	var spawnX, spawnYVal, spawnZ float64
+	if player.HasSpawnPoint {
+		spawnX, spawnYVal, spawnZ = player.SpawnX, player.SpawnY, player.SpawnZ
+	} else {
+		spawnX, spawnZ = 0.5, 0.5
+		spawnYVal = h.SpawnY
+	}
+
+	player.SetPosition(spawnX, spawnYVal, spawnZ)
 
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerPosition,
-		pk.VarInt(2),          // teleport ID
+		pk.VarInt(2),             // teleport ID
 		pk.Double(spawnX),
-		pk.Double(h.SpawnY),
+		pk.Double(spawnYVal),
 		pk.Double(spawnZ),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
 		pk.Float(0), pk.Float(0), // yaw, pitch
@@ -86,7 +93,7 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundSetDefaultSpawnPosition,
 		pk.Identifier("minecraft:overworld"),
-		pk.Position{X: 0, Y: int(h.SpawnY), Z: 0},
+		pk.Position{X: int(spawnX), Y: int(spawnYVal), Z: int(spawnZ)},
 		pk.Float(0), pk.Float(0),
 	))
 
