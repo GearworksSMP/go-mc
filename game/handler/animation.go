@@ -9,6 +9,7 @@ import (
 // AnimationHandler handles arm swings, sprint start/stop, and client commands.
 type AnimationHandler struct {
 	Manager *game.PlayerManager
+	BedMgr  *BedManager
 }
 
 // HandlePacket processes animation and player-command packets.
@@ -51,7 +52,7 @@ func (h *AnimationHandler) handleSwing(player *game.Player, p pk.Packet) {
 	})
 }
 
-// handlePlayerCommand handles sprint start/stop and other player commands.
+// handlePlayerCommand handles sprint start/stop, leave bed, and other player commands.
 func (h *AnimationHandler) handlePlayerCommand(player *game.Player, p pk.Packet) {
 	var entityID pk.VarInt
 	var action pk.VarInt
@@ -66,5 +67,10 @@ func (h *AnimationHandler) handlePlayerCommand(player *game.Player, p pk.Packet)
 	case 2: // stop sprint
 		player.Sprinting = false
 		BroadcastEntityFlags(h.Manager, player)
+	}
+
+	// Wake player from bed on any player command action
+	if player.Sleeping && h.BedMgr != nil {
+		h.BedMgr.WakePlayer(player)
 	}
 }

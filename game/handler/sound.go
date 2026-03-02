@@ -31,6 +31,7 @@ const (
 	SoundSkeletonShoot int32 = 932
 
 	SoundShieldBlock   int32 = 905
+	SoundThornsHit     int32 = 1021
 
 	SoundZombieDeath   int32 = 1172
 	SoundZombieHurt    int32 = 1177
@@ -48,6 +49,41 @@ const (
 	SoundSheepHurt     int32 = 893
 	SoundChickenDeath  int32 = 197
 	SoundChickenHurt   int32 = 199
+
+	// Enderman sounds
+	SoundEndermanAmbient  int32 = 329
+	SoundEndermanDeath    int32 = 330
+	SoundEndermanHurt     int32 = 331
+	SoundEndermanScream   int32 = 332
+	SoundEndermanStare    int32 = 333
+	SoundEndermanTeleport int32 = 334
+
+	// Witch sounds
+	SoundWitchAmbient   int32 = 1118
+	SoundWitchCelebrate int32 = 1119
+	SoundWitchDeath     int32 = 1120
+	SoundWitchDrink     int32 = 1121
+	SoundWitchHurt      int32 = 1122
+	SoundWitchThrow     int32 = 1123
+
+	// Slime sounds
+	SoundSlimeAttack     int32 = 934
+	SoundSlimeDeath      int32 = 935
+	SoundSlimeHurt       int32 = 936
+	SoundSlimeJump       int32 = 937
+	SoundSlimeSquish     int32 = 938
+	SoundSlimeDeathSmall int32 = 976
+	SoundSlimeHurtSmall  int32 = 977
+	SoundSlimeJumpSmall  int32 = 978
+	SoundSlimeSquishSmall int32 = 979
+
+	// Phantom sounds
+	SoundPhantomAmbient int32 = 756
+	SoundPhantomBite    int32 = 757
+	SoundPhantomDeath   int32 = 758
+	SoundPhantomFlap    int32 = 759
+	SoundPhantomHurt    int32 = 760
+	SoundPhantomSwoop   int32 = 761
 )
 
 // BroadcastSound sends a ClientboundSound packet to all players.
@@ -107,6 +143,14 @@ func MobHurtSound(typeID int32) int32 {
 		return SoundChickenHurt
 	case MobTypeVillager:
 		return SoundVillagerHurt
+	case MobTypeEnderman:
+		return SoundEndermanHurt
+	case MobTypeWitch:
+		return SoundWitchHurt
+	case MobTypeSlime:
+		return SoundSlimeHurt
+	case MobTypePhantom:
+		return SoundPhantomHurt
 	}
 	return SoundPlayerHurt
 }
@@ -132,6 +176,14 @@ func MobDeathSound(typeID int32) int32 {
 		return SoundChickenDeath
 	case MobTypeVillager:
 		return SoundVillagerDeath
+	case MobTypeEnderman:
+		return SoundEndermanDeath
+	case MobTypeWitch:
+		return SoundWitchDeath
+	case MobTypeSlime:
+		return SoundSlimeDeath
+	case MobTypePhantom:
+		return SoundPhantomDeath
 	}
 	return SoundPlayerDeath
 }
@@ -141,6 +193,9 @@ func MobSoundCategory(typeID int32) int32 {
 	switch typeID {
 	case MobTypeCow, MobTypePig, MobTypeSheep, MobTypeChicken, MobTypeVillager:
 		return SoundCategoryNeutral
+	case MobTypeEnderman:
+		// Enderman is neutral until provoked, but uses hostile sound category
+		return SoundCategoryHostile
 	default:
 		return SoundCategoryHostile
 	}

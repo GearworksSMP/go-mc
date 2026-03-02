@@ -10,11 +10,12 @@ import (
 
 // RespawnHandler handles the death screen respawn button.
 type RespawnHandler struct {
-	Manager *game.PlayerManager
-	World   game.World
-	SpawnY  float64
-	MinY    int
-	Logger  *log.Logger
+	Manager      *game.PlayerManager
+	World        game.World
+	SpawnY       float64
+	MinY         int
+	Logger       *log.Logger
+	DimensionMgr *DimensionManager // optional; when set, handles cross-dimension respawn
 }
 
 // HandlePacket processes ServerboundClientCommand (respawn request).
@@ -48,21 +49,39 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 	player.Dead = false
 	player.FallStartY = -999
 
-	// Send ClientboundRespawn with same dimension info
+	// Determine if dimension switch is needed (nether → overworld on death)
+	needsDimSwitch := player.Dimension == "minecraft:the_nether"
+
+	// Always respawn in overworld
+	dimTypeID := int32(0) // overworld
+	dimName := "minecraft:overworld"
+	isFlat := false
+	if h.DimensionMgr != nil {
+		isFlat = h.DimensionMgr.IsFlat
+	}
+
+	// Send ClientboundRespawn with overworld dimension
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundRespawn,
-		pk.VarInt(0),                             // dimension type index
-		pk.Identifier("minecraft:overworld"),      // dimension name
-		pk.Long(0),                                // hashed seed
-		pk.UnsignedByte(0),                        // gamemode: survival
-		pk.Byte(-1),                               // previous gamemode: none
-		pk.Boolean(false),                         // is debug
-		pk.Boolean(true),                          // is flat
-		pk.Boolean(false),                         // has death location
-		pk.VarInt(0),                              // portal cooldown
-		pk.VarInt(63),                             // sea level
-		pk.Byte(0),                                // dataKept: nothing kept
+		pk.VarInt(dimTypeID),            // dimension type index
+		pk.Identifier(dimName),          // dimension name
+		pk.Long(0),                      // hashed seed
+		pk.UnsignedByte(0),              // gamemode: survival
+		pk.Byte(-1),                     // previous gamemode: none
+		pk.Boolean(false),               // is debug
+		pk.Boolean(isFlat),              // is flat
+		pk.Boolean(false),               // has death location
+		pk.VarInt(0),                    // portal cooldown
+		pk.VarInt(63),                   // sea level
+		pk.Byte(0),                      // dataKept: nothing kept
 	))
+
+	// Switch player to overworld if they were in the nether
+	if needsDimSwitch {
+		player.Dimension = "minecraft:overworld"
+		player.PortalCooldown = 0
+		player.PortalTicks = 0
+	}
 
 	// Determine spawn location (bed or world spawn)
 	var spawnX, spawnYVal, spawnZ float64
@@ -102,8 +121,13 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 		pk.UnsignedByte(13), pk.Float(0),
 	))
 
-	// Re-send chunks
-	cs := &ChunkSender{World: h.World, MinY: h.MinY}
+	// Re-send chunks from the overworld
+	var cs *ChunkSender
+	if h.DimensionMgr != nil {
+		cs = h.DimensionMgr.OverEncoder
+	} else {
+		cs = &ChunkSender{World: h.World, MinY: h.MinY}
+	}
 	cs.SendInitialChunks(player)
 
 	// Send health update

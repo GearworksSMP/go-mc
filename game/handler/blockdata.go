@@ -202,6 +202,11 @@ var blockHardness = map[string]float64{
 	"furnace":            3.5,
 	"red_bed":            0.2,
 
+	// TNT and fire
+	"tnt":                0,
+	"fire":               0,
+	"soul_fire":          0,
+
 	// Unbreakable
 	"bedrock":            -1,
 	"end_portal_frame":   -1,
@@ -517,6 +522,8 @@ var blockDropOverrides = map[string]string{
 	"grass_block":  "dirt",
 	"grass":        "", // tall grass drops nothing
 	"tall_grass":   "", // tall grass drops nothing
+	"fire":         "", // fire drops nothing
+	"soul_fire":    "", // soul fire drops nothing
 	// Crops are handled separately by dropCropItems
 	"wheat":        "",
 	"carrots":      "",
@@ -537,7 +544,7 @@ const (
 // ArmorInfo describes an armor item's type and material.
 type ArmorInfo struct {
 	Type     ArmorType
-	Material string // "leather", "iron", "gold", "diamond"
+	Material string // "leather", "iron", "gold", "diamond", "netherite"
 }
 
 // GetArmorInfo returns the ArmorInfo for an item name, or nil if not armor.
@@ -586,6 +593,17 @@ func GetArmorDurability(itemName string) int32 {
 	return 0
 }
 
+// GetKnockbackResistance returns the knockback resistance for an armor item.
+// Each netherite armor piece provides 0.1 (10%) knockback resistance.
+// Returns 0 for non-netherite or non-armor items.
+func GetKnockbackResistance(itemName string) float64 {
+	info := GetArmorInfo(itemName)
+	if info != nil && info.Material == "netherite" {
+		return 0.1
+	}
+	return 0
+}
+
 var armorItems = map[string]ArmorInfo{
 	"leather_helmet":      {ArmorHelmet, "leather"},
 	"leather_chestplate":  {ArmorChestplate, "leather"},
@@ -603,6 +621,10 @@ var armorItems = map[string]ArmorInfo{
 	"diamond_chestplate":  {ArmorChestplate, "diamond"},
 	"diamond_leggings":    {ArmorLeggings, "diamond"},
 	"diamond_boots":       {ArmorBoots, "diamond"},
+	"netherite_helmet":      {ArmorHelmet, "netherite"},
+	"netherite_chestplate":  {ArmorChestplate, "netherite"},
+	"netherite_leggings":    {ArmorLeggings, "netherite"},
+	"netherite_boots":       {ArmorBoots, "netherite"},
 }
 
 var armorProtection = map[string]int{
@@ -610,6 +632,7 @@ var armorProtection = map[string]int{
 	"golden_helmet": 2, "golden_chestplate": 5, "golden_leggings": 3, "golden_boots": 1,
 	"iron_helmet": 2, "iron_chestplate": 6, "iron_leggings": 5, "iron_boots": 2,
 	"diamond_helmet": 3, "diamond_chestplate": 8, "diamond_leggings": 6, "diamond_boots": 3,
+	"netherite_helmet": 3, "netherite_chestplate": 8, "netherite_leggings": 6, "netherite_boots": 3,
 }
 
 var armorMaxDurability = map[string]int32{
@@ -617,10 +640,14 @@ var armorMaxDurability = map[string]int32{
 	"golden_helmet": 77, "golden_chestplate": 112, "golden_leggings": 105, "golden_boots": 91,
 	"iron_helmet": 165, "iron_chestplate": 240, "iron_leggings": 225, "iron_boots": 195,
 	"diamond_helmet": 363, "diamond_chestplate": 528, "diamond_leggings": 495, "diamond_boots": 429,
+	"netherite_helmet": 407, "netherite_chestplate": 592, "netherite_leggings": 555, "netherite_boots": 481,
 }
 
 // shieldMaxDurability is the max durability of a shield.
 const shieldMaxDurability int32 = 336
+
+// bowMaxDurability is the max durability of a bow (vanilla = 384).
+const bowMaxDurability int32 = 384
 
 // bucketActions maps bucket items to their fluid type or "pickup" for empty buckets.
 var bucketActions = map[string]string{

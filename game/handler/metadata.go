@@ -170,6 +170,9 @@ func BroadcastEntityFlags(manager *game.PlayerManager, player *game.Player) {
 
 // playerPose returns the pose enum value for a player.
 func playerPose(p *game.Player) int32 {
+	if p.Sleeping {
+		return 2 // Sleeping
+	}
 	if p.Sneaking {
 		return 5 // Sneaking
 	}

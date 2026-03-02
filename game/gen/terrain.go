@@ -31,6 +31,7 @@ type TerrainGenerator struct {
 	spruceLogID, spruceLeavesID                  level.BlocksState
 	cactusID                                     level.BlocksState
 	biomeNoise                                   *SimplexNoise
+	structurePlacer                              *StructurePlacer
 }
 
 // NewTerrainGenerator creates a terrain generator with the given seed.
@@ -71,6 +72,7 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.spruceLeavesID, _ = block.ToStateID[block.SpruceLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
 	g.cactusID, _ = block.ToStateID[block.Cactus{Age: 0}]
 	g.biomeNoise = NewSimplexNoise(seed + 3)
+	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
 
 	return g
 }
@@ -156,6 +158,7 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 	}
 
 	g.placeBiomeTrees(chunk, pos, heights, biomes)
+	g.structurePlacer.PlaceStructures(chunk, pos.X, pos.Z, g)
 	g.computeHeightmaps(chunk)
 
 	return chunk

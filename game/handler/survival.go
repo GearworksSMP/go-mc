@@ -20,6 +20,7 @@ type SurvivalHandler struct {
 	VoidDamageTypeID   int32
 	ItemEntities       *ItemEntityManager
 	KeepInventory      *bool
+	EffectMgr          *EffectManager // status effects (set after construction)
 }
 
 // SendSetHealth sends the health/food/saturation HUD update to a player.
@@ -38,9 +39,10 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		return
 	}
 
-	// Shield blocking: absorbs all damage
-	if player.Blocking && isHoldingShield(player) {
+	// Shield blocking: absorbs all damage (with 250ms cooldown between blocks)
+	if player.Blocking && isHoldingShield(player) && time.Now().After(player.ShieldCooldownUntil) {
 		reduceShieldDurability(player)
+		player.ShieldCooldownUntil = time.Now().Add(250 * time.Millisecond)
 		// Play shield block sound
 		px, py, pz := player.Position()
 		BroadcastSound(manager, SoundShieldBlock, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
@@ -73,6 +75,30 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 			protReduction = 0.8
 		}
 		damage *= (1 - protReduction)
+	}
+
+	// TODO: Fire Protection enchantment — when fire damage types are implemented,
+	// sum "fire_protection" levels from all armor pieces and apply 8% reduction per level (cap 80%).
+	// TODO: Blast Protection enchantment — when explosion damage types are implemented,
+	// sum "blast_protection" levels from all armor pieces and apply 8% reduction per level (cap 80%).
+
+	// Resistance effect: 20% reduction per level (cap 100%)
+	if s.EffectMgr != nil {
+		resReduction := s.EffectMgr.GetResistanceReduction(player)
+		if resReduction > 0 {
+			damage *= (1 - resReduction)
+		}
+	}
+
+	// Absorption: absorb damage from extra HP pool first
+	if player.Absorption > 0 {
+		if damage <= player.Absorption {
+			player.Absorption -= damage
+			damage = 0
+		} else {
+			damage -= player.Absorption
+			player.Absorption = 0
+		}
 	}
 
 	player.Health -= damage
@@ -186,6 +212,11 @@ func (s *SurvivalHandler) dropPlayerInventory(manager *game.PlayerManager, playe
 func (s *SurvivalHandler) handleDeathWithMessage(manager *game.PlayerManager, player *game.Player, deathMessage string) {
 	// Drop inventory before marking dead
 	s.dropPlayerInventory(manager, player)
+
+	// Clear all status effects on death
+	if s.EffectMgr != nil {
+		s.EffectMgr.ClearAllEffects(player)
+	}
 
 	player.Dead = true
 	player.Health = 0
@@ -326,7 +357,9 @@ func (s *SurvivalHandler) logf(format string, args ...any) {
 
 // FoodHandler handles eating food via ServerboundUseItem with a 1.6s eating animation.
 type FoodHandler struct {
-	Logger *log.Logger
+	Logger     *log.Logger
+	FishingMgr *FishingManager
+	PotionMgr  *PotionManager
 }
 
 // HandlePacket processes ServerboundUseItem to start eating.
@@ -362,6 +395,24 @@ func (h *FoodHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 	if itemName == "shield" {
 		player.Blocking = true
 		return true
+	}
+
+	// Fishing rod use: cast or reel in
+	if itemName == "fishing_rod" && h.FishingMgr != nil {
+		h.FishingMgr.CastRod(player)
+		return true
+	}
+
+	// Potion and milk bucket handling
+	if h.PotionMgr != nil {
+		if itemName == "milk_bucket" || itemName == "potion" {
+			h.PotionMgr.HandleDrinkPotion(player, itemName)
+			return true
+		}
+		if itemName == "splash_potion" {
+			h.PotionMgr.ThrowSplashPotion(player, "healing")
+			return true
+		}
 	}
 
 	food := LookupFood(itemName)

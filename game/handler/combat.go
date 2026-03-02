@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 	"math"
+	"math/rand"
 	"time"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -16,6 +17,9 @@ type CombatHandler struct {
 	SurvivalHandler *SurvivalHandler
 	MobManager      *MobManager
 	VillagerMgr     *VillagerManager
+	BoatMgr         *BoatManager
+	MinecartMgr     *MinecartManager
+	EffectMgr       *EffectManager
 	Logger          *log.Logger
 }
 
@@ -42,6 +46,18 @@ func (h *CombatHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 
 func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 	if player.Dead {
+		return
+	}
+
+	// Check for boat interaction (right-click to mount)
+	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
+		h.BoatMgr.MountBoat(player, targetEID)
+		return
+	}
+
+	// Check for minecart interaction (right-click to mount)
+	if h.MinecartMgr != nil && h.MinecartMgr.IsMinecart(targetEID) {
+		h.MinecartMgr.MountMinecart(player, targetEID)
 		return
 	}
 
@@ -102,10 +118,32 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		}
 	}
 
+	// Strength/Weakness effect modifiers
+	if h.EffectMgr != nil {
+		baseDamage += h.EffectMgr.GetDamageModifier(attacker)
+		if baseDamage < 0 {
+			baseDamage = 0
+		}
+	}
+
 	// Vanilla damage formula: damage = baseDamage * (0.2 + strength^2 * 0.8)
 	damage := baseDamage * float32(0.2+strength*strength*0.8)
 
 	attacker.LastAttackTime = time.Now()
+
+	// Try boat target
+	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
+		h.BoatMgr.DamageBoat(attacker.EID, targetEID, damage)
+		h.logf("Player %s attacked boat EID=%d (damage=%.1f)", attacker.Name, targetEID, damage)
+		return
+	}
+
+	// Try minecart target
+	if h.MinecartMgr != nil && h.MinecartMgr.IsMinecart(targetEID) {
+		h.MinecartMgr.DamageMinecart(attacker.EID, targetEID, damage)
+		h.logf("Player %s attacked minecart EID=%d (damage=%.1f)", attacker.Name, targetEID, damage)
+		return
+	}
 
 	// Try mob target first
 	if h.MobManager != nil && h.MobManager.DamageMob(attacker, targetEID, damage) {
@@ -128,7 +166,7 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	// Add exhaustion for attacking
 	attacker.Exhaustion += 0.1
 
-	// Knockback: push target away from attacker
+	// Knockback: push target away from attacker (reduced if blocking with shield)
 	ax, _, az := attacker.Position()
 	tx, _, tz := target.Position()
 	dx := tx - ax
@@ -136,9 +174,24 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	dist := math.Sqrt(dx*dx + dz*dz)
 	if dist > 0 {
 		scale := 4000.0 / dist
-		velX := int16(dx * scale)
-		velY := int16(3000)
-		velZ := int16(dz * scale)
+		knockbackMult := 1.0
+		if target.Blocking {
+			knockbackMult = 0.2
+		}
+
+		// Netherite knockback resistance: each netherite armor piece gives 0.1 resistance
+		totalKBResist := 0.0
+		for _, slot := range []int{5, 6, 7, 8} {
+			totalKBResist += GetKnockbackResistance(ItemNameByID(target.Inventory[slot].ID))
+		}
+		if totalKBResist > 1.0 {
+			totalKBResist = 1.0
+		}
+		knockbackMult *= (1 - totalKBResist)
+
+		velX := int16(dx * scale * knockbackMult)
+		velY := int16(float64(3000) * knockbackMult)
+		velZ := int16(dz * scale * knockbackMult)
 
 		target.WritePacket(pk.Marshal(
 			packetid.ClientboundSetEntityMotion,
@@ -148,6 +201,9 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 			pk.Short(velZ),
 		))
 	}
+
+	// Thorns enchantment: check target's armor for thorns, reflect damage back to attacker
+	h.applyThorns(attacker, target)
 
 	h.applyDurabilityLoss(attacker, heldName, strength)
 	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f)", attacker.Name, target.Name, strength, damage)
@@ -170,6 +226,47 @@ func (h *CombatHandler) applyDurabilityLoss(attacker *game.Player, heldName stri
 			}
 			SendSlotUpdate(attacker, slot)
 		}
+	}
+}
+
+// applyThorns checks the target's armor for thorns enchantments and reflects damage to attacker.
+// Vanilla formula: each armor piece with thorns has a (level * 15)% chance to trigger,
+// dealing (level * 0.5 + 1) damage back to the attacker. Only the highest-level trigger applies.
+func (h *CombatHandler) applyThorns(attacker, target *game.Player) {
+	if target.Dead {
+		return
+	}
+
+	highestDamage := float32(0)
+	triggered := false
+	for _, slot := range []int{5, 6, 7, 8} {
+		item := &target.Inventory[slot]
+		if item.ID <= 0 || item.Enchantments == nil {
+			continue
+		}
+		thornsLvl := item.Enchantments["thorns"]
+		if thornsLvl <= 0 {
+			continue
+		}
+		// level * 15% chance to trigger
+		chance := float64(thornsLvl) * 0.15
+		if rand.Float64() < chance {
+			thornsDmg := float32(thornsLvl)*0.5 + 1.0
+			if thornsDmg > highestDamage {
+				highestDamage = thornsDmg
+			}
+			triggered = true
+		}
+	}
+
+	if triggered && highestDamage > 0 && h.SurvivalHandler != nil {
+		// Play thorns hit sound at the attacker's position
+		px, py, pz := attacker.Position()
+		BroadcastSound(h.Manager, SoundThornsHit, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+
+		attacker.LastDamageMessage = attacker.Name + " was killed trying to hurt " + target.Name
+		h.SurvivalHandler.ApplyDamage(h.Manager, attacker, highestDamage, h.SurvivalHandler.AttackDamageTypeID)
+		h.logf("Thorns reflected %.1f damage from %s back to %s", highestDamage, target.Name, attacker.Name)
 	}
 }
 

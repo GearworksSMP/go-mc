@@ -55,6 +55,9 @@ func NewItemStack(id, count int32) game.ItemStack {
 	} else if name == "shield" {
 		s.Durability = shieldMaxDurability
 		s.MaxDurability = shieldMaxDurability
+	} else if name == "bow" {
+		s.Durability = bowMaxDurability
+		s.MaxDurability = bowMaxDurability
 	}
 	return s
 }

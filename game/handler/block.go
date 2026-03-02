@@ -39,12 +39,34 @@ type BlockHandler struct {
 	CropMgr      *CropManager
 	EnchantMgr   *EnchantManager
 	AnvilMgr     *AnvilManager
+	BedMgr       *BedManager
+	SignMgr      *SignManager
+	BoatMgr      *BoatManager
+	MinecartMgr  *MinecartManager
+	TNTMgr       *TNTManager
+	FireMgr      *FireManager
+	RedstoneMgr  *RedstoneManager
+	DimensionMgr *DimensionManager                   // optional; when set, uses dimension-aware world
 	OnBlockBreak func(blockName string, x, y, z int) // called when a block is broken
+}
+
+// worldForPlayer returns the world for the player's current dimension.
+func (h *BlockHandler) worldForPlayer(player *game.Player) game.World {
+	if h.DimensionMgr != nil {
+		return h.DimensionMgr.WorldForPlayer(player)
+	}
+	return h.World
 }
 
 // HandlePacket processes a single packet for the given player.
 // Returns true if the packet was handled.
 func (h *BlockHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
+	// Resolve the correct world for the player's current dimension.
+	// This is safe because HandlePacket is called from a per-player packet loop.
+	if h.DimensionMgr != nil {
+		h.World = h.DimensionMgr.WorldForPlayer(player)
+	}
+
 	switch packetid.ServerboundPacketID(p.ID) {
 	case packetid.ServerboundPlayerAction:
 		h.handlePlayerAction(player, p)
@@ -62,6 +84,12 @@ func (h *BlockHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 
 	case packetid.ServerboundSetCarriedItem:
 		h.handleSetCarriedItem(player, p)
+		return true
+
+	case packetid.ServerboundSignUpdate:
+		if h.SignMgr != nil {
+			h.SignMgr.HandleSignUpdate(player, p)
+		}
 		return true
 	}
 
@@ -110,6 +138,7 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 	case 0: // started_digging
 		CancelEating(player)
 		player.Blocking = false
+		player.DrawingBow = false
 		player.Digging = true
 		player.DigX, player.DigY, player.DigZ = pos.X, pos.Y, pos.Z
 		player.DigStartTime = time.Now()
@@ -243,6 +272,25 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			h.placeBed(player, placeX, placeY, placeZ, int32(sequence))
 			return
 		}
+		if isSignItem(heldName) && h.SignMgr != nil {
+			h.placeSign(player, placeX, placeY, placeZ, heldName, int(face), int32(sequence))
+			return
+		}
+		// Boat placement: place boat on water surface
+		if woodType, ok := isBoatItem(heldName); ok && h.BoatMgr != nil {
+			h.placeBoat(player, pos.X, pos.Y, pos.Z, int(face), woodType, int32(sequence))
+			return
+		}
+		// Minecart placement: place minecart on a rail
+		if isMinecartItem(heldName) && h.MinecartMgr != nil {
+			h.placeMinecart(player, pos.X, pos.Y, pos.Z, int(face), int32(sequence))
+			return
+		}
+		// Rail placement: use MinecartManager for auto-curving
+		if isRailItem(heldName) && h.MinecartMgr != nil {
+			h.placeRail(player, placeX, placeY, placeZ, heldName, int32(sequence))
+			return
+		}
 		// Bone meal on sapling → instant tree growth
 		if heldName == "bone_meal" && h.TreeMgr != nil {
 			clickedState, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
@@ -288,22 +336,50 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			}
 		}
 
-		// Flint and steel on obsidian → light nether portal
+		// Flint and steel: TNT ignition, nether portal, or fire placement
 		if heldName == "flint_and_steel" {
 			clickedState, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
-			if err == nil && isObsidianState(int(clickedState)) {
-				if portalBlocks, axis, ok := detectPortalFrame(h.World, pos.X, pos.Y, pos.Z); ok {
-					portalBlock := block.NetherPortal{Axis: axis}
-					if portalStateID, found := block.ToStateID[portalBlock]; found {
-						for _, pb := range portalBlocks {
-							h.World.SetBlock(pb[0], pb[1], pb[2], portalStateID)
-							h.broadcastBlockUpdate(pb[0], pb[1], pb[2], int32(portalStateID))
+			if err == nil {
+				clickedName := BlockNameFromState(int(clickedState))
+
+				// Flint and steel on TNT → ignite
+				if clickedName == "tnt" && h.TNTMgr != nil {
+					h.TNTMgr.Ignite(pos.X, pos.Y, pos.Z)
+					if player.GameMode == 0 {
+						h.decrementToolDurability(player)
+					}
+					h.sendAck(player, int32(sequence))
+					return
+				}
+
+				// Flint and steel on obsidian → light nether portal
+				if isObsidianState(int(clickedState)) {
+					if portalBlocks, axis, ok := detectPortalFrame(h.World, pos.X, pos.Y, pos.Z); ok {
+						portalBlock := block.NetherPortal{Axis: axis}
+						if portalStateID, found := block.ToStateID[portalBlock]; found {
+							for _, pb := range portalBlocks {
+								h.World.SetBlock(pb[0], pb[1], pb[2], portalStateID)
+								h.broadcastBlockUpdate(pb[0], pb[1], pb[2], int32(portalStateID))
+							}
+							if player.GameMode == 0 {
+								h.decrementToolDurability(player)
+							}
+							h.logf("Player %s lit nether portal at (%d, %d, %d) axis=%s", player.Name, pos.X, pos.Y, pos.Z, axis)
 						}
-						// Consume durability in survival mode
-						if player.GameMode == 0 {
-							h.decrementToolDurability(player)
-						}
-						h.logf("Player %s lit nether portal at (%d, %d, %d) axis=%s", player.Name, pos.X, pos.Y, pos.Z, axis)
+						h.sendAck(player, int32(sequence))
+						return
+					}
+				}
+
+				// Flint and steel on any other block → place fire on the clicked face
+				if h.FireMgr != nil {
+					off := faceOffsets[int(face)]
+					fireX := pos.X + off[0]
+					fireY := pos.Y + off[1]
+					fireZ := pos.Z + off[2]
+					h.FireMgr.PlaceFire(fireX, fireY, fireZ, 0)
+					if player.GameMode == 0 {
+						h.decrementToolDurability(player)
 					}
 					h.sendAck(player, int32(sequence))
 					return
@@ -496,6 +572,14 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 		}
 	}
 
+	// If breaking a fire block, untrack it from the fire manager
+	if h.FireMgr != nil && oldState > 0 {
+		oldBlockName := BlockNameFromState(int(oldState))
+		if oldBlockName == "fire" || oldBlockName == "soul_fire" {
+			h.FireMgr.ExtinguishFire(x, y, z)
+		}
+	}
+
 	// Check for falling blocks above
 	if h.FallingMgr != nil {
 		h.FallingMgr.CheckAndSpawnFalling(x, y+1, z)
@@ -534,6 +618,16 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 		if blockName == "chest" {
 			h.Chests.UnlinkChest(x, y, z, h.World, h.Manager)
 		}
+	}
+
+	// Remove sign data if breaking a sign
+	if h.SignMgr != nil {
+		h.SignMgr.RemoveSign(x, y, z)
+	}
+
+	// Clean up redstone power source if breaking a lever, button, or pressure plate
+	if h.RedstoneMgr != nil {
+		h.RedstoneMgr.CleanupSource(x, y, z)
 	}
 
 	h.logf("Player %s broke block at (%d, %d, %d)", player.Name, x, y, z)
@@ -1071,32 +1165,106 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 	case block.IronDoor:
 		return true // iron doors require redstone, no hand interaction
 	case block.Lever:
-		door.Powered = !door.Powered
-		if newID, ok := block.ToStateID[door]; ok {
-			h.World.SetBlock(x, y, z, newID)
-			h.broadcastBlockUpdate(x, y, z, int32(newID))
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ToggleLever(player, x, y, z)
+		} else {
+			door.Powered = !door.Powered
+			if newID, ok := block.ToStateID[door]; ok {
+				h.World.SetBlock(x, y, z, newID)
+				h.broadcastBlockUpdate(x, y, z, int32(newID))
+			}
 		}
 		return true
 	case block.StoneButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "stone_button", 30)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "stone_button", door.Face, door.Facing, 30)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "stone_button", 30)
+		}
 		return true
 	case block.OakButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "oak_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "oak_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "oak_button", 20)
+		}
 		return true
 	case block.SpruceButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "spruce_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "spruce_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "spruce_button", 20)
+		}
 		return true
 	case block.BirchButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "birch_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "birch_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "birch_button", 20)
+		}
 		return true
 	case block.JungleButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "jungle_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "jungle_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "jungle_button", 20)
+		}
 		return true
 	case block.AcaciaButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "acacia_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "acacia_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "acacia_button", 20)
+		}
+		return true
+	case block.CherryButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "cherry_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "cherry_button", 20)
+		}
 		return true
 	case block.DarkOakButton:
-		h.pressButton(x, y, z, door.Face, door.Facing, "dark_oak_button", 20)
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "dark_oak_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "dark_oak_button", 20)
+		}
+		return true
+	case block.MangroveButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "mangrove_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "mangrove_button", 20)
+		}
+		return true
+	case block.BambooButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "bamboo_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "bamboo_button", 20)
+		}
+		return true
+	case block.CrimsonButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "crimson_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "crimson_button", 20)
+		}
+		return true
+	case block.WarpedButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "warped_button", door.Face, door.Facing, 20)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "warped_button", 20)
+		}
+		return true
+	case block.PolishedBlackstoneButton:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.ActivateButton(player, x, y, z, "polished_blackstone_button", door.Face, door.Facing, 30)
+		} else {
+			h.pressButton(x, y, z, door.Face, door.Facing, "polished_blackstone_button", 30)
+		}
 		return true
 	case block.RedBed:
 		h.interactBed(player, x, y, z)
@@ -1507,6 +1675,136 @@ func (h *BlockHandler) placeDoor(player *game.Player, x, y, z int, doorName stri
 	}
 }
 
+// placeSign handles sign placement. Standing signs are placed on top of blocks
+// (face 1), wall signs on side faces (face 2-5).
+func (h *BlockHandler) placeSign(player *game.Player, x, y, z int, itemName string, face int, sequence int32) {
+	// Check for player collision
+	if h.wouldCollideWithPlayer(x, y, z) {
+		h.broadcastBlockUpdate(x, y, z, 0)
+		h.sendAck(player, sequence)
+		return
+	}
+
+	var signBlock block.Block
+
+	if face >= 2 && face <= 5 {
+		// Wall sign: placed on the side of a block
+		dir, ok := faceToWallSignDirection(face)
+		if !ok {
+			h.sendAck(player, sequence)
+			return
+		}
+		wallName := wallSignBlockForItem(itemName)
+		if wallName == "" {
+			h.sendAck(player, sequence)
+			return
+		}
+		signBlock = wallSignWithFacing(wallName, dir)
+	} else {
+		// Standing sign: placed on top of a block
+		yaw, _ := player.Rotation()
+		rotation := yawToSignRotation(yaw)
+		standingName := signBlockForItem(itemName)
+		if standingName == "" {
+			h.sendAck(player, sequence)
+			return
+		}
+		signBlock = standingSignWithRotation(standingName, rotation)
+	}
+
+	if signBlock == nil {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	stateID, ok := block.ToStateID[signBlock]
+	if !ok {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	h.World.SetBlock(x, y, z, stateID)
+	h.broadcastBlockUpdate(x, y, z, int32(stateID))
+	h.sendAck(player, sequence)
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		invItem := &player.Inventory[slot]
+		if invItem.Count > 0 {
+			invItem.Count--
+			if invItem.Count <= 0 {
+				*invItem = game.ItemStack{}
+			}
+			SendSlotUpdate(player, slot)
+		}
+	}
+
+	// Open sign editor
+	h.SignMgr.PlaceSign(player, x, y, z)
+
+	h.logf("Player %s placed sign at (%d, %d, %d)", player.Name, x, y, z)
+}
+
+// standingSignWithRotation creates a standing sign block with the given rotation.
+func standingSignWithRotation(blockName string, rotation int) block.Block {
+	rot := block.Integer(rotation)
+	switch blockName {
+	case "minecraft:oak_sign":
+		return block.OakSign{Rotation: rot}
+	case "minecraft:spruce_sign":
+		return block.SpruceSign{Rotation: rot}
+	case "minecraft:birch_sign":
+		return block.BirchSign{Rotation: rot}
+	case "minecraft:jungle_sign":
+		return block.JungleSign{Rotation: rot}
+	case "minecraft:acacia_sign":
+		return block.AcaciaSign{Rotation: rot}
+	case "minecraft:cherry_sign":
+		return block.CherrySign{Rotation: rot}
+	case "minecraft:dark_oak_sign":
+		return block.DarkOakSign{Rotation: rot}
+	case "minecraft:mangrove_sign":
+		return block.MangroveSign{Rotation: rot}
+	case "minecraft:bamboo_sign":
+		return block.BambooSign{Rotation: rot}
+	case "minecraft:crimson_sign":
+		return block.CrimsonSign{Rotation: rot}
+	case "minecraft:warped_sign":
+		return block.WarpedSign{Rotation: rot}
+	}
+	return nil
+}
+
+// wallSignWithFacing creates a wall sign block with the given facing direction.
+func wallSignWithFacing(blockName string, facing block.Direction) block.Block {
+	switch blockName {
+	case "minecraft:oak_wall_sign":
+		return block.OakWallSign{Facing: facing}
+	case "minecraft:spruce_wall_sign":
+		return block.SpruceWallSign{Facing: facing}
+	case "minecraft:birch_wall_sign":
+		return block.BirchWallSign{Facing: facing}
+	case "minecraft:jungle_wall_sign":
+		return block.JungleWallSign{Facing: facing}
+	case "minecraft:acacia_wall_sign":
+		return block.AcaciaWallSign{Facing: facing}
+	case "minecraft:cherry_wall_sign":
+		return block.CherryWallSign{Facing: facing}
+	case "minecraft:dark_oak_wall_sign":
+		return block.DarkOakWallSign{Facing: facing}
+	case "minecraft:mangrove_wall_sign":
+		return block.MangroveWallSign{Facing: facing}
+	case "minecraft:bamboo_wall_sign":
+		return block.BambooWallSign{Facing: facing}
+	case "minecraft:crimson_wall_sign":
+		return block.CrimsonWallSign{Facing: facing}
+	case "minecraft:warped_wall_sign":
+		return block.WarpedWallSign{Facing: facing}
+	}
+	return nil
+}
+
 // yawToDirection converts player yaw to a block.Direction for placement.
 func yawToDirection(yaw float32) block.Direction {
 	// Normalize yaw to 0-360
@@ -1587,8 +1885,13 @@ func (h *BlockHandler) placeBed(player *game.Player, x, y, z int, sequence int32
 	}
 }
 
-// interactBed handles right-clicking a bed: set spawn at night, message during day.
+// interactBed handles right-clicking a bed: attempt sleeping or set spawn.
 func (h *BlockHandler) interactBed(player *game.Player, x, y, z int) {
+	if h.BedMgr != nil {
+		h.BedMgr.TryStartSleep(player, x, y, z)
+		return
+	}
+	// Fallback when BedMgr is not configured
 	if h.TimeMgr != nil && h.TimeMgr.IsNight() {
 		player.HasSpawnPoint = true
 		player.SpawnX = float64(x) + 0.5
@@ -1924,6 +2227,145 @@ func (h *BlockHandler) dropCropItems(stateID int, x, y, z int) {
 			}
 		}
 	}
+}
+
+// placeBoat handles placing a boat item on water or on the top face of a block.
+func (h *BlockHandler) placeBoat(player *game.Player, clickX, clickY, clickZ, face int, woodType int32, sequence int32) {
+	// Determine spawn position: place on the clicked block's top surface or on water
+	spawnX := float64(clickX) + 0.5
+	spawnY := float64(clickY) + 1.0
+	spawnZ := float64(clickZ) + 0.5
+
+	// If the clicked block is water, place boat on the water surface
+	clickedState, err := h.World.GetBlock(clickX, clickY, clickZ)
+	if err == nil {
+		if int(clickedState) < len(block.StateList) && block.StateList[clickedState] != nil {
+			if _, ok := block.StateList[clickedState].(block.Water); ok {
+				// Find water surface (topmost water block)
+				surfaceY := clickY
+				for sy := clickY + 1; sy < clickY+10; sy++ {
+					aboveState, err := h.World.GetBlock(clickX, sy, clickZ)
+					if err != nil {
+						break
+					}
+					if int(aboveState) < len(block.StateList) && block.StateList[aboveState] != nil {
+						if _, ok := block.StateList[aboveState].(block.Water); ok {
+							surfaceY = sy
+							continue
+						}
+					}
+					break
+				}
+				spawnY = float64(surfaceY) + 0.5625 // boat sits slightly above water
+			}
+		}
+	}
+
+	h.BoatMgr.SpawnBoat(spawnX, spawnY, spawnZ, woodType)
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		player.Inventory[slot].Count--
+		if player.Inventory[slot].Count <= 0 {
+			player.Inventory[slot] = game.ItemStack{}
+		}
+		SendSlotUpdate(player, slot)
+	}
+
+	h.sendAck(player, sequence)
+}
+
+// placeMinecart places a minecart entity on the clicked rail block.
+func (h *BlockHandler) placeMinecart(player *game.Player, clickX, clickY, clickZ, face int, sequence int32) {
+	// The minecart should be placed on top of the clicked block
+	spawnX := float64(clickX) + 0.5
+	spawnY := float64(clickY) + 0.0625 // slightly above the block
+	spawnZ := float64(clickZ) + 0.5
+
+	// Check if clicked block is a rail
+	clickedState, err := h.World.GetBlock(clickX, clickY, clickZ)
+	if err == nil && int(clickedState) < len(block.StateList) && block.StateList[clickedState] != nil {
+		switch block.StateList[clickedState].(type) {
+		case block.Rail, block.PoweredRail, block.DetectorRail, block.ActivatorRail:
+			// Good, place on the rail
+		default:
+			// If we clicked the top of a block, check the block above for a rail
+			if face == 1 {
+				aboveState, err := h.World.GetBlock(clickX, clickY+1, clickZ)
+				if err == nil && int(aboveState) < len(block.StateList) && block.StateList[aboveState] != nil {
+					switch block.StateList[aboveState].(type) {
+					case block.Rail, block.PoweredRail, block.DetectorRail, block.ActivatorRail:
+						spawnY = float64(clickY+1) + 0.0625
+					default:
+						h.sendAck(player, sequence)
+						return // not on a rail
+					}
+				} else {
+					h.sendAck(player, sequence)
+					return
+				}
+			} else {
+				h.sendAck(player, sequence)
+				return // not on a rail
+			}
+		}
+	} else {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	h.MinecartMgr.SpawnMinecart(spawnX, spawnY, spawnZ)
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		player.Inventory[slot].Count--
+		if player.Inventory[slot].Count <= 0 {
+			player.Inventory[slot] = game.ItemStack{}
+		}
+		SendSlotUpdate(player, slot)
+	}
+
+	h.sendAck(player, sequence)
+}
+
+// placeRail places a rail block with auto-curving using the MinecartManager.
+func (h *BlockHandler) placeRail(player *game.Player, x, y, z int, railName string, sequence int32) {
+	// Check that the target position is empty (air)
+	existing, err := h.World.GetBlock(x, y, z)
+	if err == nil && existing != 0 {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	// Check that there is a solid block below (rails need support)
+	belowState, err := h.World.GetBlock(x, y-1, z)
+	if err != nil || belowState == 0 {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	stateID, ok := h.MinecartMgr.PlaceRail(x, y, z, railName)
+	if !ok {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	h.World.SetBlock(x, y, z, stateID)
+	h.broadcastBlockUpdate(x, y, z, int32(stateID))
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		player.Inventory[slot].Count--
+		if player.Inventory[slot].Count <= 0 {
+			player.Inventory[slot] = game.ItemStack{}
+		}
+		SendSlotUpdate(player, slot)
+	}
+
+	h.sendAck(player, sequence)
 }
 
 func (h *BlockHandler) logf(format string, args ...any) {

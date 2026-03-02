@@ -103,6 +103,18 @@ func main() {
 		world = mem.NewWorld(worldGen, sections, minY)
 	}
 
+	// Create Nether world (in-memory only for now)
+	var overworldSeed int64 = 12345
+	if s := os.Getenv("WORLD_SEED"); s != "" {
+		overworldSeed = 12345
+		for _, c := range s {
+			overworldSeed = overworldSeed*31 + int64(c)
+		}
+	}
+	netherGen := gen.NewNetherGenerator(overworldSeed)
+	netherWorld := mem.NewWorld(netherGen, netherGen.Sections, netherGen.MinY)
+	logger.Printf("Nether world initialized (sections=%d, minY=%d)", netherGen.Sections, netherGen.MinY)
+
 	// Build minimal registries for 26.1-snapshot-2
 	regs := buildRegistries()
 
@@ -131,9 +143,38 @@ func main() {
 	treeMgr := handler.NewTreeGrowthManager(world, players)
 	cropMgr := handler.NewCropManager(world, players)
 	weatherMgr := handler.NewWeatherManager(players)
+	mobMgr.WeatherMgr = weatherMgr
+
+	bedMgr := &handler.BedManager{
+		Manager:    players,
+		MobManager: mobMgr,
+		TimeMgr:    timeMgr,
+		WeatherMgr: weatherMgr,
+		World:      world,
+		Logger:     logger,
+	}
+
+	bowMgr := &handler.BowManager{
+		Manager:  players,
+		ArrowMgr: arrowMgr,
+		Survival: survHandler,
+		Logger:   logger,
+	}
+
+	fishingMgr := handler.NewFishingManager(players, itemEntities, world, logger)
+	signMgr := handler.NewSignManager(players, world, logger)
+	boatMgr := handler.NewBoatManager(players, world, itemEntities, logger)
+	tntMgr := handler.NewTNTManager(players, world, survHandler, itemEntities, logger)
+	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
+	redstoneMgr := handler.NewRedstoneManager(players, world, logger)
+	minecartMgr := handler.NewMinecartManager(players, world, redstoneMgr, itemEntities, logger)
+
+	effectMgr := handler.NewEffectManager(players, survHandler, logger)
+	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
 
 	survHandler.ItemEntities = itemEntities
 	survHandler.KeepInventory = &keepInventory
+	survHandler.EffectMgr = effectMgr
 
 	gp := &gamePlay{
 		logger:          logger,
@@ -161,8 +202,40 @@ func main() {
 		enchantMgr:      enchantMgr,
 		anvilMgr:        anvilMgr,
 		villagerMgr:     villagerMgr,
+		bedMgr:          bedMgr,
+		bowMgr:          bowMgr,
+		fishingMgr:      fishingMgr,
+		signMgr:         signMgr,
+		boatMgr:         boatMgr,
+		minecartMgr:     minecartMgr,
+		effectMgr:       effectMgr,
+		potionMgr:       potionMgr,
+		tntMgr:          tntMgr,
+		fireMgr:         fireMgr,
+		redstoneMgr:     redstoneMgr,
 		keepInventory:   &keepInventory,
 	}
+
+	// Create DimensionManager for Nether teleportation
+	dimensionMgr := &handler.DimensionManager{
+		Manager:     players,
+		OverWorld:   world,
+		NetherWorld: netherWorld,
+		OverEncoder: &handler.ChunkSender{
+			World: world,
+			MinY:  minY,
+		},
+		NetherEncoder: &handler.ChunkSender{
+			World: netherWorld,
+			MinY:  netherGen.MinY,
+		},
+		Logger:             logger,
+		NetherDimTypeID:    3, // overworld=0, overworld_caves=1, the_end=2, the_nether=3
+		OverworldDimTypeID: 0,
+		OverworldSpawnY:    spawnY,
+		IsFlat:             isFlat,
+	}
+	gp.dimensionMgr = dimensionMgr
 
 	// Load block entities (chests, furnaces) from DB
 	gp.loadBlockEntities()
@@ -189,7 +262,7 @@ func main() {
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	foodHandler := &handler.FoodHandler{Logger: logger}
+	foodHandler := &handler.FoodHandler{Logger: logger, FishingMgr: fishingMgr, PotionMgr: potionMgr}
 	gp.foodHandler = foodHandler
 	tickLoop := game.NewTickLoop(
 		game.TickHandlerFunc(func(tick int64) {
@@ -202,11 +275,21 @@ func main() {
 			timeMgr.Tick(tick, players)
 			mobMgr.Tick(tick)
 			arrowMgr.Tick(tick)
+			fishingMgr.Tick(tick)
 			fluidMgr.Tick(tick)
 			fallingMgr.Tick(tick)
 			treeMgr.Tick(tick)
 			cropMgr.Tick(tick)
 			weatherMgr.Tick(tick)
+			bedMgr.Tick(tick)
+			boatMgr.Tick(tick)
+			minecartMgr.Tick(tick)
+			effectMgr.Tick(tick)
+			potionMgr.Tick(tick)
+			tntMgr.Tick(tick)
+			fireMgr.Tick(tick)
+			redstoneMgr.Tick(tick)
+			dimensionMgr.Tick(tick)
 		}),
 	)
 
@@ -294,6 +377,18 @@ type gamePlay struct {
 	enchantMgr      *handler.EnchantManager
 	anvilMgr        *handler.AnvilManager
 	villagerMgr     *handler.VillagerManager
+	bedMgr          *handler.BedManager
+	bowMgr          *handler.BowManager
+	fishingMgr      *handler.FishingManager
+	signMgr         *handler.SignManager
+	boatMgr         *handler.BoatManager
+	minecartMgr     *handler.MinecartManager
+	effectMgr       *handler.EffectManager
+	potionMgr       *handler.PotionManager
+	tntMgr          *handler.TNTManager
+	fireMgr          *handler.FireManager
+	redstoneMgr     *handler.RedstoneManager
+	dimensionMgr    *handler.DimensionManager
 	keepInventory   *bool
 }
 
@@ -439,6 +534,23 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	g.logf("Player %s (%s) joined [protocol=%d, eid=%d]", name, id, protocol, eid)
 
 	defer func() {
+		// Clean up fishing bobber on disconnect
+		g.fishingMgr.CleanupPlayer(player)
+
+		// Wake player from bed on disconnect so other players' sleep check updates
+		if player.Sleeping && g.bedMgr != nil {
+			g.bedMgr.WakePlayer(player)
+		}
+
+		// Dismount vehicle if riding one
+		if player.RidingEntityEID != 0 {
+			if g.minecartMgr != nil && g.minecartMgr.IsMinecart(player.RidingEntityEID) {
+				g.minecartMgr.DismountMinecart(player)
+			} else if g.boatMgr != nil {
+				g.boatMgr.DismountBoat(player)
+			}
+		}
+
 		// Broadcast leave before removing from manager
 		handler.BroadcastPlayerLeave(g.players, player)
 
@@ -460,7 +572,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
 				UUID:            id,
 				Name:            name,
-				Dimension:       "overworld",
+				Dimension:       player.Dimension,
 				X:               px,
 				Y:               py,
 				Z:               pz,
@@ -591,6 +703,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	g.itemEntities.SendExistingItems(player)
 	g.mobMgr.SendExistingMobs(player)
 	g.arrowMgr.SendExistingArrows(player)
+	g.fishingMgr.SendExistingBobbers(player)
+	g.boatMgr.SendExistingBoats(player)
+	g.minecartMgr.SendExistingMinecarts(player)
+	g.tntMgr.SendExistingTNTs(player)
+	g.potionMgr.SendExistingPotions(player)
 
 	// Tab list header/footer
 	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}
@@ -608,7 +725,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 }
 
 func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
-	dimensionNames := []pk.Identifier{"minecraft:overworld"}
+	dimensionNames := []pk.Identifier{"minecraft:overworld", "minecraft:the_nether"}
 
 	return conn.WritePacket(pk.Marshal(
 		packetid.ClientboundLogin,
@@ -682,6 +799,11 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		Encoder:         cs,
 		SurvivalHandler: g.survivalHandler,
 		CropMgr:         g.cropMgr,
+		BedMgr:          g.bedMgr,
+		BoatMgr:         g.boatMgr,
+		MinecartMgr:     g.minecartMgr,
+		RedstoneMgr:     g.redstoneMgr,
+		DimensionMgr:    g.dimensionMgr,
 	}
 	blockHandler := &handler.BlockHandler{
 		World:        g.world,
@@ -697,6 +819,14 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		CropMgr:      g.cropMgr,
 		EnchantMgr:   g.enchantMgr,
 		AnvilMgr:     g.anvilMgr,
+		BedMgr:       g.bedMgr,
+		SignMgr:      g.signMgr,
+		BoatMgr:      g.boatMgr,
+		MinecartMgr:  g.minecartMgr,
+		TNTMgr:       g.tntMgr,
+		FireMgr:      g.fireMgr,
+		RedstoneMgr:  g.redstoneMgr,
+		DimensionMgr: g.dimensionMgr,
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
@@ -733,20 +863,25 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 	}
 	animHandler := &handler.AnimationHandler{
 		Manager: g.players,
+		BedMgr:  g.bedMgr,
 	}
 	combatHandler := &handler.CombatHandler{
 		Manager:         g.players,
 		SurvivalHandler: g.survivalHandler,
 		MobManager:      g.mobMgr,
 		VillagerMgr:     g.villagerMgr,
+		BoatMgr:         g.boatMgr,
+		MinecartMgr:     g.minecartMgr,
+		EffectMgr:       g.effectMgr,
 		Logger:          g.logger,
 	}
 	respawnHandler := &handler.RespawnHandler{
-		Manager: g.players,
-		World:   g.world,
-		SpawnY:  g.spawnY,
-		MinY:    g.minY,
-		Logger:  g.logger,
+		Manager:      g.players,
+		World:        g.world,
+		SpawnY:       g.spawnY,
+		MinY:         g.minY,
+		Logger:       g.logger,
+		DimensionMgr: g.dimensionMgr,
 	}
 
 	// Keepalive sender goroutine (sends every 15s)
@@ -780,7 +915,15 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		if movHandler.HandlePacket(player, p) {
 			continue
 		}
+		// Bow release (action=5) must be checked before blockHandler claims all PlayerAction packets
+		if g.bowMgr.HandlePlayerAction(player, p) {
+			continue
+		}
 		if blockHandler.HandlePacket(player, p) {
+			continue
+		}
+		// Bow draw (UseItem with bow) must be checked before food handler
+		if g.bowMgr.HandleUseItem(player, p) {
 			continue
 		}
 		if g.foodHandler.HandlePacket(player, p) {
@@ -796,6 +939,15 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 			continue
 		}
 		if combatHandler.HandlePacket(player, p) {
+			continue
+		}
+		if g.boatMgr.HandleMoveVehicle(player, p) {
+			continue
+		}
+		if g.boatMgr.HandlePaddleBoat(player, p) {
+			continue
+		}
+		if g.minecartMgr.HandleMoveVehicle(player, p) {
 			continue
 		}
 		if respawnHandler.HandlePacket(player, p) {

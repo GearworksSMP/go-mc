@@ -19,11 +19,26 @@ type MovementHandler struct {
 	Encoder         *ChunkSender
 	SurvivalHandler *SurvivalHandler
 	CropMgr         *CropManager
+	BedMgr          *BedManager
+	BoatMgr         *BoatManager
+	MinecartMgr     *MinecartManager
+	RedstoneMgr     *RedstoneManager
+	DimensionMgr    *DimensionManager // optional; when set, uses dimension-aware world/encoder
 }
 
 // HandlePacket processes a single packet for the given player.
 // Returns true if the packet was handled.
 func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
+	// Wake sleeping players on any movement input
+	if player.Sleeping && h.BedMgr != nil {
+		pid := packetid.ServerboundPacketID(p.ID)
+		if pid == packetid.ServerboundMovePlayerPos ||
+			pid == packetid.ServerboundMovePlayerPosRot ||
+			pid == packetid.ServerboundMovePlayerRot {
+			h.BedMgr.WakePlayer(player)
+		}
+	}
+
 	switch packetid.ServerboundPacketID(p.ID) {
 	case packetid.ServerboundMovePlayerPos:
 		var x, y, z pk.Double
@@ -54,6 +69,10 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		player.WasOnGround = wasOnGround
 		h.broadcastPos(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
+		// Check pressure plates at new position
+		if h.RedstoneMgr != nil && onGround {
+			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
+		}
 		return true
 
 	case packetid.ServerboundMovePlayerPosRot:
@@ -87,6 +106,10 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		player.WasOnGround = wasOnGround
 		h.broadcastPosRot(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z), float32(yaw), float32(pitch))
+		// Check pressure plates at new position
+		if h.RedstoneMgr != nil && onGround {
+			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
+		}
 		return true
 
 	case packetid.ServerboundMovePlayerRot:
@@ -108,6 +131,22 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 	return false
 }
 
+// worldForPlayer returns the world for the player's current dimension.
+func (h *MovementHandler) worldForPlayer(player *game.Player) game.World {
+	if h.DimensionMgr != nil {
+		return h.DimensionMgr.WorldForPlayer(player)
+	}
+	return h.World
+}
+
+// encoderForPlayer returns the chunk encoder for the player's current dimension.
+func (h *MovementHandler) encoderForPlayer(player *game.Player) *ChunkSender {
+	if h.DimensionMgr != nil {
+		return h.DimensionMgr.EncoderForPlayer(player)
+	}
+	return h.Encoder
+}
+
 // onChunkChange is called when a player crosses a chunk boundary.
 func (h *MovementHandler) onChunkChange(player *game.Player, oldChunk, newChunk game.ChunkPos) {
 	// Update chunk cache center
@@ -119,8 +158,9 @@ func (h *MovementHandler) onChunkChange(player *game.Player, oldChunk, newChunk 
 		return
 	}
 
-	if h.Encoder != nil {
-		h.Encoder.UpdateChunks(player)
+	encoder := h.encoderForPlayer(player)
+	if encoder != nil {
+		encoder.UpdateChunks(player)
 	}
 }
 
@@ -281,6 +321,15 @@ func (h *MovementHandler) handleSneakFlag(player *game.Player, flags int32) {
 	if sneaking != player.Sneaking {
 		player.Sneaking = sneaking
 		BroadcastEntityFlags(h.Manager, player)
+
+		// Dismount vehicle when player starts sneaking
+		if sneaking && player.RidingEntityEID != 0 {
+			if h.MinecartMgr != nil && h.MinecartMgr.IsMinecart(player.RidingEntityEID) {
+				h.MinecartMgr.DismountMinecart(player)
+			} else if h.BoatMgr != nil {
+				h.BoatMgr.DismountBoat(player)
+			}
+		}
 	}
 }
 
@@ -304,7 +353,21 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		player.FallStartY = -999
 		if fallDist > 3 {
 			damage := float32(fallDist - 3)
-			if h.SurvivalHandler != nil {
+
+			// Feather Falling enchantment: check boots (slot 8) for reduction.
+			// Each level reduces fall damage by 12% (multiply by 1 - 0.12*level).
+			bootsItem := &player.Inventory[8]
+			if bootsItem.ID > 0 && bootsItem.Enchantments != nil {
+				if ffLvl := bootsItem.Enchantments["feather_falling"]; ffLvl > 0 {
+					reduction := float64(ffLvl) * 0.12
+					if reduction > 1.0 {
+						reduction = 1.0
+					}
+					damage *= float32(1 - reduction)
+				}
+			}
+
+			if damage > 0 && h.SurvivalHandler != nil {
 				player.LastDamageMessage = player.Name + " fell from a high place"
 				h.SurvivalHandler.ApplyDamage(h.Manager, player, damage, h.SurvivalHandler.FallDamageTypeID)
 			}
@@ -315,19 +378,20 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 			bx := int(math.Floor(player.X))
 			by := int(math.Floor(player.Y)) - 1
 			bz := int(math.Floor(player.Z))
-			if state, err := h.World.GetBlock(bx, by, bz); err == nil {
+			w := h.worldForPlayer(player)
+			if state, err := w.GetBlock(bx, by, bz); err == nil {
 				blockName := BlockNameFromState(int(state))
 				if blockName == "farmland" {
 					dirtID, ok := block.ToStateID[block.Dirt{}]
 					if ok {
-						h.World.SetBlock(bx, by, bz, dirtID)
+						w.SetBlock(bx, by, bz, dirtID)
 						broadcastBlockUpdateDirect(h.Manager, bx, by, bz, int32(dirtID))
 					}
 					// Break crop on top if any
 					if h.CropMgr != nil {
-						aboveState, err := h.World.GetBlock(bx, by+1, bz)
+						aboveState, err := w.GetBlock(bx, by+1, bz)
 						if err == nil && isCropBlock(BlockNameFromState(int(aboveState))) {
-							h.World.SetBlock(bx, by+1, bz, 0)
+							w.SetBlock(bx, by+1, bz, 0)
 							broadcastBlockUpdateDirect(h.Manager, bx, by+1, bz, 0)
 							h.CropMgr.UnregisterCrop(bx, by+1, bz)
 						}

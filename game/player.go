@@ -246,6 +246,10 @@ type Player struct {
 	GameMode   int32
 	Dead       bool
 
+	// Status effects (potions)
+	Effects    map[int32]*ActiveEffect // effect ID → active effect
+	Absorption float32                // extra absorption hearts from Absorption effect
+
 	// Fall damage tracking
 	FallStartY float64
 
@@ -277,11 +281,26 @@ type Player struct {
 	LastDamageMessage string // death message override (e.g. "X was slain by Y")
 
 	// Shield blocking state
-	Blocking bool
+	Blocking            bool
+	ShieldCooldownUntil time.Time
+
+	// Bow drawing state
+	DrawingBow   bool
+	BowDrawStart time.Time
+
+	// Riding state (e.g. boat)
+	RidingEntityEID int32
+
+	// Fishing state
+	FishingBobberEID int32 // 0 = no bobber out
 
 	// Spawn point (bed)
 	SpawnX, SpawnY, SpawnZ float64
 	HasSpawnPoint          bool
+
+	// Sleep state
+	Sleeping      bool
+	LastSleepTick int64
 
 	// Container window state
 	OpenWindowID   int           // 0=none, 1=crafting table, 2=chest, 3=furnace
@@ -290,6 +309,14 @@ type Player struct {
 	OpenFurnacePos [3]int        // world position of open furnace
 	EnchantSession *EnchantSessionData // active enchanting table session
 	AnvilSession   *AnvilSessionData   // active anvil UI session
+
+	// Sign editing state
+	EditingSignPos *[3]int // position of sign being edited, nil if not editing
+
+	// Dimension tracking
+	Dimension      string // "minecraft:overworld" or "minecraft:the_nether"
+	PortalCooldown int64  // ticks remaining before can use portal again
+	PortalTicks    int64  // ticks spent standing in portal (teleport at 80)
 }
 
 // NewPlayer creates a new Player with the given connection info.
@@ -307,6 +334,7 @@ func NewPlayer(name string, id uuid.UUID, eid int32, conn *net.Conn) *Player {
 		Saturation:   5,
 		FallStartY:   -999,
 		SkinParts:    0x7F,
+		Dimension:    "minecraft:overworld",
 	}
 }
 

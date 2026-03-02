@@ -97,6 +97,52 @@ func (am *ArrowManager) SpawnArrow(shooterEID int32, sx, sy, sz, tx, ty, tz floa
 	})
 }
 
+// SpawnPlayerArrow creates and broadcasts an arrow shot by a player with a given direction and damage.
+func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64) {
+	speed := 3.0
+	velX := dirX * speed
+	velY := dirY * speed
+	velZ := dirZ * speed
+
+	eid := am.Manager.NextEntityID()
+	arrow := &Arrow{
+		EID:        eid,
+		ShooterEID: shooterEID,
+		X:          x,
+		Y:          y,
+		Z:          z,
+		VelX:       velX,
+		VelY:       velY,
+		VelZ:       velZ,
+		Damage:     float32(damage),
+	}
+
+	am.mu.Lock()
+	am.Arrows[eid] = arrow
+	am.mu.Unlock()
+
+	// Broadcast spawn
+	id := uuid.New()
+	data := shooterEID + 1 // data field = shooter entity ID + 1
+	pkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(id),
+		pk.VarInt(arrowEntityType),
+		pk.Double(x),
+		pk.Double(y),
+		pk.Double(z),
+		pk.UnsignedByte(0),
+		pk.Angle(0), // pitch
+		pk.Angle(0), // yaw
+		pk.Angle(0), // head yaw
+		pk.VarInt(data),
+	)
+	am.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
+}
+
 // Tick processes all arrows (movement, collision, despawn).
 func (am *ArrowManager) Tick(tick int64) {
 	am.mu.Lock()
@@ -136,8 +182,13 @@ func (am *ArrowManager) Tick(tick int64) {
 
 		// Check player collision
 		hitPlayer := false
+		deflected := false
 		am.Manager.ForEach(func(p *game.Player) {
-			if hitPlayer || p.Dead || p.IsInvulnerable() {
+			if hitPlayer || deflected || p.Dead || p.IsInvulnerable() {
+				return
+			}
+			// Skip the shooter (player arrows should not hit themselves)
+			if p.EID == arrow.ShooterEID && arrow.LifeTick < 5 {
 				return
 			}
 			px, py, pz := p.Position()
@@ -146,15 +197,56 @@ func (am *ArrowManager) Tick(tick int64) {
 			dz := pz - arrow.Z
 			d := math.Sqrt(dx*dx + dy*dy + dz*dz)
 			if d < 1.0 {
-				// Calculate damage (2-5)
+				// Shield deflection: if player is blocking and arrow is coming from the front
+				if p.Blocking {
+					// Compute player's look direction from yaw/pitch
+					yaw, pitch := p.Rotation()
+					yawRad := float64(yaw) * math.Pi / 180.0
+					pitchRad := float64(pitch) * math.Pi / 180.0
+					lookX := -math.Sin(yawRad) * math.Cos(pitchRad)
+					lookZ := math.Cos(yawRad) * math.Cos(pitchRad)
+
+					// Arrow direction (normalized)
+					arrowSpeed := math.Sqrt(arrow.VelX*arrow.VelX + arrow.VelZ*arrow.VelZ)
+					if arrowSpeed > 0.001 {
+						arrowDirX := arrow.VelX / arrowSpeed
+						arrowDirZ := arrow.VelZ / arrowSpeed
+
+						// Dot product > 0 means arrow is coming from the front
+						dot := arrowDirX*lookX + arrowDirZ*lookZ
+						if dot > 0 {
+							// Deflect: reverse arrow velocity
+							arrow.VelX = -arrow.VelX
+							arrow.VelY = -arrow.VelY * 0.5
+							arrow.VelZ = -arrow.VelZ
+							// Play shield block sound
+							BroadcastSound(am.Manager, SoundShieldBlock, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+							// Reduce shield durability
+							reduceShieldDurability(p)
+							deflected = true
+							return
+						}
+					}
+				}
+
+				// Calculate damage (2-5 for mob arrows, uncapped for player arrows)
 				damage := arrow.Damage
 				if damage < 2 {
 					damage = 2
 				}
-				if damage > 5 {
-					damage = 5
+				// Find shooter name for death message
+				shooterName := "Skeleton"
+				shooter := am.Manager.GetByEID(arrow.ShooterEID)
+				if shooter != nil {
+					shooterName = shooter.Name
+					// Player arrows use full damage (already calculated with charge + enchants)
+				} else {
+					// Mob arrows: cap at 5
+					if damage > 5 {
+						damage = 5
+					}
 				}
-				p.LastDamageMessage = p.Name + " was shot by Skeleton"
+				p.LastDamageMessage = p.Name + " was shot by " + shooterName
 				am.Survival.ApplyDamage(am.Manager, p, damage, am.Survival.AttackDamageTypeID)
 				hitPlayer = true
 			}
@@ -162,6 +254,9 @@ func (am *ArrowManager) Tick(tick int64) {
 		if hitPlayer {
 			toRemove = append(toRemove, eid)
 			continue
+		}
+		if deflected {
+			continue // arrow was deflected, keep it alive for next tick
 		}
 
 		// Broadcast position update

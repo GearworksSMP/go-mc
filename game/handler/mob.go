@@ -18,6 +18,11 @@ const (
 	MobTypeCreeper  int32 = 20
 	MobTypeSpider   int32 = 96
 
+	MobTypeEnderman int32 = 30
+	MobTypeWitch    int32 = 114
+	MobTypeSlime    int32 = 89
+	MobTypePhantom  int32 = 72
+
 	MobTypeCow     int32 = 19
 	MobTypePig     int32 = 73
 	MobTypeSheep   int32 = 83
@@ -53,6 +58,18 @@ type Mob struct {
 	LoveTicks     int64   // ticks remaining in "love" mode (breeding)
 	BreedCooldown int64   // ticks until can breed again
 
+	// Enderman
+	TeleportCooldown int64
+
+	// Slime
+	SlimeSize int32 // 1=small, 2=medium, 4=large
+
+	// Phantom
+	FlyTargetY float64
+	SwoopPhase int32  // 0=circling, 1=diving
+	SwoopTick  int64  // tick when current phase started
+	CircleAngle float64 // current angle around target for circling
+
 	// Villager data (nil for non-villagers)
 	VillagerData *VillagerData
 }
@@ -61,6 +78,7 @@ type Mob struct {
 type MobManager struct {
 	Manager      *game.PlayerManager
 	TimeMgr      *TimeManager
+	WeatherMgr   *WeatherManager
 	World        game.World
 	MinY         int
 	Survival     *SurvivalHandler
@@ -95,6 +113,12 @@ func (m *MobManager) Tick(tick int64) {
 	// Spawn hostile mobs every 100 ticks (5 seconds)
 	if tick%100 == 0 {
 		m.trySpawn()
+		m.trySpawnSlime()
+	}
+
+	// Spawn phantoms every 200 ticks (10 seconds)
+	if tick%200 == 0 {
+		m.trySpawnPhantom(tick)
 	}
 
 	// Spawn passive mobs every 200 ticks (10 seconds)
@@ -115,6 +139,11 @@ func (m *MobManager) Tick(tick int64) {
 	// Sunlight damage every 20 ticks
 	if tick%20 == 0 && !m.TimeMgr.IsNight() {
 		m.sunlightDamage()
+	}
+
+	// Enderman rain damage every 20 ticks
+	if tick%20 == 0 {
+		m.endermanRainDamage()
 	}
 }
 
@@ -159,20 +188,26 @@ func (m *MobManager) trySpawn() {
 		return
 	}
 
-	// Pick mob type: 50% zombie, 25% skeleton, 15% spider, 10% creeper
+	// Pick mob type: 40% zombie, 20% skeleton, 15% spider, 10% creeper, 5% enderman, 5% witch, 5% spider(extra)
 	var typeID int32
 	var health, damage float32
 	var speed float64
 	roll := rand.Float64()
 	switch {
-	case roll < 0.5:
+	case roll < 0.40:
 		typeID, health, damage, speed = MobTypeZombie, 20, 3, 0.115
-	case roll < 0.75:
+	case roll < 0.60:
 		typeID, health, damage, speed = MobTypeSkeleton, 20, 2, 0.1
-	case roll < 0.9:
+	case roll < 0.75:
 		typeID, health, damage, speed = MobTypeSpider, 16, 2, 0.15
-	default:
+	case roll < 0.85:
 		typeID, health, damage, speed = MobTypeCreeper, 20, 0, 0.1
+	case roll < 0.90:
+		typeID, health, damage, speed = MobTypeEnderman, 40, 7, 0.15
+	case roll < 0.95:
+		typeID, health, damage, speed = MobTypeWitch, 26, 3, 0.1
+	default:
+		typeID, health, damage, speed = MobTypeSpider, 16, 2, 0.15
 	}
 
 	eid := m.Manager.NextEntityID()
@@ -323,6 +358,18 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		return
 	case mob.TypeID == MobTypeSkeleton && mob.Hostile:
 		m.tickSkeleton(mob, tick)
+		return
+	case mob.TypeID == MobTypeEnderman:
+		m.tickEnderman(mob, tick)
+		return
+	case mob.TypeID == MobTypeWitch:
+		m.tickWitch(mob, tick)
+		return
+	case mob.TypeID == MobTypeSlime:
+		m.tickSlime(mob, tick)
+		return
+	case mob.TypeID == MobTypePhantom:
+		m.tickPhantom(mob, tick)
 		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
@@ -845,6 +892,13 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 	// Play hurt sound
 	BroadcastSound(m.Manager, MobHurtSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
 
+	// Enderman teleport on hit
+	if mob.TypeID == MobTypeEnderman && mob.TeleportCooldown <= 0 && mob.Health > 0 {
+		m.endermanTeleport(mob)
+		mob.TeleportCooldown = 20
+		mob.Target = attacker // aggro on the attacker
+	}
+
 	// Passive mobs flee when hit
 	if !mob.Hostile {
 		px, _, pz := attacker.Position()
@@ -884,6 +938,11 @@ func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 
 	// Drop loot
 	m.dropMobLoot(mob)
+
+	// Slime split on death: spawn smaller slimes
+	if mob.TypeID == MobTypeSlime && mob.SlimeSize > 1 {
+		m.slimeSplit(mob)
+	}
 
 	// Remove after brief delay (use goroutine for simplicity)
 	go func() {
@@ -956,6 +1015,29 @@ func (m *MobManager) dropMobLoot(mob *Mob) {
 	case MobTypeVillager:
 		drops = []drop{
 			{"emerald", 0, 1},
+		}
+	case MobTypeEnderman:
+		if rand.Float64() < 0.5 {
+			drops = []drop{{"ender_pearl", 1, 1}}
+		}
+	case MobTypeWitch:
+		if rand.Float64() < 0.33 {
+			drops = append(drops, drop{"glass_bottle", 0, 2})
+		}
+		if rand.Float64() < 0.33 {
+			drops = append(drops, drop{"redstone", 0, 2})
+		}
+		if rand.Float64() < 0.33 {
+			drops = append(drops, drop{"glowstone_dust", 0, 2})
+		}
+	case MobTypeSlime:
+		if mob.SlimeSize <= 1 {
+			drops = []drop{{"slime_ball", 0, 2}}
+		}
+		// Medium and large slimes don't drop items (they split instead)
+	case MobTypePhantom:
+		if rand.Float64() < 0.5 {
+			drops = []drop{{"phantom_membrane", 1, 1}}
 		}
 	}
 
@@ -1077,6 +1159,17 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 	m.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pkt)
 	})
+
+	// Send slime size metadata (index 16 = VarInt size)
+	if mob.TypeID == MobTypeSlime && mob.SlimeSize > 0 {
+		var w MetadataWriter
+		w.writeIndex(16, metaSerializerInt)
+		writeVarIntBuf(&w.buf, mob.SlimeSize)
+		data := w.Bytes()
+		m.Manager.ForEach(func(p *game.Player) {
+			SendEntityMetadata(p, mob.EID, data)
+		})
+	}
 }
 
 // broadcastMoveEntity sends a teleport update for a mob.
@@ -1121,6 +1214,14 @@ func (m *MobManager) SendExistingMobs(player *game.Player) {
 			pk.Angle(degToAngle(mob.Yaw)),
 			pk.VarInt(0),
 		))
+
+		// Send slime size metadata
+		if mob.TypeID == MobTypeSlime && mob.SlimeSize > 0 {
+			var w MetadataWriter
+			w.writeIndex(16, metaSerializerInt)
+			writeVarIntBuf(&w.buf, mob.SlimeSize)
+			SendEntityMetadata(player, mob.EID, w.Bytes())
+		}
 	}
 }
 
@@ -1130,4 +1231,558 @@ func (m *MobManager) IsMob(eid int32) bool {
 	defer m.mu.Unlock()
 	_, ok := m.Mobs[eid]
 	return ok
+}
+
+// --- Enderman AI ---
+
+// tickEnderman runs enderman AI: aggro on look, melee attack, teleport.
+func (m *MobManager) tickEnderman(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	if mob.TeleportCooldown > 0 {
+		mob.TeleportCooldown--
+	}
+
+	// Check if any player is looking at the enderman (aggro on look)
+	if mob.Target == nil {
+		m.Manager.ForEach(func(p *game.Player) {
+			if mob.Target != nil || p.Dead || p.GameMode != 0 {
+				return
+			}
+			px, py, pz := p.Position()
+			dx := mob.X - px
+			dy := (mob.Y + 1.5) - (py + 1.62) // eye heights
+			dz := mob.Z - pz
+			dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			if dist > 64 || dist < 0.5 {
+				return
+			}
+
+			// Get player look direction
+			yaw, pitch := p.Rotation()
+			yawRad := float64(-yaw) * math.Pi / 180
+			pitchRad := float64(-pitch) * math.Pi / 180
+			lookX := math.Sin(yawRad) * math.Cos(pitchRad)
+			lookY := math.Sin(pitchRad)
+			lookZ := math.Cos(yawRad) * math.Cos(pitchRad)
+
+			// Normalize direction to enderman
+			ndx := dx / dist
+			ndy := dy / dist
+			ndz := dz / dist
+
+			// Dot product = cos(angle)
+			dot := lookX*ndx + lookY*ndy + lookZ*ndz
+			angle := math.Acos(dot) * 180 / math.Pi
+			if angle < 5 {
+				mob.Target = p
+			}
+		})
+	}
+
+	if mob.Target != nil && (mob.Target.Dead || mob.Target.GameMode != 0) {
+		mob.Target = nil
+	}
+
+	if mob.Target != nil {
+		px, _, pz := mob.Target.Position()
+		dx := px - mob.X
+		dz := pz - mob.Z
+		dist := math.Sqrt(dx*dx + dz*dz)
+
+		if dist > 1.5 {
+			nx := dx / dist * mob.Speed * 2 // enderman is fast
+			nz := dz / dist * mob.Speed * 2
+			m.tryMove(mob, nx, nz)
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+
+		// Calculate 3D distance for attack range
+		tpx, tpy, tpz := mob.Target.Position()
+		ddx := tpx - mob.X
+		ddy := tpy - mob.Y
+		ddz := tpz - mob.Z
+		totalDist := math.Sqrt(ddx*ddx + ddy*ddy + ddz*ddz)
+
+		if totalDist <= 1.5 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
+			mob.AttackCooldown = 30
+			mob.Target.LastDamageMessage = mob.Target.Name + " was slain by Enderman"
+			m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.AttackDamageTypeID)
+		}
+
+		m.broadcastMoveEntity(mob)
+	} else {
+		m.tickWander(mob, tick)
+	}
+}
+
+// endermanTeleport teleports an enderman to a random position within 16 blocks.
+func (m *MobManager) endermanTeleport(mob *Mob) {
+	for i := 0; i < 10; i++ {
+		nx := mob.X + (rand.Float64()-0.5)*32
+		nz := mob.Z + (rand.Float64()-0.5)*32
+		ny := m.findSurfaceY(int(nx), int(nz))
+		if ny < m.MinY {
+			continue
+		}
+		if m.isWalkable(nx, float64(ny), nz) {
+			mob.X = nx
+			mob.Y = float64(ny)
+			mob.Z = nz
+			BroadcastSound(m.Manager, SoundEndermanTeleport, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+			m.broadcastMoveEntity(mob)
+			return
+		}
+	}
+}
+
+// endermanRainDamage damages endermen in rain.
+func (m *MobManager) endermanRainDamage() {
+	if m.WeatherMgr == nil {
+		return
+	}
+	state := m.WeatherMgr.State()
+	if state == WeatherClear {
+		return
+	}
+	for _, mob := range m.Mobs {
+		if mob.Health <= 0 || mob.TypeID != MobTypeEnderman {
+			continue
+		}
+		mob.Health -= 1
+		if mob.Health <= 0 {
+			mob.Health = 0
+			m.killMob(mob, nil)
+		} else {
+			hurtPkt := pk.Marshal(
+				packetid.ClientboundHurtAnimation,
+				pk.VarInt(mob.EID),
+				pk.Float(0),
+			)
+			m.Manager.ForEach(func(p *game.Player) {
+				p.WritePacket(hurtPkt)
+			})
+			BroadcastSound(m.Manager, SoundEndermanHurt, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+			// Enderman also teleports to escape rain
+			if mob.TeleportCooldown <= 0 {
+				m.endermanTeleport(mob)
+				mob.TeleportCooldown = 20
+			}
+		}
+	}
+}
+
+// --- Witch AI ---
+
+// tickWitch runs witch AI: ranged attack, maintain distance.
+func (m *MobManager) tickWitch(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	if mob.ShootCooldown > 0 {
+		mob.ShootCooldown--
+	}
+
+	var nearest *game.Player
+	nearestDist := 32.0
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - mob.X
+		dy := py - mob.Y
+		dz := pz - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < nearestDist {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest == nil {
+		mob.Target = nil
+		m.tickWander(mob, tick)
+		return
+	}
+
+	mob.Target = nearest
+	px, _, pz := nearest.Position()
+	dx := px - mob.X
+	dz := pz - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+	// Maintain 8-10 block distance
+	if dist < 8.0 {
+		// Back up
+		nx := -dx / dist * mob.Speed
+		nz := -dz / dist * mob.Speed
+		m.tryMove(mob, nx, nz)
+	} else if dist > 10.0 {
+		// Move closer
+		nx := dx / dist * mob.Speed
+		nz := dz / dist * mob.Speed
+		m.tryMove(mob, nx, nz)
+	}
+	m.broadcastMoveEntity(mob)
+
+	// Attack every 60 ticks when target in range (10 blocks)
+	if nearestDist <= 10.0 && mob.ShootCooldown <= 0 {
+		mob.ShootCooldown = 60 // 3 seconds
+		nearest.LastDamageMessage = nearest.Name + " was killed by Witch"
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		BroadcastSound(m.Manager, SoundWitchAmbient, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+	}
+}
+
+// --- Slime AI ---
+
+// tickSlime runs slime AI: bouncing movement toward nearest player.
+func (m *MobManager) tickSlime(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	// Bounce interval depends on size: every 20-40 ticks
+	bounceInterval := int64(30)
+	if mob.SlimeSize >= 4 {
+		bounceInterval = 20
+	} else if mob.SlimeSize <= 1 {
+		bounceInterval = 40
+	}
+
+	if tick%bounceInterval != 0 {
+		return // only act on bounce ticks
+	}
+
+	var nearest *game.Player
+	nearestDist := 16.0
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - mob.X
+		dy := py - mob.Y
+		dz := pz - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < nearestDist {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest != nil {
+		mob.Target = nearest
+		px, _, pz := nearest.Position()
+		dx := px - mob.X
+		dz := pz - mob.Z
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist > 0.5 {
+			speed := 0.1 * float64(mob.SlimeSize)
+			nx := dx / dist * speed
+			nz := dz / dist * speed
+			m.tryMove(mob, nx, nz)
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+
+		// Attack if within range and size > 1 (small slimes don't deal damage)
+		if nearestDist <= 1.5 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
+			mob.AttackCooldown = 30
+			nearest.LastDamageMessage = nearest.Name + " was squished by Slime"
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		}
+	} else {
+		mob.Target = nil
+		// Random hop
+		mob.WanderYaw += (rand.Float32() - 0.5) * 90
+		rad := float64(mob.WanderYaw) * math.Pi / 180
+		speed := 0.08 * float64(mob.SlimeSize)
+		nx := math.Cos(rad) * speed
+		nz := math.Sin(rad) * speed
+		m.tryMove(mob, nx, nz)
+	}
+
+	// Play bounce sound
+	if mob.SlimeSize <= 1 {
+		BroadcastSound(m.Manager, SoundSlimeSquishSmall, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+	} else {
+		BroadcastSound(m.Manager, SoundSlimeSquish, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+	}
+
+	m.broadcastMoveEntity(mob)
+}
+
+// slimeSplit spawns 2-4 smaller slimes when a slime dies.
+func (m *MobManager) slimeSplit(mob *Mob) {
+	var newSize int32
+	switch mob.SlimeSize {
+	case 4:
+		newSize = 2
+	case 2:
+		newSize = 1
+	default:
+		return // small slimes don't split
+	}
+
+	count := 2 + rand.Int31n(3) // 2-4 smaller slimes
+	for i := int32(0); i < count; i++ {
+		var health float32
+		var damage float32
+		switch newSize {
+		case 1:
+			health, damage = 1, 0
+		case 2:
+			health, damage = 4, 2
+		}
+
+		eid := m.Manager.NextEntityID()
+		baby := &Mob{
+			EID:       eid,
+			TypeID:    MobTypeSlime,
+			X:         mob.X + (rand.Float64()-0.5)*2,
+			Y:         mob.Y,
+			Z:         mob.Z + (rand.Float64()-0.5)*2,
+			Health:    health,
+			MaxHealth: health,
+			Damage:    damage,
+			Speed:     0.1,
+			WanderYaw: rand.Float32() * 360,
+			Hostile:   true,
+			SlimeSize: newSize,
+		}
+		m.Mobs[eid] = baby
+		m.broadcastSpawn(baby)
+	}
+}
+
+// trySpawnSlime attempts to spawn slimes (1% chance per 100 ticks).
+func (m *MobManager) trySpawnSlime() {
+	if rand.Float64() > 0.01 {
+		return
+	}
+	hostileCount := 0
+	for _, mob := range m.Mobs {
+		if mob.Hostile {
+			hostileCount++
+		}
+	}
+	if hostileCount >= m.maxMobs {
+		return
+	}
+
+	var players []*game.Player
+	m.Manager.ForEach(func(p *game.Player) {
+		if !p.Dead && p.GameMode == 0 {
+			players = append(players, p)
+		}
+	})
+	if len(players) == 0 {
+		return
+	}
+
+	player := players[rand.Intn(len(players))]
+	px, _, pz := player.Position()
+
+	angle := rand.Float64() * 2 * math.Pi
+	dist := 24 + rand.Float64()*24
+	spawnX := px + math.Cos(angle)*dist
+	spawnZ := pz + math.Sin(angle)*dist
+
+	spawnY := m.findSurfaceY(int(spawnX), int(spawnZ))
+	if spawnY < m.MinY {
+		return
+	}
+
+	// Slimes spawn below Y=40 (simulating swamp/deep biome)
+	if spawnY > 40 {
+		return
+	}
+
+	// Pick random size
+	var slimeSize int32
+	var health, damage float32
+	sizeRoll := rand.Float64()
+	switch {
+	case sizeRoll < 0.5:
+		slimeSize, health, damage = 1, 1, 0
+	case sizeRoll < 0.8:
+		slimeSize, health, damage = 2, 4, 2
+	default:
+		slimeSize, health, damage = 4, 16, 4
+	}
+
+	eid := m.Manager.NextEntityID()
+	mob := &Mob{
+		EID:       eid,
+		TypeID:    MobTypeSlime,
+		X:         spawnX + 0.5,
+		Y:         float64(spawnY),
+		Z:         spawnZ + 0.5,
+		Health:    health,
+		MaxHealth: health,
+		Damage:    damage,
+		Speed:     0.1,
+		WanderYaw: rand.Float32() * 360,
+		Hostile:   true,
+		SlimeSize: slimeSize,
+	}
+	m.Mobs[eid] = mob
+	m.broadcastSpawn(mob)
+}
+
+// --- Phantom AI ---
+
+// tickPhantom runs phantom AI: circling and swooping.
+func (m *MobManager) tickPhantom(mob *Mob, tick int64) {
+	// Phantoms don't have gravity - they fly
+	// No m.applyGravity(mob)
+
+	var nearest *game.Player
+	nearestDist := 48.0
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - mob.X
+		dy := py - mob.Y
+		dz := pz - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < nearestDist {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest == nil {
+		mob.Target = nil
+		// Hover in place, slowly drift
+		mob.CircleAngle += 0.02
+		m.broadcastMoveEntity(mob)
+		return
+	}
+
+	mob.Target = nearest
+	px, py, pz := nearest.Position()
+
+	phaseDuration := tick - mob.SwoopTick
+
+	if mob.SwoopPhase == 0 {
+		// Circling phase: fly in circle around target at Y+10-15
+		targetY := py + 10 + mob.FlyTargetY
+		mob.CircleAngle += 0.05
+		circleRadius := 8.0
+		targetX := px + math.Cos(mob.CircleAngle)*circleRadius
+		targetZ := pz + math.Sin(mob.CircleAngle)*circleRadius
+
+		dx := targetX - mob.X
+		dy := targetY - mob.Y
+		dz := targetZ - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist > 0.5 {
+			speed := 0.3
+			mob.X += dx / dist * speed
+			mob.Y += dy / dist * speed
+			mob.Z += dz / dist * speed
+		}
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+		// Switch to swoop after 60-100 ticks (3-5 seconds)
+		if phaseDuration > int64(60+rand.Intn(40)) {
+			mob.SwoopPhase = 1
+			mob.SwoopTick = tick
+			BroadcastSound(m.Manager, SoundPhantomSwoop, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+		}
+	} else {
+		// Swoop phase: dive toward target
+		dx := px - mob.X
+		dy := (py + 1.0) - mob.Y
+		dz := pz - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+
+		if dist > 1.0 {
+			speed := 0.5
+			mob.X += dx / dist * speed
+			mob.Y += dy / dist * speed
+			mob.Z += dz / dist * speed
+		}
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		mob.Pitch = float32(math.Atan2(-dy, math.Sqrt(dx*dx+dz*dz)) * 180 / math.Pi)
+
+		// Attack on contact
+		if dist <= 2.0 && mob.AttackCooldown <= 0 {
+			mob.AttackCooldown = 20
+			nearest.LastDamageMessage = nearest.Name + " was slain by Phantom"
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+			BroadcastSound(m.Manager, SoundPhantomBite, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+		}
+
+		// After swooping or 40 ticks, climb back up and circle
+		if phaseDuration > 40 || dist <= 2.0 {
+			mob.SwoopPhase = 0
+			mob.SwoopTick = tick
+			mob.FlyTargetY = rand.Float64()*5 + 5 // 5-10 blocks above target
+			mob.Pitch = 0
+		}
+	}
+
+	m.broadcastMoveEntity(mob)
+}
+
+// trySpawnPhantom spawns phantoms for players who haven't slept for 3+ in-game days.
+func (m *MobManager) trySpawnPhantom(tick int64) {
+	if !m.TimeMgr.IsNight() {
+		return
+	}
+	hostileCount := 0
+	for _, mob := range m.Mobs {
+		if mob.Hostile {
+			hostileCount++
+		}
+	}
+	if hostileCount >= m.maxMobs {
+		return
+	}
+
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		// Check if player hasn't slept for 3+ in-game days (72000 ticks)
+		if tick-p.LastSleepTick < 72000 {
+			return
+		}
+		// 5% chance per check
+		if rand.Float64() > 0.05 {
+			return
+		}
+
+		px, py, pz := p.Position()
+		spawnY := py + 20 + rand.Float64()*20
+		spawnAngle := rand.Float64() * 2 * math.Pi
+		spawnDist := 5 + rand.Float64()*10
+		spawnX := px + math.Cos(spawnAngle)*spawnDist
+		spawnZ := pz + math.Sin(spawnAngle)*spawnDist
+
+		eid := m.Manager.NextEntityID()
+		mob := &Mob{
+			EID:         eid,
+			TypeID:      MobTypePhantom,
+			X:           spawnX,
+			Y:           spawnY,
+			Z:           spawnZ,
+			Health:      20,
+			MaxHealth:   20,
+			Damage:      6,
+			Speed:       0.3,
+			WanderYaw:   rand.Float32() * 360,
+			Hostile:     true,
+			SwoopPhase:  0,
+			SwoopTick:   tick,
+			FlyTargetY:  rand.Float64()*5 + 5,
+			CircleAngle: rand.Float64() * 2 * math.Pi,
+		}
+		m.Mobs[eid] = mob
+		m.broadcastSpawn(mob)
+		BroadcastSound(m.Manager, SoundPhantomAmbient, SoundCategoryHostile, spawnX, spawnY, spawnZ, 1.0, 1.0)
+	})
 }
