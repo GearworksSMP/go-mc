@@ -27,6 +27,36 @@ const (
 	MobTypePig     int32 = 73
 	MobTypeSheep   int32 = 83
 	MobTypeChicken int32 = 16
+
+	// New mob types
+	MobTypeBlaze            int32 = 5
+	MobTypeGhast            int32 = 42
+	MobTypeIronGolem        int32 = 51
+	MobTypeSnowGolem        int32 = 91
+	MobTypeGuardian         int32 = 44
+	MobTypeElderGuardian    int32 = 27
+	MobTypeDrowned          int32 = 24
+	MobTypeHusk             int32 = 48
+	MobTypeStray            int32 = 99
+	MobTypeCaveSpider       int32 = 13
+	MobTypeSilverfish       int32 = 86
+	MobTypeEndermite        int32 = 31
+	MobTypeMagmaCube        int32 = 62
+	MobTypePiglin           int32 = 74
+	MobTypeZombifiedPiglin  int32 = 121
+	MobTypeHoglin           int32 = 46
+	MobTypeStrider          int32 = 100
+	MobTypeWitherSkeleton   int32 = 116
+	MobTypeShulker          int32 = 84
+	MobTypePillager         int32 = 75
+	MobTypeVindicator       int32 = 107
+	MobTypeEvoker           int32 = 32
+	MobTypeVex              int32 = 106
+	MobTypeRavager          int32 = 80
+	MobTypeBee              int32 = 4
+	MobTypeFox              int32 = 40
+	MobTypeRabbit           int32 = 79
+	MobTypeBat              int32 = 3
 )
 
 // Mob represents a mob entity (hostile or passive).
@@ -70,8 +100,16 @@ type Mob struct {
 	SwoopTick  int64  // tick when current phase started
 	CircleAngle float64 // current angle around target for circling
 
+	// Pathfinding
+	Path          []PathStep // computed A* path
+	PathIndex     int        // current step along path
+	PathRecalcTick int64     // tick when path was last recalculated
+
 	// Villager data (nil for non-villagers)
 	VillagerData *VillagerData
+
+	// Tameable mob data (nil for non-tameable)
+	TameData *TameableMobData
 }
 
 // MobManager handles mob spawning, AI, and lifecycle.
@@ -84,6 +122,7 @@ type MobManager struct {
 	Survival     *SurvivalHandler
 	ItemEntities *ItemEntityManager
 	ArrowMgr     *ArrowManager
+	AdvMgr       *AdvancementManager
 	mu           sync.Mutex
 	Mobs         map[int32]*Mob
 	maxMobs      int
@@ -280,23 +319,37 @@ func (m *MobManager) trySpawnPassive() {
 		return
 	}
 
-	// Pick mob type: 25% cow, 25% pig, 18% sheep, 18% chicken, 14% villager
+	// Pick mob type: 20% cow, 20% pig, 14% sheep, 14% chicken, 8% villager, 8% wolf, 6% cat, 6% horse, 4% parrot
 	var typeID int32
 	var health float32
 	var vdata *VillagerData
+	var tdata *TameableMobData
 	roll := rand.Float64()
 	switch {
-	case roll < 0.25:
+	case roll < 0.20:
 		typeID, health = MobTypeCow, 10
-	case roll < 0.50:
+	case roll < 0.40:
 		typeID, health = MobTypePig, 10
-	case roll < 0.68:
+	case roll < 0.54:
 		typeID, health = MobTypeSheep, 8
-	case roll < 0.86:
+	case roll < 0.68:
 		typeID, health = MobTypeChicken, 4
-	default:
+	case roll < 0.76:
 		typeID, health = MobTypeVillager, 20
 		vdata = NewVillagerData(RandomProfession())
+	case roll < 0.84:
+		typeID, health = MobTypeWolf, 8
+	case roll < 0.90:
+		typeID, health = MobTypeCat, 10
+	case roll < 0.96:
+		typeID, health = MobTypeHorse, 15 + float32(rand.Intn(16))
+		tdata = &TameableMobData{
+			HorseSpeed:   0.1 + rand.Float64()*0.05,
+			HorseJump:    0.4 + rand.Float64()*0.3,
+			HorseVariant: rand.Int31n(7)*256 + rand.Int31n(5),
+		}
+	default:
+		typeID, health = MobTypeParrot, 6
 	}
 
 	eid := m.Manager.NextEntityID()
@@ -313,6 +366,7 @@ func (m *MobManager) trySpawnPassive() {
 		WanderYaw:    rand.Float32() * 360,
 		Hostile:      false,
 		VillagerData: vdata,
+		TameData:     tdata,
 	}
 	m.Mobs[eid] = mob
 	m.broadcastSpawn(mob)
@@ -356,8 +410,11 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case mob.TypeID == MobTypeCreeper:
 		m.tickCreeper(mob, tick)
 		return
-	case mob.TypeID == MobTypeSkeleton && mob.Hostile:
+	case mob.TypeID == MobTypeSkeleton:
 		m.tickSkeleton(mob, tick)
+		return
+	case mob.TypeID == MobTypeStray:
+		m.tickStray(mob, tick)
 		return
 	case mob.TypeID == MobTypeEnderman:
 		m.tickEnderman(mob, tick)
@@ -368,8 +425,74 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case mob.TypeID == MobTypeSlime:
 		m.tickSlime(mob, tick)
 		return
+	case mob.TypeID == MobTypeMagmaCube:
+		m.tickMagmaCube(mob, tick)
+		return
 	case mob.TypeID == MobTypePhantom:
 		m.tickPhantom(mob, tick)
+		return
+	case mob.TypeID == MobTypeGhast:
+		m.tickGhast(mob, tick)
+		return
+	case mob.TypeID == MobTypeBlaze:
+		m.tickBlaze(mob, tick)
+		return
+	case mob.TypeID == MobTypeGuardian, mob.TypeID == MobTypeElderGuardian:
+		m.tickGuardian(mob, tick)
+		return
+	case mob.TypeID == MobTypeIronGolem:
+		m.tickIronGolem(mob, tick)
+		return
+	case mob.TypeID == MobTypePiglin:
+		m.tickPiglin(mob, tick)
+		return
+	case mob.TypeID == MobTypeZombifiedPiglin:
+		m.tickZombifiedPiglin(mob, tick)
+		return
+	case mob.TypeID == MobTypeShulker:
+		m.tickShulker(mob, tick)
+		return
+	case mob.TypeID == MobTypePillager:
+		m.tickPillager(mob, tick)
+		return
+	case mob.TypeID == MobTypeVindicator:
+		m.tickVindicator(mob, tick)
+		return
+	case mob.TypeID == MobTypeEvoker:
+		m.tickEvoker(mob, tick)
+		return
+	case mob.TypeID == MobTypeVex:
+		m.tickVex(mob, tick)
+		return
+	case mob.TypeID == MobTypeRavager:
+		m.tickRavager(mob, tick)
+		return
+	case mob.TypeID == MobTypeHoglin:
+		m.tickHoglin(mob, tick)
+		return
+	case mob.TypeID == MobTypeWitherSkeleton:
+		m.tickWitherSkeleton(mob, tick)
+		return
+	case mob.TypeID == MobTypeDrowned:
+		m.tickDrowned(mob, tick)
+		return
+	case mob.TypeID == MobTypeHusk:
+		m.tickHusk(mob, tick)
+		return
+	case mob.TypeID == MobTypeBee:
+		m.tickBee(mob, tick)
+		return
+	case mob.TypeID == MobTypeWolf:
+		m.tickWolf(mob, tick)
+		return
+	case mob.TypeID == MobTypeCat:
+		m.tickCat(mob, tick)
+		return
+	case mob.TypeID == MobTypeHorse:
+		m.tickHorse(mob, tick)
+		return
+	case mob.TypeID == MobTypeParrot:
+		m.tickParrot(mob, tick)
 		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
@@ -465,17 +588,14 @@ func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 
 	if nearest != nil {
 		mob.Target = nearest
-		// Move toward target
+
 		px, _, pz := nearest.Position()
 		dx := px - mob.X
 		dz := pz - mob.Z
 		dist := math.Sqrt(dx*dx + dz*dz)
 
 		if dist > 1.5 {
-			nx := dx / dist * mob.Speed
-			nz := dz / dist * mob.Speed
-			m.tryMove(mob, nx, nz)
-			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+			m.moveWithPathfinding(mob, nearest, tick)
 		}
 
 		// Attack if within range
@@ -487,6 +607,7 @@ func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 		m.broadcastMoveEntity(mob)
 	} else {
 		mob.Target = nil
+		mob.Path = nil
 		m.tickWander(mob, tick)
 	}
 }
@@ -515,23 +636,20 @@ func (m *MobManager) tickCreeper(mob *Mob, tick int64) {
 	if nearest == nil {
 		mob.Target = nil
 		mob.FuseStart = 0
+		mob.Path = nil
 		m.tickWander(mob, tick)
 		return
 	}
 
 	mob.Target = nearest
 
-	// Move toward target
 	px, _, pz := nearest.Position()
 	dx := px - mob.X
 	dz := pz - mob.Z
 	dist := math.Sqrt(dx*dx + dz*dz)
 
 	if dist > 1.5 {
-		nx := dx / dist * mob.Speed
-		nz := dz / dist * mob.Speed
-		m.tryMove(mob, nx, nz)
-		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		m.moveWithPathfinding(mob, nearest, tick)
 	}
 
 	m.broadcastMoveEntity(mob)
@@ -655,6 +773,7 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 
 	if nearest == nil {
 		mob.Target = nil
+		mob.Path = nil
 		m.tickWander(mob, tick)
 		return
 	}
@@ -668,15 +787,13 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 
 	// Maintain 5-10 block distance
 	if dist < 5.0 {
-		// Back up
+		// Back up — direct movement (no pathfinding needed for retreating)
 		nx := -dx / dist * mob.Speed
 		nz := -dz / dist * mob.Speed
 		m.tryMove(mob, nx, nz)
 	} else if dist > 10.0 {
-		// Move closer
-		nx := dx / dist * mob.Speed
-		nz := dz / dist * mob.Speed
-		m.tryMove(mob, nx, nz)
+		// Move closer using pathfinding
+		m.moveWithPathfinding(mob, nearest, tick)
 	}
 	m.broadcastMoveEntity(mob)
 
@@ -737,6 +854,16 @@ func isBreedingFood(mobType int32, itemName string) bool {
 	case MobTypeChicken:
 		return itemName == "wheat_seeds" || itemName == "melon_seeds" ||
 			itemName == "pumpkin_seeds" || itemName == "beetroot_seeds"
+	case MobTypeWolf:
+		return itemName == "cooked_beef" || itemName == "cooked_porkchop" ||
+			itemName == "cooked_chicken" || itemName == "cooked_mutton"
+	case MobTypeCat:
+		return itemName == "cod" || itemName == "salmon" ||
+			itemName == "raw_cod" || itemName == "raw_salmon"
+	case MobTypeHorse:
+		return itemName == "golden_carrot" || itemName == "golden_apple"
+	case MobTypeParrot:
+		return false // parrots don't breed
 	}
 	return false
 }
@@ -819,7 +946,14 @@ func (m *MobManager) IsPassiveMob(eid int32) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	mob, ok := m.Mobs[eid]
-	return ok && !mob.Hostile
+	if !ok {
+		return false
+	}
+	// Tameable mobs are handled separately via TryTame
+	if isTameableType(mob.TypeID) {
+		return false
+	}
+	return !mob.Hostile
 }
 
 // GetMobType returns the mob type ID for the given entity, or -1 if not found.
@@ -848,6 +982,72 @@ func (m *MobManager) tickWander(mob *Mob, tick int64) {
 	}
 	mob.Yaw = mob.WanderYaw
 	m.broadcastMoveEntity(mob)
+}
+
+// moveWithPathfinding moves a mob toward a target player using A* pathfinding.
+// Recalculates path every 20 ticks or when the target has moved significantly.
+// Falls back to direct-line movement if no path is found.
+func (m *MobManager) moveWithPathfinding(mob *Mob, target *game.Player, tick int64) {
+	px, py, pz := target.Position()
+
+	// Recalculate path every 20 ticks or if path is empty
+	needsRecalc := mob.Path == nil ||
+		mob.PathIndex >= len(mob.Path) ||
+		tick-mob.PathRecalcTick >= 20
+
+	if needsRecalc {
+		sx := int(math.Floor(mob.X))
+		sy := int(math.Floor(mob.Y))
+		sz := int(math.Floor(mob.Z))
+		gx := int(math.Floor(px))
+		gy := int(math.Floor(py))
+		gz := int(math.Floor(pz))
+
+		mob.Path = m.pathfind(sx, sy, sz, gx, gy, gz)
+		mob.PathIndex = 0
+		mob.PathRecalcTick = tick
+	}
+
+	if mob.Path != nil && mob.PathIndex < len(mob.Path) {
+		// Move toward next path step
+		step := mob.Path[mob.PathIndex]
+		tx := float64(step.X) + 0.5
+		tz := float64(step.Z) + 0.5
+		dx := tx - mob.X
+		dz := tz - mob.Z
+		dist := math.Sqrt(dx*dx + dz*dz)
+
+		if dist < 0.3 {
+			// Reached this step, advance
+			mob.PathIndex++
+			if mob.PathIndex < len(mob.Path) {
+				step = mob.Path[mob.PathIndex]
+				tx = float64(step.X) + 0.5
+				tz = float64(step.Z) + 0.5
+				dx = tx - mob.X
+				dz = tz - mob.Z
+				dist = math.Sqrt(dx*dx + dz*dz)
+			}
+		}
+
+		if dist > 0.05 {
+			nx := dx / dist * mob.Speed
+			nz := dz / dist * mob.Speed
+			m.tryMove(mob, nx, nz)
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+	} else {
+		// Fallback: direct-line movement
+		dx := px - mob.X
+		dz := pz - mob.Z
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist > 0.5 {
+			nx := dx / dist * mob.Speed
+			nz := dz / dist * mob.Speed
+			m.tryMove(mob, nx, nz)
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+	}
 }
 
 // DamageMob applies damage to a mob from a player attack.
@@ -899,6 +1099,13 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 		mob.Target = attacker // aggro on the attacker
 	}
 
+	// Zombified piglin swarm aggro
+	if mob.TypeID == MobTypeZombifiedPiglin {
+		mob.Hostile = true
+		mob.Target = attacker
+		m.AggroZombifiedPiglins(attacker, mob.X, mob.Y, mob.Z)
+	}
+
 	// Passive mobs flee when hit
 	if !mob.Hostile {
 		px, _, pz := attacker.Position()
@@ -920,6 +1127,199 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 	}
 
 	return true
+}
+
+// DamageMobEx applies damage to a mob with combat enchant effects.
+// knockbackLevel: extra knockback (from enchant + sprint).
+// fireAspectLevel: sets mob on fire visual (4s per level).
+// lootingLevel: extra loot drops on kill.
+func (m *MobManager) DamageMobEx(attacker *game.Player, targetEID int32, damage float32, knockbackLevel, fireAspectLevel, lootingLevel int32) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	mob, ok := m.Mobs[targetEID]
+	if !ok || mob.Health <= 0 {
+		return false
+	}
+
+	mob.Health -= damage
+	if mob.Health < 0 {
+		mob.Health = 0
+	}
+
+	// Broadcast hurt animation
+	hurtPkt := pk.Marshal(
+		packetid.ClientboundHurtAnimation,
+		pk.VarInt(mob.EID),
+		pk.Float(0),
+	)
+	m.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(hurtPkt)
+	})
+
+	// Broadcast damage event
+	damagePkt := pk.Marshal(
+		packetid.ClientboundDamageEvent,
+		pk.VarInt(mob.EID),
+		pk.VarInt(m.Survival.AttackDamageTypeID),
+		pk.VarInt(attacker.EID+1),
+		pk.VarInt(attacker.EID+1),
+		pk.Boolean(false),
+	)
+	m.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(damagePkt)
+	})
+
+	// Play hurt sound
+	BroadcastSound(m.Manager, MobHurtSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
+
+	// Knockback enchantment
+	if knockbackLevel > 0 {
+		ax, _, az := attacker.Position()
+		dx := mob.X - ax
+		dz := mob.Z - az
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist > 0.1 {
+			kbDist := float64(knockbackLevel) * 0.5
+			mob.X += dx / dist * kbDist
+			mob.Z += dz / dist * kbDist
+			m.broadcastMoveEntity(mob)
+		}
+	}
+
+	// Fire Aspect: set mob on fire metadata
+	if fireAspectLevel > 0 {
+		m.Manager.ForEach(func(p *game.Player) {
+			p.WritePacket(pk.Marshal(
+				packetid.ClientboundSetEntityData,
+				pk.VarInt(mob.EID),
+				pk.UnsignedByte(0),
+				pk.VarInt(0),
+				pk.Byte(0x01), // on fire
+				pk.UnsignedByte(0xFF),
+			))
+		})
+		// Apply 1 fire tick damage immediately
+		mob.Health -= 1.0
+		if mob.Health < 0 {
+			mob.Health = 0
+		}
+	}
+
+	// Enderman teleport on hit
+	if mob.TypeID == MobTypeEnderman && mob.TeleportCooldown <= 0 && mob.Health > 0 {
+		m.endermanTeleport(mob)
+		mob.TeleportCooldown = 20
+		mob.Target = attacker
+	}
+
+	// Passive mobs flee when hit
+	if !mob.Hostile {
+		px, _, pz := attacker.Position()
+		dx := mob.X - px
+		dz := mob.Z - pz
+		dist := math.Sqrt(dx*dx + dz*dz)
+		if dist > 0.1 {
+			mob.FleeX = mob.X + dx/dist*16
+			mob.FleeZ = mob.Z + dz/dist*16
+		} else {
+			mob.FleeX = mob.X + (rand.Float64()-0.5)*16
+			mob.FleeZ = mob.Z + (rand.Float64()-0.5)*16
+		}
+		mob.FleeTicks = 60
+	}
+
+	if mob.Health <= 0 {
+		m.killMobWithLooting(mob, attacker, lootingLevel)
+	}
+
+	return true
+}
+
+// DamageMobsNearExcept deals sweep damage to mobs within radius of the target mob.
+func (m *MobManager) DamageMobsNearExcept(attacker *game.Player, primaryEID int32, damage float32, radius float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	primary, ok := m.Mobs[primaryEID]
+	if !ok {
+		return
+	}
+
+	for _, mob := range m.Mobs {
+		if mob.EID == primaryEID || mob.Health <= 0 {
+			continue
+		}
+		dx := mob.X - primary.X
+		dy := mob.Y - primary.Y
+		dz := mob.Z - primary.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist > radius {
+			continue
+		}
+
+		mob.Health -= damage
+		if mob.Health < 0 {
+			mob.Health = 0
+		}
+
+		hurtPkt := pk.Marshal(
+			packetid.ClientboundHurtAnimation,
+			pk.VarInt(mob.EID),
+			pk.Float(0),
+		)
+		m.Manager.ForEach(func(p *game.Player) {
+			p.WritePacket(hurtPkt)
+		})
+
+		if mob.Health <= 0 {
+			m.killMob(mob, attacker)
+		}
+	}
+}
+
+// killMobWithLooting handles mob death with Looting enchantment bonus drops.
+func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLevel int32) {
+	// Death sound
+	BroadcastSound(m.Manager, MobDeathSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
+
+	// Death animation
+	m.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pk.Marshal(
+			packetid.ClientboundEntityEvent,
+			pk.Int(mob.EID),
+			pk.Byte(3),
+		))
+	})
+
+	// Drop loot with looting bonus
+	m.dropMobLootWithLooting(mob, lootingLevel)
+
+	if mob.TypeID == MobTypeSlime && mob.SlimeSize > 1 {
+		m.slimeSplit(mob)
+	}
+
+	go func() {
+		removePkt := pk.Marshal(
+			packetid.ClientboundRemoveEntities,
+			pk.VarInt(1),
+			pk.VarInt(mob.EID),
+		)
+		m.mu.Lock()
+		delete(m.Mobs, mob.EID)
+		m.mu.Unlock()
+		m.Manager.ForEach(func(p *game.Player) {
+			p.WritePacket(removePkt)
+		})
+	}()
+
+	if killer != nil {
+		if mob.Hostile {
+			AddExperience(killer, 5)
+		} else {
+			AddExperience(killer, int32(1+rand.Intn(3)))
+		}
+	}
 }
 
 // killMob handles mob death: animation, removal, drops, XP.
@@ -960,6 +1360,11 @@ func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 		delete(m.Mobs, mob.EID)
 		m.mu.Unlock()
 	}()
+
+	// Advancement check
+	if killer != nil && m.AdvMgr != nil {
+		m.AdvMgr.CheckMobKill(killer, mob.TypeID)
+	}
 
 	// Award XP to killer
 	if killer != nil {
@@ -1039,6 +1444,16 @@ func (m *MobManager) dropMobLoot(mob *Mob) {
 		if rand.Float64() < 0.5 {
 			drops = []drop{{"phantom_membrane", 1, 1}}
 		}
+	case MobTypeWolf:
+		// Wolves don't drop items
+	case MobTypeCat:
+		if rand.Float64() < 0.5 {
+			drops = []drop{{"string", 0, 2}}
+		}
+	case MobTypeHorse:
+		drops = []drop{{"leather", 0, 2}}
+	case MobTypeParrot:
+		drops = []drop{{"feather", 1, 2}}
 	}
 
 	for _, d := range drops {
@@ -1057,11 +1472,108 @@ func (m *MobManager) dropMobLoot(mob *Mob) {
 	}
 }
 
+// dropMobLootWithLooting drops loot with Looting enchantment bonus.
+// Each Looting level adds 0-1 extra items per drop.
+func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
+	if lootingLevel <= 0 {
+		m.dropMobLoot(mob)
+		return
+	}
+	if m.ItemEntities == nil {
+		return
+	}
+
+	type drop struct {
+		name     string
+		minCount int32
+		maxCount int32
+	}
+
+	var drops []drop
+	switch mob.TypeID {
+	case MobTypeCow:
+		drops = []drop{{"beef", 1, 3}, {"leather", 0, 2}}
+	case MobTypePig:
+		drops = []drop{{"porkchop", 1, 3}}
+	case MobTypeSheep:
+		drops = []drop{{"white_wool", 1, 1}}
+	case MobTypeChicken:
+		drops = []drop{{"chicken", 1, 1}, {"feather", 0, 2}}
+	case MobTypeZombie:
+		drops = []drop{{"rotten_flesh", 0, 2}}
+	case MobTypeSkeleton:
+		drops = []drop{{"bone", 0, 2}, {"arrow", 0, 2}}
+	case MobTypeEnderman:
+		drops = []drop{{"ender_pearl", 0, 1}}
+	case MobTypeBlaze:
+		drops = []drop{{"blaze_rod", 0, 1}}
+	case MobTypeWitherSkeleton:
+		drops = []drop{{"bone", 0, 2}, {"coal", 0, 1}}
+		if rand.Float64() < 0.025+float64(lootingLevel)*0.01 {
+			drops = append(drops, drop{"wither_skeleton_skull", 1, 1})
+		}
+	case MobTypeGuardian:
+		drops = []drop{{"prismarine_shard", 0, 2}}
+	case MobTypeDrowned:
+		drops = []drop{{"rotten_flesh", 0, 2}}
+	case MobTypeHusk:
+		drops = []drop{{"rotten_flesh", 0, 2}}
+	case MobTypeStray:
+		drops = []drop{{"bone", 0, 2}, {"arrow", 0, 2}}
+	case MobTypeCaveSpider:
+		drops = []drop{{"string", 0, 2}, {"spider_eye", 0, 1}}
+	case MobTypeMagmaCube:
+		drops = []drop{{"magma_cream", 0, 1}}
+	case MobTypePiglin:
+		drops = []drop{{"gold_ingot", 0, 1}}
+	case MobTypeHoglin:
+		drops = []drop{{"porkchop", 2, 4}, {"leather", 0, 2}}
+	case MobTypePillager:
+		drops = []drop{{"arrow", 0, 2}}
+	case MobTypeVindicator:
+		drops = []drop{{"emerald", 0, 1}}
+	case MobTypeEvoker:
+		drops = []drop{{"totem_of_undying", 1, 1}}
+	case MobTypeRabbit:
+		drops = []drop{{"rabbit", 0, 1}, {"rabbit_hide", 0, 1}}
+	case MobTypeIronGolem:
+		drops = []drop{{"iron_ingot", 3, 5}, {"poppy", 0, 2}}
+	case MobTypeSnowGolem:
+		drops = []drop{{"snowball", 0, 15}}
+	default:
+		m.dropMobLoot(mob)
+		return
+	}
+
+	for _, d := range drops {
+		count := d.minCount
+		if d.maxCount > d.minCount {
+			count += rand.Int31n(d.maxCount - d.minCount + 1)
+		}
+		// Looting bonus: add 0 to lootingLevel extra items
+		if lootingLevel > 0 {
+			count += rand.Int31n(lootingLevel + 1)
+		}
+		if count <= 0 {
+			continue
+		}
+		itemID := itemIDByName(d.name)
+		if itemID <= 0 {
+			continue
+		}
+		m.ItemEntities.SpawnItem(m.Manager, mob.X, mob.Y+0.5, mob.Z, itemID, count, 10)
+	}
+}
+
 // despawnFarMobs removes mobs too far from any player.
 func (m *MobManager) despawnFarMobs() {
 	var toRemove []int32
 	for eid, mob := range m.Mobs {
 		if mob.Health <= 0 {
+			continue
+		}
+		// Never despawn tamed mobs
+		if mob.TameData != nil && mob.TameData.Tamed {
 			continue
 		}
 		nearPlayer := false
@@ -1169,6 +1681,11 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 		m.Manager.ForEach(func(p *game.Player) {
 			SendEntityMetadata(p, mob.EID, data)
 		})
+	}
+
+	// Send tameable metadata
+	if mob.TameData != nil && mob.TameData.Tamed {
+		m.broadcastTameableMetadata(mob)
 	}
 }
 

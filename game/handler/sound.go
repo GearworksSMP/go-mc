@@ -84,6 +84,115 @@ const (
 	SoundPhantomFlap    int32 = 759
 	SoundPhantomHurt    int32 = 760
 	SoundPhantomSwoop   int32 = 761
+
+	// Wolf sounds
+	SoundWolfAmbient  int32 = 1130
+	SoundWolfBark     int32 = 1131
+	SoundWolfDeath    int32 = 1132
+	SoundWolfGrowl    int32 = 1133
+	SoundWolfHurt     int32 = 1134
+	SoundWolfPant     int32 = 1135
+	SoundWolfWhine    int32 = 1138
+
+	// Cat sounds
+	SoundCatAmbient   int32 = 167
+	SoundCatDeath     int32 = 171
+	SoundCatHiss      int32 = 173
+	SoundCatHurt      int32 = 174
+	SoundCatPurr      int32 = 176
+	SoundCatPurreow   int32 = 177
+
+	// Horse sounds
+	SoundHorseAmbient int32 = 465
+	SoundHorseDeath   int32 = 470
+	SoundHorseHurt    int32 = 473
+
+	// Parrot sounds
+	SoundParrotAmbient int32 = 742
+	SoundParrotDeath   int32 = 743
+	SoundParrotHurt    int32 = 748
+
+	// Crossbow sounds
+	SoundCrossbowHit        int32 = 238
+	SoundCrossbowLoadingEnd int32 = 239
+	SoundCrossbowShoot      int32 = 245
+
+	// Trident sounds
+	SoundTridentHit           int32 = 1024
+	SoundTridentHitGround     int32 = 1025
+	SoundTridentReturnToOwner int32 = 1026
+	SoundTridentRiptide       int32 = 1027
+	SoundTridentThrow         int32 = 1030
+	SoundTridentThunder       int32 = 1031
+
+	// Elytra sounds
+	SoundElytraFlying int32 = 316
+
+	// Firework sounds
+	SoundFireworkLaunch int32 = 361
+	SoundFireworkShoot  int32 = 362
+
+	// Combat sounds
+	SoundSweepAttack int32 = 800 // entity.player.attack.sweep
+
+	// New mob sounds
+	SoundBlazeDeath  int32 = 100
+	SoundBlazeHurt   int32 = 102
+	SoundBlazeShoot  int32 = 104
+	SoundGhastDeath  int32 = 432
+	SoundGhastHurt   int32 = 433
+	SoundGhastShoot  int32 = 435
+	SoundIronGolemDeath int32 = 512
+	SoundIronGolemHurt  int32 = 514
+	SoundGuardianDeath  int32 = 448
+	SoundGuardianHurt   int32 = 451
+	SoundDrownedDeath   int32 = 294
+	SoundDrownedHurt    int32 = 297
+	SoundHuskDeath      int32 = 479
+	SoundHuskHurt       int32 = 480
+	SoundStrayDeath     int32 = 1002
+	SoundStrayHurt      int32 = 1003
+	SoundCaveSpiderDeath  int32 = 994
+	SoundCaveSpiderHurt   int32 = 995
+	SoundSilverfishDeath  int32 = 917
+	SoundSilverfishHurt   int32 = 918
+	SoundEndermiteDeath   int32 = 335
+	SoundEndermiteHurt    int32 = 336
+	SoundMagmaCubeDeath   int32 = 570
+	SoundMagmaCubeHurt    int32 = 571
+	SoundPiglinDeath      int32 = 767
+	SoundPiglinHurt       int32 = 770
+	SoundWitherSkeletonDeath int32 = 1125
+	SoundWitherSkeletonHurt  int32 = 1126
+	SoundShulkerDeath        int32 = 901
+	SoundShulkerHurt         int32 = 903
+	SoundPillagerDeath       int32 = 765
+	SoundPillagerHurt        int32 = 766
+	SoundVindicatorDeath     int32 = 1101
+	SoundVindicatorHurt      int32 = 1102
+	SoundEvokerDeath         int32 = 351
+	SoundEvokerHurt          int32 = 354
+	SoundRavagerDeath        int32 = 816
+	SoundRavagerHurt         int32 = 821
+	SoundBeeDeath            int32 = 79
+	SoundBeeHurt             int32 = 82
+	SoundFoxDeath            int32 = 414
+	SoundFoxHurt             int32 = 417
+	SoundRabbitDeath         int32 = 810
+	SoundRabbitHurt          int32 = 811
+	SoundBatDeath            int32 = 67
+	SoundBatHurt             int32 = 69
+	SoundSnowGolemDeath      int32 = 982
+	SoundSnowGolemHurt       int32 = 984
+	SoundHoglinDeath         int32 = 459
+	SoundHoglinHurt          int32 = 461
+	SoundStriderDeath        int32 = 1007
+	SoundStriderHurt         int32 = 1010
+	SoundZombifiedPiglinDeath int32 = 1178
+	SoundZombifiedPiglinHurt  int32 = 1180
+	SoundVexDeath             int32 = 1094
+	SoundVexHurt              int32 = 1096
+	SoundNoteBlock            int32 = 686
 )
 
 // BroadcastSound sends a ClientboundSound packet to all players.
@@ -151,6 +260,66 @@ func MobHurtSound(typeID int32) int32 {
 		return SoundSlimeHurt
 	case MobTypePhantom:
 		return SoundPhantomHurt
+	case MobTypeWolf:
+		return SoundWolfHurt
+	case MobTypeCat:
+		return SoundCatHurt
+	case MobTypeHorse:
+		return SoundHorseHurt
+	case MobTypeParrot:
+		return SoundParrotHurt
+	case MobTypeBlaze:
+		return SoundBlazeHurt
+	case MobTypeGhast:
+		return SoundGhastHurt
+	case MobTypeIronGolem:
+		return SoundIronGolemHurt
+	case MobTypeSnowGolem:
+		return SoundSnowGolemHurt
+	case MobTypeGuardian, MobTypeElderGuardian:
+		return SoundGuardianHurt
+	case MobTypeDrowned:
+		return SoundDrownedHurt
+	case MobTypeHusk:
+		return SoundHuskHurt
+	case MobTypeStray:
+		return SoundStrayHurt
+	case MobTypeCaveSpider:
+		return SoundCaveSpiderHurt
+	case MobTypeSilverfish:
+		return SoundSilverfishHurt
+	case MobTypeEndermite:
+		return SoundEndermiteHurt
+	case MobTypeMagmaCube:
+		return SoundMagmaCubeHurt
+	case MobTypePiglin, MobTypeZombifiedPiglin:
+		return SoundPiglinHurt
+	case MobTypeWitherSkeleton:
+		return SoundWitherSkeletonHurt
+	case MobTypeShulker:
+		return SoundShulkerHurt
+	case MobTypePillager:
+		return SoundPillagerHurt
+	case MobTypeVindicator:
+		return SoundVindicatorHurt
+	case MobTypeEvoker:
+		return SoundEvokerHurt
+	case MobTypeVex:
+		return SoundVexHurt
+	case MobTypeRavager:
+		return SoundRavagerHurt
+	case MobTypeBee:
+		return SoundBeeHurt
+	case MobTypeFox:
+		return SoundFoxHurt
+	case MobTypeRabbit:
+		return SoundRabbitHurt
+	case MobTypeBat:
+		return SoundBatHurt
+	case MobTypeHoglin:
+		return SoundHoglinHurt
+	case MobTypeStrider:
+		return SoundStriderHurt
 	}
 	return SoundPlayerHurt
 }
@@ -184,6 +353,66 @@ func MobDeathSound(typeID int32) int32 {
 		return SoundSlimeDeath
 	case MobTypePhantom:
 		return SoundPhantomDeath
+	case MobTypeWolf:
+		return SoundWolfDeath
+	case MobTypeCat:
+		return SoundCatDeath
+	case MobTypeHorse:
+		return SoundHorseDeath
+	case MobTypeParrot:
+		return SoundParrotDeath
+	case MobTypeBlaze:
+		return SoundBlazeDeath
+	case MobTypeGhast:
+		return SoundGhastDeath
+	case MobTypeIronGolem:
+		return SoundIronGolemDeath
+	case MobTypeSnowGolem:
+		return SoundSnowGolemDeath
+	case MobTypeGuardian, MobTypeElderGuardian:
+		return SoundGuardianDeath
+	case MobTypeDrowned:
+		return SoundDrownedDeath
+	case MobTypeHusk:
+		return SoundHuskDeath
+	case MobTypeStray:
+		return SoundStrayDeath
+	case MobTypeCaveSpider:
+		return SoundCaveSpiderDeath
+	case MobTypeSilverfish:
+		return SoundSilverfishDeath
+	case MobTypeEndermite:
+		return SoundEndermiteDeath
+	case MobTypeMagmaCube:
+		return SoundMagmaCubeDeath
+	case MobTypePiglin, MobTypeZombifiedPiglin:
+		return SoundPiglinDeath
+	case MobTypeWitherSkeleton:
+		return SoundWitherSkeletonDeath
+	case MobTypeShulker:
+		return SoundShulkerDeath
+	case MobTypePillager:
+		return SoundPillagerDeath
+	case MobTypeVindicator:
+		return SoundVindicatorDeath
+	case MobTypeEvoker:
+		return SoundEvokerDeath
+	case MobTypeVex:
+		return SoundVexDeath
+	case MobTypeRavager:
+		return SoundRavagerDeath
+	case MobTypeBee:
+		return SoundBeeDeath
+	case MobTypeFox:
+		return SoundFoxDeath
+	case MobTypeRabbit:
+		return SoundRabbitDeath
+	case MobTypeBat:
+		return SoundBatDeath
+	case MobTypeHoglin:
+		return SoundHoglinDeath
+	case MobTypeStrider:
+		return SoundStriderDeath
 	}
 	return SoundPlayerDeath
 }
@@ -192,6 +421,10 @@ func MobDeathSound(typeID int32) int32 {
 func MobSoundCategory(typeID int32) int32 {
 	switch typeID {
 	case MobTypeCow, MobTypePig, MobTypeSheep, MobTypeChicken, MobTypeVillager:
+		return SoundCategoryNeutral
+	case MobTypeWolf, MobTypeCat, MobTypeHorse, MobTypeParrot,
+		MobTypeFox, MobTypeRabbit, MobTypeBat, MobTypeBee,
+		MobTypeIronGolem, MobTypeSnowGolem, MobTypeStrider:
 		return SoundCategoryNeutral
 	case MobTypeEnderman:
 		// Enderman is neutral until provoked, but uses hostile sound category

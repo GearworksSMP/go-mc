@@ -35,6 +35,10 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnCommand(cmdLine)
+	}
+
 	// Check permissions for admin commands
 	if pm := c.PermMgr; pm != nil {
 		switch cmd {

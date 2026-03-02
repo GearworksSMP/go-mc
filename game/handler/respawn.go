@@ -48,6 +48,9 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 	player.Exhaustion = 0
 	player.Dead = false
 	player.FallStartY = -999
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnRespawn()
+	}
 
 	// Determine if dimension switch is needed (nether → overworld on death)
 	needsDimSwitch := player.Dimension == "minecraft:the_nether"

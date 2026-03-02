@@ -27,6 +27,9 @@ type NetherGenerator struct {
 	magmaBlockID      level.BlocksState
 	gravelID          level.BlocksState
 	netherGoldOreID   level.BlocksState
+
+	// Structure placer
+	structures *NetherStructurePlacer
 }
 
 // NewNetherGenerator creates a nether terrain generator with the given seed.
@@ -54,6 +57,8 @@ func NewNetherGenerator(seed int64) *NetherGenerator {
 
 	// Nether gold ore may or may not exist in block registry
 	g.netherGoldOreID, _ = block.ToStateID[block.GoldOre{}]
+
+	g.structures = NewNetherStructurePlacer(seed)
 
 	return g
 }
@@ -156,6 +161,9 @@ func (g *NetherGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 
 	// Add glowstone clusters on the ceiling
 	g.placeGlowstone(chunk, pos)
+
+	// Place nether structures (fortress, bastion)
+	g.structures.PlaceNetherStructures(chunk, pos.X, pos.Z)
 
 	g.computeHeightmaps(chunk)
 

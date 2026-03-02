@@ -8,8 +8,9 @@ import (
 
 // AnimationHandler handles arm swings, sprint start/stop, and client commands.
 type AnimationHandler struct {
-	Manager *game.PlayerManager
-	BedMgr  *BedManager
+	Manager   *game.PlayerManager
+	BedMgr    *BedManager
+	ElytraMgr *ElytraManager
 }
 
 // HandlePacket processes animation and player-command packets.
@@ -67,6 +68,10 @@ func (h *AnimationHandler) handlePlayerCommand(player *game.Player, p pk.Packet)
 	case 2: // stop sprint
 		player.Sprinting = false
 		BroadcastEntityFlags(h.Manager, player)
+	case 8: // START_FALL_FLYING (elytra)
+		if h.ElytraMgr != nil {
+			h.ElytraMgr.handleElytraActivation(player)
+		}
 	}
 
 	// Wake player from bed on any player command action

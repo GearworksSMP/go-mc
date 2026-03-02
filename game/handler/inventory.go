@@ -14,9 +14,19 @@ type InventoryHandler struct {
 	Logger           *log.Logger
 	Chests           *ChestManager
 	Furnaces         *FurnaceManager
+	BrewingMgr       *BrewingStandManager
+	HopperMgr        *HopperManager
+	DispenserMgr     *DispenserManager
 	EnchantMgr       *EnchantManager
 	AnvilMgr         *AnvilManager
 	VillagerMgr      *VillagerManager
+	BarrelMgr        *BarrelManager
+	GrindstoneMgr    *GrindstoneManager
+	StonecutterMgr   *StonecutterManager
+	SmokerMgr        *SmokerManager
+	BlastFurnaceMgr  *BlastFurnaceManager
+	ShulkerBoxMgr    *ShulkerBoxManager
+	SmithingMgr      *SmithingTableManager
 	OnContainerClose func(containerType string, pos [3]int) // called when chest/furnace closed
 }
 
@@ -165,6 +175,24 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		return
 	}
 
+	if int(windowID) == BrewingWindowID && player.OpenWindowID == BrewingWindowID && h.BrewingMgr != nil {
+		bs := h.BrewingMgr.Get(player.OpenBrewingStandPos[0], player.OpenBrewingStandPos[1], player.OpenBrewingStandPos[2])
+		if bs != nil {
+			switch mode {
+			case 0:
+				h.handleBrewingClick(player, bs, slot, int(button))
+			case 1:
+				h.handleBrewingShiftClick(player, bs, slot)
+			case 2:
+				h.handleBrewingNumberKey(player, bs, slot, int(button))
+			case 4:
+				h.handleBrewingDrop(player, bs, slot, int(button))
+			}
+			SendBrewingWindowContent(player, bs)
+		}
+		return
+	}
+
 	if player.AnvilSession != nil && int(windowID) == player.AnvilSession.WindowID && player.OpenWindowID == player.AnvilSession.WindowID {
 		switch mode {
 		case 0:
@@ -181,8 +209,96 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		return
 	}
 
+	if int(windowID) == HopperWindowID && player.OpenWindowID == HopperWindowID && h.HopperMgr != nil {
+		hs := h.HopperMgr.Get(player.OpenHopperPos[0], player.OpenHopperPos[1], player.OpenHopperPos[2])
+		if hs != nil {
+			switch mode {
+			case 0:
+				h.handleHopperClick(player, hs, slot, int(button))
+			case 1:
+				h.handleHopperShiftClick(player, hs, slot)
+			case 2:
+				h.handleHopperNumberKey(player, hs, slot, int(button))
+			case 4:
+				h.handleHopperDrop(player, hs, slot, int(button))
+			}
+			SendHopperWindowContent(player, hs)
+		}
+		return
+	}
+
+	if int(windowID) == DispenserWindowID && player.OpenWindowID == DispenserWindowID && h.DispenserMgr != nil {
+		ds := h.DispenserMgr.Get(player.OpenDispenserPos[0], player.OpenDispenserPos[1], player.OpenDispenserPos[2])
+		if ds != nil {
+			switch mode {
+			case 0:
+				h.handleDispenserClick(player, ds, slot, int(button))
+			case 1:
+				h.handleDispenserShiftClick(player, ds, slot)
+			case 2:
+				h.handleDispenserNumberKey(player, ds, slot, int(button))
+			case 4:
+				h.handleDispenserDrop(player, ds, slot, int(button))
+			}
+			SendDispenserWindowContent(player, ds)
+		}
+		return
+	}
+
 	if int(windowID) == MerchantWindowID && player.OpenWindowID == MerchantWindowID && h.VillagerMgr != nil {
 		h.handleMerchantClick(player, slot, int(button), int(mode))
+		return
+	}
+
+	if int(windowID) == 12 && player.OpenWindowID == 12 && h.BarrelMgr != nil {
+		bs := h.BarrelMgr.Get(player.OpenChestPos[0], player.OpenChestPos[1], player.OpenChestPos[2])
+		if bs != nil {
+			switch mode {
+			case 0:
+				h.handleBarrelClick(player, bs, slot, int(button))
+			case 1:
+				h.handleBarrelShiftClick(player, bs, slot)
+			}
+			SendBarrelWindowContent(player, bs)
+		}
+		return
+	}
+
+	if int(windowID) == SmokerWindowID && player.OpenWindowID == SmokerWindowID && h.SmokerMgr != nil {
+		ss := h.SmokerMgr.GetOrCreate(player.OpenFurnacePos[0], player.OpenFurnacePos[1], player.OpenFurnacePos[2])
+		switch mode {
+		case 0:
+			h.handleSmokerClick(player, ss, slot, int(button))
+		case 1:
+			h.handleSmokerShiftClick(player, ss, slot)
+		}
+		SendSmokerWindowContent(player, ss)
+		return
+	}
+
+	if int(windowID) == BlastFurnaceWindowID && player.OpenWindowID == BlastFurnaceWindowID && h.BlastFurnaceMgr != nil {
+		bfs := h.BlastFurnaceMgr.GetOrCreate(player.OpenFurnacePos[0], player.OpenFurnacePos[1], player.OpenFurnacePos[2])
+		switch mode {
+		case 0:
+			h.handleBlastFurnaceClick(player, bfs, slot, int(button))
+		case 1:
+			h.handleBlastFurnaceShiftClick(player, bfs, slot)
+		}
+		SendBlastFurnaceWindowContent(player, bfs)
+		return
+	}
+
+	if int(windowID) == ShulkerBoxWindowID && player.OpenWindowID == ShulkerBoxWindowID && h.ShulkerBoxMgr != nil {
+		sbs := h.ShulkerBoxMgr.Get(player.OpenChestPos[0], player.OpenChestPos[1], player.OpenChestPos[2])
+		if sbs != nil {
+			switch mode {
+			case 0:
+				h.handleShulkerBoxClick(player, sbs, slot, int(button))
+			case 1:
+				h.handleShulkerBoxShiftClick(player, sbs, slot)
+			}
+			SendShulkerBoxWindowContent(player, sbs)
+		}
 		return
 	}
 
@@ -474,6 +590,47 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("furnace", player.OpenFurnacePos)
 		}
+	case BrewingWindowID:
+		// Closing brewing stand — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("brewing_stand", player.OpenBrewingStandPos)
+		}
+	case HopperWindowID:
+		// Closing hopper — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("hopper", player.OpenHopperPos)
+		}
+	case DispenserWindowID:
+		// Closing dispenser/dropper — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("dispenser", player.OpenDispenserPos)
+		}
+	case 12:
+		// Closing barrel
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("barrel", player.OpenChestPos)
+		}
+	case 13:
+		// Closing grindstone — no state to return
+	case 14:
+		// Closing stonecutter — no state to return
+	case SmokerWindowID:
+		// Closing smoker
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("smoker", player.OpenFurnacePos)
+		}
+	case BlastFurnaceWindowID:
+		// Closing blast furnace
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("blast_furnace", player.OpenFurnacePos)
+		}
+	case ShulkerBoxWindowID:
+		// Closing shulker box
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("shulker_box", player.OpenChestPos)
+		}
+	case SmithingWindowID:
+		// Closing smithing table — no state to return
 	case 10:
 		// Closing enchanting table — clear session
 		player.EnchantSession = nil
@@ -1219,6 +1376,156 @@ func putInFurnaceSlot(dst *game.ItemStack, src *game.ItemStack) {
 }
 
 // ---------------------------------------------------------------------------
+// Brewing stand (window ID 7) handlers
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleBrewingClick(player *game.Player, bs *BrewingState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := BrewingSlot(player, bs, slot)
+	if invItem == nil {
+		return
+	}
+
+	// Slots 0-2 (bottle outputs) are take-only when brewing is active
+	if slot >= 0 && slot <= 2 {
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			// Empty bottle slot — allow placing bottles/potions in
+			genericClick(player, invItem, button)
+			return
+		}
+		// Allow taking from bottle slots
+		if player.CursorItem.ID != 0 && player.CursorItem.ID != invItem.ID {
+			// Swap items
+			player.CursorItem, *invItem = *invItem, player.CursorItem
+			return
+		}
+		if player.CursorItem.ID == invItem.ID && player.CursorItem.Count+invItem.Count > 64 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			player.CursorItem = *invItem
+		} else {
+			player.CursorItem.Count += invItem.Count
+		}
+		*invItem = game.ItemStack{}
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleBrewingShiftClick(player *game.Player, bs *BrewingState, slot int) {
+	src := BrewingSlot(player, bs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot >= 0 && slot <= 4:
+		// Brewing stand slot → player inventory
+		moveToPlayerInv(player, src)
+	case slot >= 5 && slot <= 31:
+		// Main inv → try to put in brewing stand slots, else hotbar
+		itemName := ItemNameByID(src.ID)
+		if isBrewingIngredient(itemName) {
+			putInFurnaceSlot(&bs.Ingredient, src)
+		} else if itemName == "blaze_powder" {
+			putInFurnaceSlot(&bs.Fuel, src)
+		} else if isBottleOrPotion(itemName) {
+			putInBrewingBottleSlot(bs, src)
+		} else {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 32 && slot <= 40:
+		// Hotbar → try brewing stand slots, else main inv
+		itemName := ItemNameByID(src.ID)
+		if isBrewingIngredient(itemName) {
+			putInFurnaceSlot(&bs.Ingredient, src)
+		} else if itemName == "blaze_powder" {
+			putInFurnaceSlot(&bs.Fuel, src)
+		} else if isBottleOrPotion(itemName) {
+			putInBrewingBottleSlot(bs, src)
+		} else {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+func (h *InventoryHandler) handleBrewingNumberKey(player *game.Player, bs *BrewingState, slot, button int) {
+	hotbarSlot := button + 36
+	if hotbarSlot < 36 || hotbarSlot > 44 {
+		return
+	}
+	src := BrewingSlot(player, bs, slot)
+	if src == nil {
+		return
+	}
+	*src, player.Inventory[hotbarSlot] = player.Inventory[hotbarSlot], *src
+}
+
+func (h *InventoryHandler) handleBrewingDrop(player *game.Player, bs *BrewingState, slot, button int) {
+	if slot == -999 {
+		if button == 0 && player.CursorItem.Count > 0 {
+			player.CursorItem.Count--
+			if player.CursorItem.Count <= 0 {
+				player.CursorItem = game.ItemStack{}
+			}
+		} else if button == 1 {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+	src := BrewingSlot(player, bs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
+	}
+}
+
+// isBrewingIngredient returns true if the item can be used as a brewing ingredient.
+func isBrewingIngredient(itemName string) bool {
+	_, ok := brewingRecipes[itemName]
+	return ok
+}
+
+// isBottleOrPotion returns true if the item is a bottle or potion.
+func isBottleOrPotion(itemName string) bool {
+	switch itemName {
+	case "potion", "splash_potion", "lingering_potion", "glass_bottle":
+		return true
+	}
+	return false
+}
+
+// putInBrewingBottleSlot tries to put src into the first empty bottle slot (0-2).
+func putInBrewingBottleSlot(bs *BrewingState, src *game.ItemStack) {
+	for i := 0; i < 3; i++ {
+		if bs.Bottles[i].ID == 0 || bs.Bottles[i].Count <= 0 {
+			bs.Bottles[i] = *src
+			*src = game.ItemStack{}
+			return
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Generic click handler for chest/furnace slots (shared logic)
 // ---------------------------------------------------------------------------
 
@@ -1284,6 +1591,15 @@ func (h *InventoryHandler) handleContainerButtonClick(player *game.Player, p pk.
 	}
 	if h.EnchantMgr != nil && player.EnchantSession != nil && int(windowID) == player.EnchantSession.WindowID {
 		h.EnchantMgr.HandleEnchantButton(player, int(buttonID))
+	}
+	if h.StonecutterMgr != nil && int(windowID) == 14 && player.OpenWindowID == 14 {
+		h.StonecutterMgr.HandleStonecutterSelect(player, int(buttonID))
+	}
+	if h.GrindstoneMgr != nil && int(windowID) == 13 && player.OpenWindowID == 13 {
+		h.GrindstoneMgr.HandleGrindstoneClick(player, int(buttonID))
+	}
+	if h.SmithingMgr != nil && int(windowID) == SmithingWindowID && player.OpenWindowID == SmithingWindowID {
+		h.SmithingMgr.HandleSmithingClick(player, int(buttonID))
 	}
 }
 
@@ -1579,5 +1895,463 @@ func (h *InventoryHandler) handleAnvilDrop(player *game.Player, slot, button int
 		}
 	} else if button == 1 {
 		*src = game.ItemStack{}
+	}
+}
+
+// --- Hopper handlers ---
+
+func (h *InventoryHandler) handleHopperClick(player *game.Player, hs *HopperState, slot, button int) {
+	if slot < 0 || slot > 40 {
+		return
+	}
+	src := HopperSlot(player, hs, slot)
+	if src == nil {
+		return
+	}
+	genericClick(player, src, button)
+}
+
+func (h *InventoryHandler) handleHopperShiftClick(player *game.Player, hs *HopperState, slot int) {
+	if slot < 0 || slot > 40 {
+		return
+	}
+	src := HopperSlot(player, hs, slot)
+	if src == nil || src.ID == 0 {
+		return
+	}
+	if slot < 5 {
+		// Move from hopper to player inventory
+		player.Inventory.AddItem(src.ID, src.Count)
+		*src = game.ItemStack{}
+	} else {
+		// Move from player to hopper
+		for i := 0; i < 5; i++ {
+			if hs.Slots[i].ID == src.ID && hs.Slots[i].Count < 64 {
+				space := int32(64) - hs.Slots[i].Count
+				if src.Count <= space {
+					hs.Slots[i].Count += src.Count
+					*src = game.ItemStack{}
+					return
+				}
+				hs.Slots[i].Count = 64
+				src.Count -= space
+			}
+		}
+		for i := 0; i < 5; i++ {
+			if hs.Slots[i].ID == 0 {
+				hs.Slots[i] = *src
+				*src = game.ItemStack{}
+				return
+			}
+		}
+	}
+}
+
+func (h *InventoryHandler) handleHopperNumberKey(player *game.Player, hs *HopperState, slot, button int) {
+	if slot < 0 || slot > 40 || button < 0 || button > 8 {
+		return
+	}
+	src := HopperSlot(player, hs, slot)
+	if src == nil {
+		return
+	}
+	hotbarSlot := 36 + button
+	src2 := &player.Inventory[hotbarSlot]
+	*src, *src2 = *src2, *src
+}
+
+func (h *InventoryHandler) handleHopperDrop(player *game.Player, hs *HopperState, slot, button int) {
+	if slot < 0 || slot > 40 {
+		return
+	}
+	src := HopperSlot(player, hs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
+	}
+}
+
+// --- Dispenser/Dropper handlers ---
+
+func (h *InventoryHandler) handleDispenserClick(player *game.Player, ds *DispenserState, slot, button int) {
+	if slot < 0 || slot > 44 {
+		return
+	}
+	src := DispenserSlot(player, ds, slot)
+	if src == nil {
+		return
+	}
+	genericClick(player, src, button)
+}
+
+func (h *InventoryHandler) handleDispenserShiftClick(player *game.Player, ds *DispenserState, slot int) {
+	if slot < 0 || slot > 44 {
+		return
+	}
+	src := DispenserSlot(player, ds, slot)
+	if src == nil || src.ID == 0 {
+		return
+	}
+	if slot < 9 {
+		// Move from dispenser to player inventory
+		player.Inventory.AddItem(src.ID, src.Count)
+		*src = game.ItemStack{}
+	} else {
+		// Move from player to dispenser
+		for i := 0; i < 9; i++ {
+			if ds.Slots[i].ID == src.ID && ds.Slots[i].Count < 64 {
+				space := int32(64) - ds.Slots[i].Count
+				if src.Count <= space {
+					ds.Slots[i].Count += src.Count
+					*src = game.ItemStack{}
+					return
+				}
+				ds.Slots[i].Count = 64
+				src.Count -= space
+			}
+		}
+		for i := 0; i < 9; i++ {
+			if ds.Slots[i].ID == 0 {
+				ds.Slots[i] = *src
+				*src = game.ItemStack{}
+				return
+			}
+		}
+	}
+}
+
+func (h *InventoryHandler) handleDispenserNumberKey(player *game.Player, ds *DispenserState, slot, button int) {
+	if slot < 0 || slot > 44 || button < 0 || button > 8 {
+		return
+	}
+	src := DispenserSlot(player, ds, slot)
+	if src == nil {
+		return
+	}
+	hotbarSlot := 36 + button
+	src2 := &player.Inventory[hotbarSlot]
+	*src, *src2 = *src2, *src
+}
+
+func (h *InventoryHandler) handleDispenserDrop(player *game.Player, ds *DispenserState, slot, button int) {
+	if slot < 0 || slot > 44 {
+		return
+	}
+	src := DispenserSlot(player, ds, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+	if button == 0 {
+		src.Count--
+		if src.Count <= 0 {
+			*src = game.ItemStack{}
+		}
+	} else if button == 1 {
+		*src = game.ItemStack{}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Barrel (window ID 12) handlers — same layout as single chest (27 slots)
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleBarrelClick(player *game.Player, bs *BarrelState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := BarrelSlot(player, bs, slot)
+	if invItem == nil {
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleBarrelShiftClick(player *game.Player, bs *BarrelState, slot int) {
+	src := BarrelSlot(player, bs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot >= 0 && slot <= 26:
+		moveToPlayerInv(player, src)
+	case slot >= 27 && slot <= 53:
+		if !moveToBarrel(bs, src) {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 54 && slot <= 62:
+		if !moveToBarrel(bs, src) {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+func moveToBarrel(bs *BarrelState, src *game.ItemStack) bool {
+	for i := 0; i < 27; i++ {
+		if bs.Items[i].ID == src.ID && bs.Items[i].Count < 64 {
+			space := int32(64) - bs.Items[i].Count
+			if src.Count <= space {
+				bs.Items[i].Count += src.Count
+				*src = game.ItemStack{}
+				return true
+			}
+			bs.Items[i].Count = 64
+			src.Count -= space
+		}
+	}
+	for i := 0; i < 27; i++ {
+		if bs.Items[i].ID == 0 {
+			bs.Items[i] = *src
+			*src = game.ItemStack{}
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Shulker Box (window ID 17) handlers — same layout as barrel/chest (27 slots)
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleShulkerBoxClick(player *game.Player, sbs *ShulkerBoxState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	// Shulker boxes cannot contain other shulker boxes
+	if slot >= 0 && slot <= 26 && player.CursorItem.ID > 0 {
+		cursorName := ItemNameByID(player.CursorItem.ID)
+		if IsShulkerBox(cursorName) {
+			return
+		}
+	}
+
+	invItem := ShulkerBoxSlot(player, sbs, slot)
+	if invItem == nil {
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleShulkerBoxShiftClick(player *game.Player, sbs *ShulkerBoxState, slot int) {
+	src := ShulkerBoxSlot(player, sbs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot >= 0 && slot <= 26:
+		moveToPlayerInv(player, src)
+	case slot >= 27 && slot <= 53:
+		srcName := ItemNameByID(src.ID)
+		if IsShulkerBox(srcName) {
+			moveToRange(player, src, 36, 44)
+			return
+		}
+		if !moveToShulkerBox(sbs, src) {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 54 && slot <= 62:
+		srcName := ItemNameByID(src.ID)
+		if IsShulkerBox(srcName) {
+			moveToRange(player, src, 9, 35)
+			return
+		}
+		if !moveToShulkerBox(sbs, src) {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+func moveToShulkerBox(sbs *ShulkerBoxState, src *game.ItemStack) bool {
+	for i := 0; i < 27; i++ {
+		if sbs.Items[i].ID == src.ID && sbs.Items[i].Count < 64 {
+			space := int32(64) - sbs.Items[i].Count
+			if src.Count <= space {
+				sbs.Items[i].Count += src.Count
+				*src = game.ItemStack{}
+				return true
+			}
+			sbs.Items[i].Count = 64
+			src.Count -= space
+		}
+	}
+	for i := 0; i < 27; i++ {
+		if sbs.Items[i].ID == 0 {
+			sbs.Items[i] = *src
+			*src = game.ItemStack{}
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Smoker (window ID 15) handlers — same layout as furnace (3 slots)
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleSmokerClick(player *game.Player, ss *SmokerState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := SmokerSlot(player, ss, slot)
+	if invItem == nil {
+		return
+	}
+
+	if slot == 2 {
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			return
+		}
+		if player.CursorItem.ID != 0 && player.CursorItem.ID != invItem.ID {
+			return
+		}
+		if player.CursorItem.ID == invItem.ID && player.CursorItem.Count+invItem.Count > 64 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			player.CursorItem = *invItem
+		} else {
+			player.CursorItem.Count += invItem.Count
+		}
+		*invItem = game.ItemStack{}
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleSmokerShiftClick(player *game.Player, ss *SmokerState, slot int) {
+	src := SmokerSlot(player, ss, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot == 0 || slot == 1 || slot == 2:
+		moveToPlayerInv(player, src)
+	case slot >= 3 && slot <= 29:
+		itemName := ItemNameByID(src.ID)
+		if smokerSmeltable(itemName) != "" {
+			putInFurnaceSlot(&ss.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&ss.Fuel, src)
+		} else {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 30 && slot <= 38:
+		itemName := ItemNameByID(src.ID)
+		if smokerSmeltable(itemName) != "" {
+			putInFurnaceSlot(&ss.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&ss.Fuel, src)
+		} else {
+			moveToRange(player, src, 9, 35)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Blast Furnace (window ID 16) handlers — same layout as furnace (3 slots)
+// ---------------------------------------------------------------------------
+
+func (h *InventoryHandler) handleBlastFurnaceClick(player *game.Player, bfs *BlastFurnaceState, slot, button int) {
+	if slot == -999 {
+		if button == 0 {
+			player.CursorItem = game.ItemStack{}
+		} else if player.CursorItem.Count > 1 {
+			player.CursorItem.Count--
+		} else {
+			player.CursorItem = game.ItemStack{}
+		}
+		return
+	}
+
+	invItem := BlastFurnaceSlot(player, bfs, slot)
+	if invItem == nil {
+		return
+	}
+
+	if slot == 2 {
+		if invItem.ID == 0 || invItem.Count <= 0 {
+			return
+		}
+		if player.CursorItem.ID != 0 && player.CursorItem.ID != invItem.ID {
+			return
+		}
+		if player.CursorItem.ID == invItem.ID && player.CursorItem.Count+invItem.Count > 64 {
+			return
+		}
+		if player.CursorItem.ID == 0 {
+			player.CursorItem = *invItem
+		} else {
+			player.CursorItem.Count += invItem.Count
+		}
+		*invItem = game.ItemStack{}
+		return
+	}
+
+	genericClick(player, invItem, button)
+}
+
+func (h *InventoryHandler) handleBlastFurnaceShiftClick(player *game.Player, bfs *BlastFurnaceState, slot int) {
+	src := BlastFurnaceSlot(player, bfs, slot)
+	if src == nil || src.ID == 0 || src.Count <= 0 {
+		return
+	}
+
+	switch {
+	case slot == 0 || slot == 1 || slot == 2:
+		moveToPlayerInv(player, src)
+	case slot >= 3 && slot <= 29:
+		itemName := ItemNameByID(src.ID)
+		if blastFurnaceSmeltable(itemName) != "" {
+			putInFurnaceSlot(&bfs.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&bfs.Fuel, src)
+		} else {
+			moveToRange(player, src, 36, 44)
+		}
+	case slot >= 30 && slot <= 38:
+		itemName := ItemNameByID(src.ID)
+		if blastFurnaceSmeltable(itemName) != "" {
+			putInFurnaceSlot(&bfs.Input, src)
+		} else if _, ok := fuelBurnTicks[itemName]; ok {
+			putInFurnaceSlot(&bfs.Fuel, src)
+		} else {
+			moveToRange(player, src, 9, 35)
+		}
 	}
 }

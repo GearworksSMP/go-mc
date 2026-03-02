@@ -197,10 +197,25 @@ var blockHardness = map[string]float64{
 	"acacia_button":      0.5,
 	"dark_oak_button":    0.5,
 
-	// Chest, furnace, bed
+	// Chest, furnace, brewing stand, bed
 	"chest":              2.5,
 	"furnace":            3.5,
+	"brewing_stand":      0.5,
 	"red_bed":            0.2,
+
+	// Redstone components
+	"redstone_wire":      0,
+	"repeater":           0,
+	"comparator":         0,
+	"piston":             1.5,
+	"sticky_piston":      1.5,
+	"piston_head":        1.5,
+	"hopper":             3.0,
+	"dispenser":          3.5,
+	"dropper":            3.5,
+	"observer":           3.5,
+	"redstone_torch":     0,
+	"redstone_wall_torch": 0,
 
 	// TNT and fire
 	"tnt":                0,
@@ -218,6 +233,20 @@ var blockHardness = map[string]float64{
 	"carrots":            0,
 	"potatoes":           0,
 	"beetroots":          0,
+	"pumpkin_stem":        0,
+	"melon_stem":          0,
+	"attached_pumpkin_stem": 0,
+	"attached_melon_stem":   0,
+	"sugar_cane":          0,
+	"nether_wart":         0,
+	"cocoa":               0.2,
+	"sweet_berry_bush":    0,
+	"bamboo":              1.0,
+	"bamboo_sapling":      0,
+
+	// Fruit blocks
+	"pumpkin":             1.0,
+	"melon":               1.0,
 
 	// Trapdoors
 	"oak_trapdoor":       3.0,
@@ -433,6 +462,8 @@ var weaponCooldown = map[string]float64{
 	// Hoes: varies by tier
 	"wooden_hoe": 1.0, "stone_hoe": 0.5, "iron_hoe": 0.333,
 	"golden_hoe": 1.0, "diamond_hoe": 0.25, "netherite_hoe": 0.25,
+	// Trident: 0.9s (1.1 attacks/s)
+	"trident": 0.9,
 }
 
 // CanHarvestBlock returns true if the held item can harvest the block (gets drops).
@@ -525,10 +556,22 @@ var blockDropOverrides = map[string]string{
 	"fire":         "", // fire drops nothing
 	"soul_fire":    "", // soul fire drops nothing
 	// Crops are handled separately by dropCropItems
-	"wheat":        "",
-	"carrots":      "",
-	"potatoes":     "",
-	"beetroots":    "",
+	"wheat":                "",
+	"carrots":              "",
+	"potatoes":             "",
+	"beetroots":            "",
+	"pumpkin_stem":         "",
+	"melon_stem":           "",
+	"attached_pumpkin_stem": "",
+	"attached_melon_stem":  "",
+	"sugar_cane":           "",
+	"nether_wart":          "",
+	"cocoa":                "",
+	"sweet_berry_bush":     "",
+	"bamboo":               "",
+	"bamboo_sapling":       "",
+	// Melon is handled separately in dropBlockItem (3-7 melon_slices)
+	"melon":                "",
 }
 
 // ArmorType identifies an armor piece slot.
@@ -672,4 +715,7 @@ var weaponDamage = map[string]float32{
 	"golden_axe":    7,
 	"diamond_axe":   9,
 	"netherite_axe": 10,
+
+	// Trident: 9 base damage
+	"trident": 9,
 }

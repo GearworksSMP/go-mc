@@ -877,7 +877,7 @@ func main() {
 	}
 
 	// Summary
-	fmt.Printf("\n" + strings.Repeat("=", 80) + "\n")
+	fmt.Print("\n" + strings.Repeat("=", 80) + "\n")
 	fmt.Println("SUMMARY OF DIFFERENCES")
 	fmt.Println(strings.Repeat("=", 80))
 

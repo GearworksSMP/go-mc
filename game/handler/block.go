@@ -39,6 +39,7 @@ type BlockHandler struct {
 	CropMgr      *CropManager
 	EnchantMgr   *EnchantManager
 	AnvilMgr     *AnvilManager
+	BrewingMgr   *BrewingStandManager
 	BedMgr       *BedManager
 	SignMgr      *SignManager
 	BoatMgr      *BoatManager
@@ -46,8 +47,20 @@ type BlockHandler struct {
 	TNTMgr       *TNTManager
 	FireMgr      *FireManager
 	RedstoneMgr  *RedstoneManager
-	DimensionMgr *DimensionManager                   // optional; when set, uses dimension-aware world
-	OnBlockBreak func(blockName string, x, y, z int) // called when a block is broken
+	WireMgr      *WireManager
+	PistonMgr    *PistonManager
+	HopperMgr    *HopperManager
+	DispenserMgr *DispenserManager
+	DimensionMgr    *DimensionManager                   // optional; when set, uses dimension-aware world
+	EndPortalMgr    *EndPortalManager                   // optional; handles end portal frame interaction
+	BarrelMgr       *BarrelManager                      // optional; handles barrel interactions
+	GrindstoneMgr   *GrindstoneManager                  // optional; handles grindstone interactions
+	StonecutterMgr  *StonecutterManager                 // optional; handles stonecutter interactions
+	SmokerMgr       *SmokerManager                      // optional; handles smoker interactions
+	BlastFurnaceMgr *BlastFurnaceManager                // optional; handles blast furnace interactions
+	ShulkerBoxMgr   *ShulkerBoxManager                  // optional; handles shulker box interactions
+	SmithingMgr     *SmithingTableManager               // optional; handles smithing table interactions
+	OnBlockBreak    func(blockName string, x, y, z int) // called when a block is broken
 }
 
 // worldForPlayer returns the world for the player's current dimension.
@@ -246,7 +259,79 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 					h.sendAck(player, int32(sequence))
 					return
 				}
+			case "brewing_stand":
+				if h.BrewingMgr != nil {
+					h.BrewingMgr.OpenBrewingStand(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "hopper":
+				if h.HopperMgr != nil {
+					h.HopperMgr.OpenHopper(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "dispenser":
+				if h.DispenserMgr != nil {
+					h.DispenserMgr.OpenDispenser(player, pos.X, pos.Y, pos.Z, false)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "dropper":
+				if h.DispenserMgr != nil {
+					h.DispenserMgr.OpenDispenser(player, pos.X, pos.Y, pos.Z, true)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "barrel":
+				if h.BarrelMgr != nil {
+					h.BarrelMgr.OpenBarrel(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "grindstone":
+				if h.GrindstoneMgr != nil {
+					h.GrindstoneMgr.OpenGrindstone(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "stonecutter":
+				if h.StonecutterMgr != nil {
+					h.StonecutterMgr.OpenStonecutter(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "smoker":
+				if h.SmokerMgr != nil {
+					h.SmokerMgr.OpenSmoker(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "blast_furnace":
+				if h.BlastFurnaceMgr != nil {
+					h.BlastFurnaceMgr.OpenBlastFurnace(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "smithing_table":
+				if h.SmithingMgr != nil {
+					h.SmithingMgr.OpenSmithingTable(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "end_portal_frame":
+				if h.EndPortalMgr != nil {
+					if h.EndPortalMgr.HandleFrameClick(player, pos.X, pos.Y, pos.Z, int(stateID)) {
+						h.sendAck(player, int32(sequence))
+						return
+					}
+				}
 			default:
+				if h.ShulkerBoxMgr != nil && IsShulkerBox(blockName) {
+					h.ShulkerBoxMgr.OpenShulkerBox(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
 				if h.handleBlockInteraction(player, pos.X, pos.Y, pos.Z, int(stateID)) {
 					h.sendAck(player, int32(sequence))
 					return
@@ -397,6 +482,13 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 						return
 					}
 				}
+			}
+		}
+
+		// Non-farmland plant placement (sugar cane, bamboo, nether wart, sweet berries)
+		if isNonFarmlandPlantItem(heldName) && int(face) == 1 {
+			if h.placeNonFarmlandPlant(player, pos.X, pos.Y+1, pos.Z, heldName, int32(sequence)) {
+				return
 			}
 		}
 
@@ -602,7 +694,22 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 	if h.CropMgr != nil {
 		blockName := BlockNameFromState(int(oldState))
 		if isCropBlock(blockName) {
-			h.CropMgr.UnregisterCrop(x, y, z)
+			switch blockName {
+			case "pumpkin_stem", "melon_stem", "attached_pumpkin_stem", "attached_melon_stem":
+				h.CropMgr.UnregisterStem(x, y, z)
+			case "sugar_cane":
+				h.CropMgr.UnregisterSugarCane(x, y, z)
+			case "bamboo", "bamboo_sapling":
+				h.CropMgr.UnregisterBamboo(x, y, z)
+			case "nether_wart":
+				h.CropMgr.UnregisterNetherWart(x, y, z)
+			case "cocoa":
+				h.CropMgr.UnregisterCocoa(x, y, z)
+			case "sweet_berry_bush":
+				h.CropMgr.UnregisterBerry(x, y, z)
+			default:
+				h.CropMgr.UnregisterCrop(x, y, z)
+			}
 		}
 	}
 
@@ -644,6 +751,15 @@ func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int, x, y, z i
 	// Crop blocks have special drop logic based on age
 	if isCropBlock(blockName) {
 		h.dropCropItems(stateID, x, y, z)
+		return
+	}
+
+	// Melon drops 3-7 melon_slices
+	if blockName == "melon" && h.ItemEntities != nil {
+		if id := itemIDByName("melon_slice"); id > 0 {
+			count := int32(3 + rand.Intn(5)) // 3-7
+			h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, id, count, 10)
+		}
 		return
 	}
 
@@ -1427,6 +1543,39 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 			h.broadcastBlockUpdate(x, y, z, int32(newID))
 		}
 		return true
+
+	// Sweet berry bush: harvest on right-click
+	case block.SweetBerryBush:
+		if h.CropMgr != nil {
+			age := int(door.Age)
+			if age >= 2 {
+				count := h.CropMgr.HarvestSweetBerries(x, y, z)
+				if count > 0 && h.ItemEntities != nil {
+					if id := itemIDByName("sweet_berries"); id > 0 {
+						h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, id, int32(count), 10)
+					}
+				}
+				return true
+			}
+		}
+		return false
+
+	// Redstone: repeater (cycle delay), comparator (toggle mode)
+	case block.Repeater:
+		if h.WireMgr != nil {
+			h.WireMgr.CycleRepeaterDelay(x, y, z)
+		}
+		return true
+	case block.Comparator:
+		if h.WireMgr != nil {
+			h.WireMgr.ToggleComparatorMode(x, y, z)
+		}
+		return true
+	case block.NoteBlock:
+		if h.RedstoneMgr != nil {
+			h.RedstoneMgr.CycleNoteBlock(x, y, z)
+		}
+		return true
 	}
 
 	return false
@@ -2064,6 +2213,7 @@ func (h *BlockHandler) plantSeed(player *game.Player, x, y, z int, seedName stri
 	}
 
 	var cropBlock block.Block
+	isStem := false
 	switch seedName {
 	case "wheat_seeds":
 		cropBlock = block.Wheat{Age: block.Integer(0)}
@@ -2073,6 +2223,12 @@ func (h *BlockHandler) plantSeed(player *game.Player, x, y, z int, seedName stri
 		cropBlock = block.Potatoes{Age: block.Integer(0)}
 	case "beetroot_seeds":
 		cropBlock = block.Beetroots{Age: block.Integer(0)}
+	case "pumpkin_seeds":
+		cropBlock = block.PumpkinStem{Age: block.Integer(0)}
+		isStem = true
+	case "melon_seeds":
+		cropBlock = block.MelonStem{Age: block.Integer(0)}
+		isStem = true
 	default:
 		return false
 	}
@@ -2098,25 +2254,157 @@ func (h *BlockHandler) plantSeed(player *game.Player, x, y, z int, seedName stri
 
 	// Register crop for growth
 	if h.CropMgr != nil {
-		h.CropMgr.RegisterCrop(x, y, z)
+		if isStem {
+			h.CropMgr.RegisterStem(x, y, z)
+		} else {
+			h.CropMgr.RegisterCrop(x, y, z)
+		}
 	}
 
 	return true
 }
 
-// isCropBlock returns true if the block name is a crop.
+// placeNonFarmlandPlant handles placing sugar cane, bamboo, nether wart, and sweet berries.
+func (h *BlockHandler) placeNonFarmlandPlant(player *game.Player, x, y, z int, itemName string, sequence int32) bool {
+	// Check that target position is air
+	targetState, err := h.World.GetBlock(x, y, z)
+	if err != nil || targetState != 0 {
+		h.sendAck(player, sequence)
+		return false
+	}
+
+	// Check block below
+	belowState, err := h.World.GetBlock(x, y-1, z)
+	if err != nil {
+		h.sendAck(player, sequence)
+		return false
+	}
+	belowName := BlockNameFromState(int(belowState))
+
+	var plantBlock block.Block
+
+	switch itemName {
+	case "sugar_cane":
+		// Must be on dirt, sand, grass_block, or another sugar_cane
+		if belowName != "dirt" && belowName != "sand" && belowName != "grass_block" && belowName != "sugar_cane" {
+			return false
+		}
+		// If placing on ground (not on another sugar cane), check for adjacent water
+		if belowName != "sugar_cane" {
+			if !h.hasAdjacentWater(x, y-1, z) {
+				return false
+			}
+		}
+		plantBlock = block.SugarCane{Age: 0}
+
+	case "bamboo":
+		// Must be on grass_block, dirt, or sand (or another bamboo)
+		if belowName != "grass_block" && belowName != "dirt" && belowName != "sand" && belowName != "bamboo" && belowName != "bamboo_sapling" {
+			return false
+		}
+		plantBlock = block.Bamboo{Age: 0, Leaves: block.BambooLeavesNone, Stage: 0}
+
+	case "nether_wart":
+		// Must be on soul_sand
+		if belowName != "soul_sand" {
+			return false
+		}
+		plantBlock = block.NetherWart{Age: block.Integer(0)}
+
+	case "sweet_berries":
+		// Must be on grass_block or dirt
+		if belowName != "grass_block" && belowName != "dirt" {
+			return false
+		}
+		plantBlock = block.SweetBerryBush{Age: block.Integer(0)}
+
+	default:
+		return false
+	}
+
+	plantStateID, ok := block.ToStateID[plantBlock]
+	if !ok {
+		return false
+	}
+
+	h.World.SetBlock(x, y, z, plantStateID)
+	h.broadcastBlockUpdate(x, y, z, int32(plantStateID))
+	h.sendAck(player, sequence)
+
+	// Consume item in survival
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		player.Inventory[slot].Count--
+		if player.Inventory[slot].Count <= 0 {
+			player.Inventory[slot] = game.ItemStack{}
+		}
+		SendSlotUpdate(player, slot)
+	}
+
+	// Register for growth ticking
+	if h.CropMgr != nil {
+		switch itemName {
+		case "sugar_cane":
+			h.CropMgr.RegisterSugarCane(x, y, z)
+		case "bamboo":
+			h.CropMgr.RegisterBamboo(x, y, z)
+		case "nether_wart":
+			h.CropMgr.RegisterNetherWart(x, y, z)
+		case "sweet_berries":
+			h.CropMgr.RegisterBerry(x, y, z)
+		}
+	}
+
+	return true
+}
+
+// hasAdjacentWater checks if there is water within 1 block horizontally at the given Y level.
+func (h *BlockHandler) hasAdjacentWater(x, y, z int) bool {
+	for dx := -1; dx <= 1; dx++ {
+		for dz := -1; dz <= 1; dz++ {
+			if dx == 0 && dz == 0 {
+				continue
+			}
+			ws, err := h.World.GetBlock(x+dx, y, z+dz)
+			if err != nil {
+				continue
+			}
+			if int(ws) < len(block.StateList) && block.StateList[ws] != nil {
+				if _, ok := block.StateList[ws].(block.Water); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// isCropBlock returns true if the block name is a crop (includes all crop types).
 func isCropBlock(name string) bool {
 	switch name {
-	case "wheat", "carrots", "potatoes", "beetroots":
+	case "wheat", "carrots", "potatoes", "beetroots",
+		"pumpkin_stem", "melon_stem", "attached_pumpkin_stem", "attached_melon_stem",
+		"sugar_cane", "bamboo", "bamboo_sapling",
+		"nether_wart", "cocoa", "sweet_berry_bush":
 		return true
 	}
 	return false
 }
 
-// isSeedItem returns true if the item name is a seed that can be planted.
+// isSeedItem returns true if the item name is a seed that can be planted on farmland.
 func isSeedItem(name string) bool {
 	switch name {
-	case "wheat_seeds", "carrot", "potato", "beetroot_seeds":
+	case "wheat_seeds", "carrot", "potato", "beetroot_seeds",
+		"pumpkin_seeds", "melon_seeds":
+		return true
+	}
+	return false
+}
+
+// isNonFarmlandPlantItem returns true if the item is a plant that goes on non-farmland blocks.
+func isNonFarmlandPlantItem(name string) bool {
+	switch name {
+	case "sugar_cane", "bamboo", "nether_wart", "sweet_berries":
 		return true
 	}
 	return false
@@ -2134,97 +2422,108 @@ func (h *BlockHandler) dropCropItems(stateID int, x, y, z int) {
 		return
 	}
 
-	var cropName string
-	var age int
-	var maxAge int
-
-	switch b := block.StateList[stateID].(type) {
-	case block.Wheat:
-		cropName = "wheat"
-		age = int(b.Age)
-		maxAge = 7
-	case block.Carrots:
-		cropName = "carrots"
-		age = int(b.Age)
-		maxAge = 7
-	case block.Potatoes:
-		cropName = "potatoes"
-		age = int(b.Age)
-		maxAge = 7
-	case block.Beetroots:
-		cropName = "beetroots"
-		age = int(b.Age)
-		maxAge = 3
-	default:
-		return
-	}
-
 	if h.ItemEntities == nil {
 		return
 	}
 
 	fx, fy, fz := float64(x)+0.5, float64(y)+0.5, float64(z)+0.5
 
-	if age >= maxAge {
-		// Mature crop drops
-		switch cropName {
-		case "wheat":
-			wheatID := itemIDByName("wheat")
-			seedID := itemIDByName("wheat_seeds")
-			if wheatID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, wheatID, 1, 10)
+	switch b := block.StateList[stateID].(type) {
+	case block.Wheat:
+		age := int(b.Age)
+		if age >= 7 {
+			if id := itemIDByName("wheat"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
 			}
-			if seedID > 0 {
-				seedCount := int32(1 + rand.Intn(3)) // 1-3 seeds
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, seedID, seedCount, 10)
+			if id := itemIDByName("wheat_seeds"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, int32(1+rand.Intn(3)), 10)
 			}
-		case "carrots":
-			carrotID := itemIDByName("carrot")
-			if carrotID > 0 {
-				count := int32(1 + rand.Intn(4)) // 1-4 carrots
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, carrotID, count, 10)
-			}
-		case "potatoes":
-			potatoID := itemIDByName("potato")
-			if potatoID > 0 {
-				count := int32(1 + rand.Intn(4)) // 1-4 potatoes
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, potatoID, count, 10)
-			}
-		case "beetroots":
-			beetrootID := itemIDByName("beetroot")
-			seedID := itemIDByName("beetroot_seeds")
-			if beetrootID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, beetrootID, 1, 10)
-			}
-			if seedID > 0 {
-				seedCount := int32(1 + rand.Intn(3)) // 1-3 seeds
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, seedID, seedCount, 10)
+		} else {
+			if id := itemIDByName("wheat_seeds"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
 			}
 		}
-	} else {
-		// Immature crop: drop seeds only
-		switch cropName {
-		case "wheat":
-			seedID := itemIDByName("wheat_seeds")
-			if seedID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, seedID, 1, 10)
+	case block.Carrots:
+		age := int(b.Age)
+		if id := itemIDByName("carrot"); id > 0 {
+			count := int32(1)
+			if age >= 7 {
+				count = int32(1 + rand.Intn(4))
 			}
-		case "beetroots":
-			seedID := itemIDByName("beetroot_seeds")
-			if seedID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, seedID, 1, 10)
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, count, 10)
+		}
+	case block.Potatoes:
+		age := int(b.Age)
+		if id := itemIDByName("potato"); id > 0 {
+			count := int32(1)
+			if age >= 7 {
+				count = int32(1 + rand.Intn(4))
 			}
-		// carrots and potatoes: immature drops the seed item itself
-		case "carrots":
-			carrotID := itemIDByName("carrot")
-			if carrotID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, carrotID, 1, 10)
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, count, 10)
+		}
+	case block.Beetroots:
+		age := int(b.Age)
+		if age >= 3 {
+			if id := itemIDByName("beetroot"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
 			}
-		case "potatoes":
-			potatoID := itemIDByName("potato")
-			if potatoID > 0 {
-				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, potatoID, 1, 10)
+			if id := itemIDByName("beetroot_seeds"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, int32(1+rand.Intn(3)), 10)
 			}
+		} else {
+			if id := itemIDByName("beetroot_seeds"); id > 0 {
+				h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
+			}
+		}
+	case block.PumpkinStem, block.AttachedPumpkinStem:
+		// Stems drop 0-3 seeds
+		if id := itemIDByName("pumpkin_seeds"); id > 0 {
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, int32(rand.Intn(4)), 10)
+		}
+	case block.MelonStem, block.AttachedMelonStem:
+		// Stems drop 0-3 seeds
+		if id := itemIDByName("melon_seeds"); id > 0 {
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, int32(rand.Intn(4)), 10)
+		}
+	case block.SugarCane:
+		if id := itemIDByName("sugar_cane"); id > 0 {
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
+		}
+	case block.NetherWart:
+		age := int(b.Age)
+		if id := itemIDByName("nether_wart"); id > 0 {
+			count := int32(1)
+			if age >= 3 {
+				count = int32(2 + rand.Intn(3)) // 2-4
+			}
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, count, 10)
+		}
+	case block.Cocoa:
+		age := int(b.Age)
+		if id := itemIDByName("cocoa_beans"); id > 0 {
+			count := int32(1)
+			if age >= 2 {
+				count = 3
+			}
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, count, 10)
+		}
+	case block.SweetBerryBush:
+		age := int(b.Age)
+		if id := itemIDByName("sweet_berries"); id > 0 {
+			var count int32
+			switch {
+			case age >= 3:
+				count = int32(2 + rand.Intn(2)) // 2-3
+			case age == 2:
+				count = int32(1 + rand.Intn(2)) // 1-2
+			default:
+				count = 1
+			}
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, count, 10)
+		}
+	case block.Bamboo:
+		if id := itemIDByName("bamboo"); id > 0 {
+			h.ItemEntities.SpawnItem(h.Manager, fx, fy, fz, id, 1, 10)
 		}
 	}
 }

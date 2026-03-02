@@ -94,10 +94,22 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 	if !player.DrawingBow {
 		return false
 	}
+
+	// Check that the player still holds a bow before consuming the DrawingBow state
+	slot := int(player.HeldSlot) + 36
+	invItem := &player.Inventory[slot]
+	if invItem.ID <= 0 || invItem.Count <= 0 {
+		return false
+	}
+	itemName := ItemNameByID(invItem.ID)
+	if itemName != "bow" {
+		return false // not a bow, let other handlers process
+	}
+
 	player.DrawingBow = false
 
 	if player.Dead {
-		return false
+		return true
 	}
 
 	// Calculate charge (0.0 to 1.0)
@@ -107,17 +119,6 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 	}
 	if charge < 0.1 {
 		return true // too short, ignore
-	}
-
-	// Check that the player still holds a bow
-	slot := int(player.HeldSlot) + 36
-	invItem := &player.Inventory[slot]
-	if invItem.ID <= 0 || invItem.Count <= 0 {
-		return true
-	}
-	itemName := ItemNameByID(invItem.ID)
-	if itemName != "bow" {
-		return true
 	}
 
 	// Check if player has arrows

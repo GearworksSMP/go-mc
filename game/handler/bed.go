@@ -17,6 +17,7 @@ type BedManager struct {
 	WeatherMgr *WeatherManager
 	World      game.World
 	Logger     *log.Logger
+	AdvMgr     *AdvancementManager
 }
 
 // TryStartSleep attempts to put a player to sleep at the given bed position.
@@ -52,6 +53,11 @@ func (b *BedManager) TryStartSleep(player *game.Player, x, y, z int) bool {
 
 	// Set player as sleeping
 	player.Sleeping = true
+
+	// Advancement: sleep in bed
+	if b.AdvMgr != nil {
+		b.AdvMgr.CheckSleep(player)
+	}
 
 	// Set spawn point
 	player.HasSpawnPoint = true

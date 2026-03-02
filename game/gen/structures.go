@@ -23,6 +23,12 @@ type StructurePlacer struct {
 	// Whether each block lookup succeeded.
 	hasSpawner bool
 	hasTorch   bool
+
+	// Sub-placers for additional structure types.
+	templePlacer     *TemplePlacer
+	strongholdPlacer *StrongholdPlacer
+	mineshaftPlacer  *MineshaftPlacer
+	villagePlacer    *VillagePlacer
 }
 
 // NewStructurePlacer creates a StructurePlacer with resolved block state IDs.
@@ -44,6 +50,12 @@ func NewStructurePlacer(seed int64, waterID level.BlocksState) *StructurePlacer 
 
 	sp.torchID, ok = block.ToStateID[block.Torch{}]
 	sp.hasTorch = ok
+
+	// Initialize sub-placers.
+	sp.templePlacer = NewTemplePlacer(seed)
+	sp.strongholdPlacer = NewStrongholdPlacer(seed)
+	sp.mineshaftPlacer = NewMineshaftPlacer(seed)
+	sp.villagePlacer = NewVillagePlacer(seed)
 
 	return sp
 }
@@ -68,24 +80,34 @@ func (sp *StructurePlacer) PlaceStructures(chunk *level.Chunk, chunkX, chunkZ in
 		}
 	}
 
-	// Try village house placement (3% chance in plains biome).
+	centerBiome := biomes[8*16+8]
+
+	// Try village placement (3% chance in plains biome).
 	housePlaced := false
 	hHash := structureHash(chunkX, chunkZ, sp.Seed, 0xAAAA)
 	if abs64(hHash)%100 < 3 {
-		// Check if biome at chunk center is plains.
-		centerBiome := biomes[8*16+8]
 		if centerBiome == BiomePlains {
 			lx := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xBBBB))%8)
 			lz := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xCCCC))%8)
 			surfaceY := heights[lz*16+lx]
 			if surfaceY >= gen.SeaLevel {
-				sp.placeVillageHouse(chunk, lx, surfaceY, lz, gen)
+				// Vary building type based on hash.
+				buildHash := abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x1234))
+				buildType := int(buildHash % 5)
+
+				if buildType == 0 {
+					// Small house (original).
+					sp.placeVillageHouse(chunk, lx, surfaceY, lz, gen)
+				} else {
+					// Enhanced buildings (medium house, large house, blacksmith, church).
+					sp.villagePlacer.PlaceVillageBuildings(chunk, lx, surfaceY, lz, gen, buildType)
+				}
 				housePlaced = true
 			}
 		}
 	}
 
-	// Try village well placement (only if a house was placed in this chunk).
+	// Try village well and farm placement (only if a house was placed in this chunk).
 	if housePlaced {
 		wHash := structureHash(chunkX, chunkZ, sp.Seed, 0xDDDD)
 		lx := 2 + int(abs64(wHash)%12)
@@ -94,7 +116,54 @@ func (sp *StructurePlacer) PlaceStructures(chunk *level.Chunk, chunkX, chunkZ in
 		if surfaceY >= gen.SeaLevel {
 			sp.placeVillageWell(chunk, lx, surfaceY, lz, gen)
 		}
+
+		// Place a farm near the village (50% chance).
+		farmHash := structureHash(chunkX, chunkZ, sp.Seed, 0xFA12)
+		if abs64(farmHash)%2 == 0 {
+			fX := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xFA13))%10)
+			fZ := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xFA14))%10)
+			farmY := heights[fZ*16+fX]
+			if farmY >= gen.SeaLevel {
+				sp.villagePlacer.PlaceVillageFarm(chunk, fX, farmY, fZ, gen)
+			}
+		}
+
+		// Place a road between the house and well.
+		houseX := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xBBBB))%8)
+		houseZ := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xCCCC))%8)
+		wellX := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xDDDD))%12)
+		wellZ := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xEEEE))%12)
+		roadY := heights[houseZ*16+houseX]
+		sp.villagePlacer.PlaceVillageRoad(chunk, houseX, houseZ, wellX, wellZ, roadY, gen)
 	}
+
+	// Try desert temple placement (2% chance in desert biome).
+	tHash := structureHash(chunkX, chunkZ, sp.Seed, 0xD351)
+	if abs64(tHash)%50 < 1 && centerBiome == BiomeDesert {
+		lx := 3 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD352))%4)
+		lz := 3 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD353))%4)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.templePlacer.PlaceDesertTemple(chunk, lx, surfaceY, lz, gen)
+		}
+	}
+
+	// Try jungle temple placement (2% chance in forest biome).
+	jHash := structureHash(chunkX, chunkZ, sp.Seed, 0xF0E5)
+	if abs64(jHash)%50 < 1 && centerBiome == BiomeForest {
+		lx := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xF0E6))%5)
+		lz := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xF0E7))%5)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.templePlacer.PlaceJungleTemple(chunk, lx, surfaceY, lz, gen)
+		}
+	}
+
+	// Try mineshaft placement (1% chance, underground).
+	sp.mineshaftPlacer.PlaceMineshaft(chunk, chunkX, chunkZ, gen)
+
+	// Try stronghold placement (at deterministic positions).
+	sp.strongholdPlacer.PlaceStronghold(chunk, chunkX, chunkZ, gen)
 }
 
 // placeDungeon places a 5x5x4 cobblestone dungeon room underground.

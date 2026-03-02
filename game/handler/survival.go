@@ -77,10 +77,50 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		damage *= (1 - protReduction)
 	}
 
-	// TODO: Fire Protection enchantment — when fire damage types are implemented,
-	// sum "fire_protection" levels from all armor pieces and apply 8% reduction per level (cap 80%).
-	// TODO: Blast Protection enchantment — when explosion damage types are implemented,
-	// sum "blast_protection" levels from all armor pieces and apply 8% reduction per level (cap 80%).
+	// Fire Protection enchantment: 8% reduction per level (cap 80%)
+	fireProtTotal := int32(0)
+	for _, slot := range []int{5, 6, 7, 8} {
+		if player.Inventory[slot].Enchantments != nil {
+			fireProtTotal += player.Inventory[slot].Enchantments["fire_protection"]
+		}
+	}
+	if fireProtTotal > 0 {
+		fpReduction := float32(fireProtTotal) * 0.08
+		if fpReduction > 0.8 {
+			fpReduction = 0.8
+		}
+		damage *= (1 - fpReduction)
+	}
+
+	// Blast Protection enchantment: 8% reduction per level (cap 80%)
+	blastProtTotal := int32(0)
+	for _, slot := range []int{5, 6, 7, 8} {
+		if player.Inventory[slot].Enchantments != nil {
+			blastProtTotal += player.Inventory[slot].Enchantments["blast_protection"]
+		}
+	}
+	if blastProtTotal > 0 {
+		bpReduction := float32(blastProtTotal) * 0.08
+		if bpReduction > 0.8 {
+			bpReduction = 0.8
+		}
+		damage *= (1 - bpReduction)
+	}
+
+	// Projectile Protection enchantment: 8% reduction per level (cap 80%)
+	projProtTotal := int32(0)
+	for _, slot := range []int{5, 6, 7, 8} {
+		if player.Inventory[slot].Enchantments != nil {
+			projProtTotal += player.Inventory[slot].Enchantments["projectile_protection"]
+		}
+	}
+	if projProtTotal > 0 {
+		ppReduction := float32(projProtTotal) * 0.08
+		if ppReduction > 0.8 {
+			ppReduction = 0.8
+		}
+		damage *= (1 - ppReduction)
+	}
 
 	// Resistance effect: 20% reduction per level (cap 100%)
 	if s.EffectMgr != nil {
@@ -220,6 +260,9 @@ func (s *SurvivalHandler) handleDeathWithMessage(manager *game.PlayerManager, pl
 
 	player.Dead = true
 	player.Health = 0
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnDeath(deathMessage)
+	}
 
 	// Send combat kill to the dying player
 	deathMsg := chat.Text(deathMessage)

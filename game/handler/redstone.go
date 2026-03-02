@@ -6,8 +6,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	"github.com/Tnze/go-mc/level/block"
+	pk "github.com/Tnze/go-mc/net/packet"
 )
 
 // Sound IDs for redstone components (0-indexed, wire sends +1).
@@ -46,11 +48,14 @@ type PowerSource struct {
 // RedstoneManager handles basic redstone mechanics: levers, buttons, pressure plates,
 // and their effects on iron doors, iron trapdoors, and redstone lamps.
 type RedstoneManager struct {
-	Manager *game.PlayerManager
-	World   game.World
-	Logger  *log.Logger
-	mu      sync.Mutex
-	sources map[[3]int]*PowerSource
+	Manager    *game.PlayerManager
+	World      game.World
+	Logger     *log.Logger
+	WireMgr    *WireManager
+	PistonMgr  *PistonManager
+	DispenserMgr *DispenserManager
+	mu         sync.Mutex
+	sources    map[[3]int]*PowerSource
 }
 
 // NewRedstoneManager creates a new RedstoneManager.
@@ -258,7 +263,25 @@ func (r *RedstoneManager) IsPowered(x, y, z int) bool {
 			return true
 		}
 	}
+
+	// Check if redstone wire provides power
+	if r.WireMgr != nil && r.WireMgr.WirePowersBlock(x, y, z) {
+		return true
+	}
+
 	return false
+}
+
+// GetPowerLevel returns the redstone power level at a position (0-15).
+// Combines power from sources (15) and wire (0-15).
+func (r *RedstoneManager) GetPowerLevel(x, y, z int) int {
+	if r.IsPowered(x, y, z) {
+		return 15
+	}
+	if r.WireMgr != nil {
+		return r.WireMgr.GetPowerLevel(x, y, z)
+	}
+	return 0
 }
 
 // updateAdjacentPowered checks all 6 neighbors of (x,y,z) and updates
@@ -270,6 +293,11 @@ func (r *RedstoneManager) updateAdjacentPowered(x, y, z int) {
 	}
 	// Also check the block at the source position itself (for lamps placed at same position)
 	r.updatePoweredBlock(x, y, z)
+
+	// Notify wire manager about power source change
+	if r.WireMgr != nil {
+		r.WireMgr.UpdateFromSource(x, y, z, r.IsPowered(x, y, z))
+	}
 }
 
 // updatePoweredBlock checks if a block at (x,y,z) is a redstone-responsive block
@@ -315,6 +343,38 @@ func (r *RedstoneManager) updatePoweredBlock(x, y, z int) {
 				broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
 			}
 		}
+	case block.Piston:
+		if r.PistonMgr != nil {
+			if powered && !bool(door.Extended) {
+				r.PistonMgr.TryActivate(x, y, z)
+			} else if !powered && bool(door.Extended) {
+				r.PistonMgr.TryRetract(x, y, z)
+			}
+		}
+	case block.StickyPiston:
+		if r.PistonMgr != nil {
+			if powered && !bool(door.Extended) {
+				r.PistonMgr.TryActivate(x, y, z)
+			} else if !powered && bool(door.Extended) {
+				r.PistonMgr.TryRetract(x, y, z)
+			}
+		}
+	case block.Dispenser:
+		if powered && r.DispenserMgr != nil {
+			r.DispenserMgr.Activate(x, y, z)
+		}
+	case block.Dropper:
+		if powered && r.DispenserMgr != nil {
+			r.DispenserMgr.Activate(x, y, z)
+		}
+	case block.NoteBlock:
+		if powered {
+			r.PlayNoteBlockPowered(x, y, z)
+		}
+	case block.RedstoneTorch:
+		r.UpdateRedstoneTorch(x, y, z)
+	case block.RedstoneWallTorch:
+		r.UpdateRedstoneTorch(x, y, z)
 	}
 }
 
@@ -654,4 +714,232 @@ func pressurePlateSoundOff(plateName string) int32 {
 		return SoundMetalPressurePlateOff
 	}
 	return SoundWoodenPressurePlateOff
+}
+
+// ---------------------------------------------------------------------------
+// Note Block
+// ---------------------------------------------------------------------------
+
+// CycleNoteBlock cycles the note value of a note block (0-24) and plays the note.
+func (r *RedstoneManager) CycleNoteBlock(x, y, z int) {
+	stateID, err := r.World.GetBlock(x, y, z)
+	if err != nil {
+		return
+	}
+	if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+		return
+	}
+	nb, ok := block.StateList[stateID].(block.NoteBlock)
+	if !ok {
+		return
+	}
+
+	// Cycle note 0→1→...→24→0
+	newNote := int(nb.Note) + 1
+	if newNote > 24 {
+		newNote = 0
+	}
+	nb.Note = block.Integer(newNote)
+	newID, ok := block.ToStateID[nb]
+	if !ok {
+		return
+	}
+	r.World.SetBlock(x, y, z, newID)
+	broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
+
+	r.playNoteBlock(x, y, z, nb)
+}
+
+// PlayNoteBlockPowered plays a note block when it receives redstone power.
+func (r *RedstoneManager) PlayNoteBlockPowered(x, y, z int) {
+	stateID, err := r.World.GetBlock(x, y, z)
+	if err != nil {
+		return
+	}
+	if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+		return
+	}
+	nb, ok := block.StateList[stateID].(block.NoteBlock)
+	if !ok {
+		return
+	}
+	r.playNoteBlock(x, y, z, nb)
+}
+
+// playNoteBlock plays the note sound with correct pitch.
+// Pitch: 2^((note - 12) / 12), so note 0 = F#3, note 12 = F#4, note 24 = F#5.
+func (r *RedstoneManager) playNoteBlock(x, y, z int, nb block.NoteBlock) {
+	note := int(nb.Note)
+	pitch := float32(math.Pow(2.0, float64(note-12)/12.0))
+
+	// Instrument determines the sound — simplified to base note block sound
+	BroadcastSound(r.Manager, SoundNoteBlock, SoundCategoryBlock,
+		float64(x)+0.5, float64(y)+1.0, float64(z)+0.5, 3.0, pitch)
+
+	// Send block event (action 0 = play note) for note particle
+	blockStateID, _ := r.World.GetBlock(x, y, z)
+	noteEventPkt := pk.Marshal(
+		packetid.ClientboundBlockEvent,
+		pk.Position{X: x, Y: y, Z: z},
+		pk.UnsignedByte(0), // action: play note
+		pk.UnsignedByte(byte(note)),
+		pk.VarInt(blockStateID),
+	)
+	r.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(noteEventPkt)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Redstone Torch
+// ---------------------------------------------------------------------------
+
+// UpdateRedstoneTorch checks if a redstone torch should turn off/on based on
+// the block it's attached to receiving power.
+// A redstone torch inverts: it's OFF when the block below (or attached to) is powered.
+func (r *RedstoneManager) UpdateRedstoneTorch(x, y, z int) {
+	stateID, err := r.World.GetBlock(x, y, z)
+	if err != nil {
+		return
+	}
+	if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+		return
+	}
+
+	// Handle both wall and floor redstone torches
+	switch torch := block.StateList[stateID].(type) {
+	case block.RedstoneTorch:
+		// Floor torch: attached to block below
+		blockPowered := r.isBlockDirectlyPowered(x, y-1, z)
+		if blockPowered == bool(torch.Lit) {
+			torch.Lit = block.Boolean(!blockPowered)
+			if newID, ok := block.ToStateID[torch]; ok {
+				r.World.SetBlock(x, y, z, newID)
+				broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
+				r.updateAdjacentPowered(x, y, z)
+			}
+		}
+	case block.RedstoneWallTorch:
+		// Wall torch: attached to block behind it
+		bx, by, bz := wallTorchAttached(x, y, z, torch.Facing)
+		blockPowered := r.isBlockDirectlyPowered(bx, by, bz)
+		if blockPowered == bool(torch.Lit) {
+			torch.Lit = block.Boolean(!blockPowered)
+			if newID, ok := block.ToStateID[torch]; ok {
+				r.World.SetBlock(x, y, z, newID)
+				broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
+				r.updateAdjacentPowered(x, y, z)
+			}
+		}
+	}
+}
+
+// wallTorchAttached returns the position of the block a wall torch is attached to.
+func wallTorchAttached(x, y, z int, facing block.Direction) (int, int, int) {
+	switch facing {
+	case block.North:
+		return x, y, z + 1
+	case block.South:
+		return x, y, z - 1
+	case block.East:
+		return x - 1, y, z
+	case block.West:
+		return x + 1, y, z
+	}
+	return x, y, z
+}
+
+// isBlockDirectlyPowered checks if a block has a direct power source adjacent
+// (not through wire). Used for redstone torch burnout logic.
+func (r *RedstoneManager) isBlockDirectlyPowered(x, y, z int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, off := range adjacentOffsets {
+		adj := [3]int{x + off[0], y + off[1], z + off[2]}
+		if src, ok := r.sources[adj]; ok && src.Powered {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Tripwire
+// ---------------------------------------------------------------------------
+
+// TripwireState tracks a tripwire hook pair and its string.
+type TripwireState struct {
+	HookA  [3]int // first hook position
+	HookB  [3]int // second hook position (zero if not connected)
+	Facing block.Direction
+}
+
+// CheckTripwire checks if an entity at (ex, ey, ez) is on a tripwire string,
+// and if so, powers the connected hooks.
+func (r *RedstoneManager) CheckTripwire(ex, ey, ez float64) {
+	// Convert to block coords
+	bx, by, bz := int(math.Floor(ex)), int(math.Floor(ey)), int(math.Floor(ez))
+
+	stateID, err := r.World.GetBlock(bx, by, bz)
+	if err != nil {
+		return
+	}
+	if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+		return
+	}
+
+	tw, ok := block.StateList[stateID].(block.Tripwire)
+	if !ok {
+		return
+	}
+
+	if bool(tw.Powered) {
+		return // already triggered
+	}
+
+	// Set tripwire to powered
+	tw.Powered = true
+	if newID, ok := block.ToStateID[tw]; ok {
+		r.World.SetBlock(bx, by, bz, newID)
+		broadcastBlockUpdateDirect(r.Manager, bx, by, bz, int32(newID))
+	}
+
+	// Find and power connected hooks (search along connected directions)
+	r.powerTripwireHooksNear(bx, by, bz)
+}
+
+// powerTripwireHooksNear searches along the 4 horizontal directions from a powered
+// tripwire for hooks, and sets them to powered.
+func (r *RedstoneManager) powerTripwireHooksNear(x, y, z int) {
+	directions := [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}}
+	for _, dir := range directions {
+		for dist := 1; dist <= 40; dist++ {
+			nx, ny, nz := x+dir[0]*dist, y, z+dir[2]*dist
+			sid, err := r.World.GetBlock(nx, ny, nz)
+			if err != nil {
+				break
+			}
+			if int(sid) >= len(block.StateList) || block.StateList[sid] == nil {
+				break
+			}
+			switch hook := block.StateList[sid].(type) {
+			case block.TripwireHook:
+				if !bool(hook.Powered) {
+					hook.Powered = true
+					hook.Attached = true
+					if newID, ok := block.ToStateID[hook]; ok {
+						r.World.SetBlock(nx, ny, nz, newID)
+						broadcastBlockUpdateDirect(r.Manager, nx, ny, nz, int32(newID))
+						r.updateAdjacentPowered(nx, ny, nz)
+					}
+				}
+				return // found hook, stop searching
+			case block.Tripwire:
+				_ = hook
+				continue // keep searching along string
+			default:
+				return // non-tripwire block, stop
+			}
+		}
+	}
 }

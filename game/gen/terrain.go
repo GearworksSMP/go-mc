@@ -30,6 +30,8 @@ type TerrainGenerator struct {
 	birchLogID, birchLeavesID                    level.BlocksState
 	spruceLogID, spruceLeavesID                  level.BlocksState
 	cactusID                                     level.BlocksState
+	sugarCaneID                                  level.BlocksState
+	pumpkinID                                    level.BlocksState
 	biomeNoise                                   *SimplexNoise
 	structurePlacer                              *StructurePlacer
 }
@@ -71,6 +73,8 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.spruceLogID, _ = block.ToStateID[block.SpruceLog{Axis: block.Y}]
 	g.spruceLeavesID, _ = block.ToStateID[block.SpruceLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
 	g.cactusID, _ = block.ToStateID[block.Cactus{Age: 0}]
+	g.sugarCaneID, _ = block.ToStateID[block.SugarCane{Age: 0}]
+	g.pumpkinID, _ = block.ToStateID[block.Pumpkin{}]
 	g.biomeNoise = NewSimplexNoise(seed + 3)
 	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
 
@@ -158,6 +162,8 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 	}
 
 	g.placeBiomeTrees(chunk, pos, heights, biomes)
+	g.placeSugarCane(chunk, pos, heights, biomes)
+	g.placePumpkins(chunk, pos, heights, biomes)
 	g.structurePlacer.PlaceStructures(chunk, pos.X, pos.Z, g)
 	g.computeHeightmaps(chunk)
 
@@ -477,4 +483,108 @@ func (g *TerrainGenerator) SpawnY() float64 {
 	n := g.heightNoise.Octave2D(0, 0, 3, 2.0, 0.5)
 	h := 64 + int(n*16)
 	return float64(h) + 1
+}
+
+// placeSugarCane places sugar cane near water-adjacent positions.
+func (g *TerrainGenerator) placeSugarCane(chunk *level.Chunk, pos game.ChunkPos, heights [256]int, biomes [256]BiomeType) {
+	if g.sugarCaneID == 0 {
+		return
+	}
+
+	for z := 1; z < 15; z++ {
+		for x := 1; x < 15; x++ {
+			biome := biomes[z*16+x]
+			ty := heights[z*16+x]
+
+			// Only place on grass or sand adjacent to water, above sea level.
+			if ty < g.SeaLevel {
+				continue
+			}
+			// Skip desert mountains and ocean.
+			if biome == BiomeMountains || biome == BiomeOcean {
+				continue
+			}
+
+			// Check if this block's surface is grass or sand.
+			secIdx := (ty - g.MinY) / 16
+			if secIdx < 0 || secIdx >= g.Sections {
+				continue
+			}
+			localY := (ty - g.MinY) % 16
+			idx := localY*16*16 + z*16 + x
+			surfState := chunk.Sections[secIdx].GetBlock(idx)
+			if surfState != g.grassID && surfState != g.sandID {
+				continue
+			}
+
+			// Check if there is water adjacent (check neighboring heights).
+			hasWaterNearby := false
+			for _, d := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
+				nx, nz := x+d[0], z+d[1]
+				if nx < 0 || nx >= 16 || nz < 0 || nz >= 16 {
+					continue
+				}
+				nh := heights[nz*16+nx]
+				if nh < g.SeaLevel {
+					hasWaterNearby = true
+					break
+				}
+			}
+			if !hasWaterNearby {
+				continue
+			}
+
+			// 2% chance.
+			rng := posHash(pos.X*16+x, ty, pos.Z*16+z, g.Seed+200)
+			if rng%50 != 0 {
+				continue
+			}
+
+			// Place 1-3 blocks of sugar cane.
+			caneHeight := 1 + int(rng/50)%3
+			for dy := 1; dy <= caneHeight; dy++ {
+				g.setBlock(chunk, x, ty+dy, z, g.sugarCaneID)
+			}
+		}
+	}
+}
+
+// placePumpkins places rare pumpkin blocks on grass surfaces in plains biome.
+func (g *TerrainGenerator) placePumpkins(chunk *level.Chunk, pos game.ChunkPos, heights [256]int, biomes [256]BiomeType) {
+	if g.pumpkinID == 0 {
+		return
+	}
+
+	for z := 0; z < 16; z++ {
+		for x := 0; x < 16; x++ {
+			biome := biomes[z*16+x]
+			ty := heights[z*16+x]
+
+			// Only place in plains biome above sea level
+			if biome != BiomePlains || ty < g.SeaLevel {
+				continue
+			}
+
+			// Check if surface is grass
+			secIdx := (ty - g.MinY) / 16
+			if secIdx < 0 || secIdx >= g.Sections {
+				continue
+			}
+			localY := (ty - g.MinY) % 16
+			idx := localY*16*16 + z*16 + x
+			surfState := chunk.Sections[secIdx].GetBlock(idx)
+			if surfState != g.grassID {
+				continue
+			}
+
+			// 1% chance
+			rng := posHash(pos.X*16+x, ty, pos.Z*16+z, g.Seed+300)
+			if rng%100 != 0 {
+				continue
+			}
+
+			// Place pumpkin on top of grass
+			g.setBlock(chunk, x, ty+1, z, g.pumpkinID)
+		}
+	}
 }

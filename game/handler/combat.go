@@ -20,6 +20,7 @@ type CombatHandler struct {
 	BoatMgr         *BoatManager
 	MinecartMgr     *MinecartManager
 	EffectMgr       *EffectManager
+	DragonMgr       *EnderDragonManager
 	Logger          *log.Logger
 }
 
@@ -67,6 +68,11 @@ func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 		return
 	}
 
+	// Check for tameable mob interaction (taming, sit toggle, horse mount)
+	if h.MobManager != nil && h.MobManager.TryTame(player, targetEID) {
+		return
+	}
+
 	// Check for passive mob feeding
 	if h.MobManager != nil && h.MobManager.IsPassiveMob(targetEID) {
 		mobType := h.MobManager.GetMobType(targetEID)
@@ -88,6 +94,26 @@ func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 			}
 		}
 	}
+}
+
+// isUndeadMob returns true if the mob type is undead (for Smite enchantment).
+func isUndeadMob(typeID int32) bool {
+	switch typeID {
+	case MobTypeZombie, MobTypeSkeleton, MobTypePhantom,
+		MobTypeDrowned, MobTypeHusk, MobTypeStray,
+		MobTypeWitherSkeleton, MobTypeZombifiedPiglin:
+		return true
+	}
+	return false
+}
+
+// isArthropodMob returns true if the mob type is an arthropod (for Bane of Arthropods).
+func isArthropodMob(typeID int32) bool {
+	switch typeID {
+	case MobTypeSpider, MobTypeCaveSpider, MobTypeSilverfish, MobTypeEndermite, MobTypeBee:
+		return true
+	}
+	return false
 }
 
 func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
@@ -129,7 +155,64 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	// Vanilla damage formula: damage = baseDamage * (0.2 + strength^2 * 0.8)
 	damage := baseDamage * float32(0.2+strength*strength*0.8)
 
+	// Critical hit: player must be falling (not on ground), full charge, not sprinting, not blind
+	isCritical := !attacker.OnGround && strength >= 1.0 && !attacker.Sprinting && !attacker.Blocking
+	if isCritical {
+		damage *= 1.5
+	}
+
 	attacker.LastAttackTime = time.Now()
+
+	// Determine mob type for type-specific enchantments
+	var targetMobType int32
+	if h.MobManager != nil {
+		targetMobType = h.MobManager.GetMobType(targetEID)
+	}
+
+	// Smite: +2.5 * level vs undead mobs
+	if heldItem.Enchantments != nil && targetMobType > 0 {
+		if smiteLvl := heldItem.Enchantments["smite"]; smiteLvl > 0 && isUndeadMob(targetMobType) {
+			damage += float32(smiteLvl) * 2.5
+		}
+		// Bane of Arthropods: +2.5 * level vs arthropods
+		if baneLvl := heldItem.Enchantments["bane_of_arthropods"]; baneLvl > 0 && isArthropodMob(targetMobType) {
+			damage += float32(baneLvl) * 2.5
+		}
+	}
+
+	// Knockback enchantment level (adds to base knockback)
+	knockbackLevel := int32(0)
+	if heldItem.Enchantments != nil {
+		knockbackLevel = heldItem.Enchantments["knockback"]
+	}
+	// Sprinting adds +1 knockback level equivalent
+	if attacker.Sprinting {
+		knockbackLevel++
+	}
+
+	// Fire Aspect: levels for setting targets on fire
+	fireAspectLevel := int32(0)
+	if heldItem.Enchantments != nil {
+		fireAspectLevel = heldItem.Enchantments["fire_aspect"]
+	}
+
+	// Looting enchantment level (used for mob drops)
+	lootingLevel := int32(0)
+	if heldItem.Enchantments != nil {
+		lootingLevel = heldItem.Enchantments["looting"]
+	}
+
+	// Broadcast critical hit particle effect
+	if isCritical {
+		critPkt := pk.Marshal(
+			packetid.ClientboundAnimate,
+			pk.VarInt(targetEID),
+			pk.UnsignedByte(4), // critical effect
+		)
+		h.Manager.ForEach(func(p *game.Player) {
+			p.WritePacket(critPkt)
+		})
+	}
 
 	// Try boat target
 	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
@@ -145,11 +228,27 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		return
 	}
 
-	// Try mob target first
-	if h.MobManager != nil && h.MobManager.DamageMob(attacker, targetEID, damage) {
+	// Try ender dragon target
+	if h.DragonMgr != nil && h.DragonMgr.IsDragonEID(targetEID) {
+		h.DragonMgr.DamageDragon(attacker, damage)
 		attacker.Exhaustion += 0.1
 		h.applyDurabilityLoss(attacker, heldName, strength)
-		h.logf("Player %s attacked mob EID=%d (strength=%.2f, damage=%.1f)", attacker.Name, targetEID, strength, damage)
+		h.logf("Player %s attacked Ender Dragon (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, strength, damage, isCritical)
+		return
+	}
+
+	// Try mob target
+	if h.MobManager != nil && h.MobManager.DamageMobEx(attacker, targetEID, damage, knockbackLevel, fireAspectLevel, lootingLevel) {
+		attacker.Exhaustion += 0.1
+
+		// Sweep attack: if full charge, standing still, and using a sword,
+		// deal reduced damage to nearby mobs
+		if strength >= 1.0 && IsSword(heldName) && !attacker.Sprinting {
+			h.applySweepAttack(attacker, targetEID, baseDamage)
+		}
+
+		h.applyDurabilityLoss(attacker, heldName, strength)
+		h.logf("Player %s attacked mob EID=%d (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, targetEID, strength, damage, isCritical)
 		return
 	}
 
@@ -163,50 +262,153 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		h.SurvivalHandler.ApplyDamageFrom(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID, attacker.Name)
 	}
 
+	// Fire Aspect: set target player on fire (4 seconds per level)
+	if fireAspectLevel > 0 {
+		fireTicks := fireAspectLevel * 80 // 4 seconds per level at 20 TPS
+		h.setPlayerOnFire(target, fireTicks)
+	}
+
 	// Add exhaustion for attacking
 	attacker.Exhaustion += 0.1
 
-	// Knockback: push target away from attacker (reduced if blocking with shield)
+	// Knockback: push target away from attacker
+	h.applyKnockbackToPlayer(attacker, target, knockbackLevel)
+
+	// Thorns enchantment: check target's armor for thorns, reflect damage back to attacker
+	h.applyThorns(attacker, target)
+
+	// Sweep attack for PvP
+	if strength >= 1.0 && IsSword(heldName) && !attacker.Sprinting {
+		h.applySweepAttackPvP(attacker, target, baseDamage)
+	}
+
+	h.applyDurabilityLoss(attacker, heldName, strength)
+	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, target.Name, strength, damage, isCritical)
+}
+
+// applyKnockbackToPlayer pushes the target player away from the attacker.
+func (h *CombatHandler) applyKnockbackToPlayer(attacker, target *game.Player, kbLevel int32) {
 	ax, _, az := attacker.Position()
 	tx, _, tz := target.Position()
 	dx := tx - ax
 	dz := tz - az
 	dist := math.Sqrt(dx*dx + dz*dz)
-	if dist > 0 {
-		scale := 4000.0 / dist
-		knockbackMult := 1.0
-		if target.Blocking {
-			knockbackMult = 0.2
-		}
-
-		// Netherite knockback resistance: each netherite armor piece gives 0.1 resistance
-		totalKBResist := 0.0
-		for _, slot := range []int{5, 6, 7, 8} {
-			totalKBResist += GetKnockbackResistance(ItemNameByID(target.Inventory[slot].ID))
-		}
-		if totalKBResist > 1.0 {
-			totalKBResist = 1.0
-		}
-		knockbackMult *= (1 - totalKBResist)
-
-		velX := int16(dx * scale * knockbackMult)
-		velY := int16(float64(3000) * knockbackMult)
-		velZ := int16(dz * scale * knockbackMult)
-
-		target.WritePacket(pk.Marshal(
-			packetid.ClientboundSetEntityMotion,
-			pk.VarInt(target.EID),
-			pk.Short(velX),
-			pk.Short(velY),
-			pk.Short(velZ),
-		))
+	if dist <= 0 {
+		return
 	}
 
-	// Thorns enchantment: check target's armor for thorns, reflect damage back to attacker
-	h.applyThorns(attacker, target)
+	// Base knockback + enchantment bonus (each level adds ~3 blocks of velocity)
+	baseScale := 4000.0
+	enchantBonus := float64(kbLevel) * 3000.0
+	scale := (baseScale + enchantBonus) / dist
 
-	h.applyDurabilityLoss(attacker, heldName, strength)
-	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f)", attacker.Name, target.Name, strength, damage)
+	knockbackMult := 1.0
+	if target.Blocking {
+		knockbackMult = 0.2
+	}
+
+	// Netherite knockback resistance
+	totalKBResist := 0.0
+	for _, slot := range []int{5, 6, 7, 8} {
+		totalKBResist += GetKnockbackResistance(ItemNameByID(target.Inventory[slot].ID))
+	}
+	if totalKBResist > 1.0 {
+		totalKBResist = 1.0
+	}
+	knockbackMult *= (1 - totalKBResist)
+
+	velX := int16(dx * scale * knockbackMult)
+	velY := int16((3000.0 + float64(kbLevel)*1500.0) * knockbackMult)
+	velZ := int16(dz * scale * knockbackMult)
+
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundSetEntityMotion,
+		pk.VarInt(target.EID),
+		pk.Short(velX),
+		pk.Short(velY),
+		pk.Short(velZ),
+	))
+}
+
+// setPlayerOnFire sets a player's visual fire state via entity metadata.
+func (h *CombatHandler) setPlayerOnFire(target *game.Player, fireTicks int32) {
+	_ = fireTicks
+	// Set entity on fire flag (metadata index 0, bit 0x01)
+	h.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pk.Marshal(
+			packetid.ClientboundSetEntityData,
+			pk.VarInt(target.EID),
+			pk.UnsignedByte(0), // index 0: base entity flags
+			pk.VarInt(0),       // type: byte
+			pk.Byte(0x01),      // on fire
+			pk.UnsignedByte(0xFF), // end of metadata
+		))
+	})
+	// Apply 1 damage per second (simplified: apply once immediately)
+	if h.SurvivalHandler != nil {
+		target.LastDamageMessage = target.Name + " burned to death"
+		h.SurvivalHandler.ApplyDamage(h.Manager, target, 1.0, h.SurvivalHandler.AttackDamageTypeID)
+	}
+}
+
+// applySweepAttack deals reduced damage to mobs near the primary target.
+// Vanilla: 1 + Sweeping Edge enchant bonus damage, in a 1-block radius around the target.
+func (h *CombatHandler) applySweepAttack(attacker *game.Player, primaryEID int32, baseDamage float32) {
+	if h.MobManager == nil {
+		return
+	}
+
+	sweepDamage := float32(1.0)
+	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
+	if heldItem.Enchantments != nil {
+		if seLvl := heldItem.Enchantments["sweeping_edge"]; seLvl > 0 {
+			sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
+		}
+	}
+
+	h.MobManager.DamageMobsNearExcept(attacker, primaryEID, sweepDamage, 1.5)
+
+	// Play sweep sound
+	px, py, pz := attacker.Position()
+	BroadcastSound(h.Manager, SoundSweepAttack, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+
+	// Sweep particle
+	sweepPkt := pk.Marshal(
+		packetid.ClientboundAnimate,
+		pk.VarInt(attacker.EID),
+		pk.UnsignedByte(5), // sweep attack
+	)
+	h.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(sweepPkt)
+	})
+}
+
+// applySweepAttackPvP deals reduced sweep damage to other players near the primary target.
+func (h *CombatHandler) applySweepAttackPvP(attacker, primaryTarget *game.Player, baseDamage float32) {
+	sweepDamage := float32(1.0)
+	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
+	if heldItem.Enchantments != nil {
+		if seLvl := heldItem.Enchantments["sweeping_edge"]; seLvl > 0 {
+			sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
+		}
+	}
+
+	tx, ty, tz := primaryTarget.Position()
+	h.Manager.ForEach(func(p *game.Player) {
+		if p.EID == attacker.EID || p.EID == primaryTarget.EID || p.Dead || p.IsInvulnerable() {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - tx
+		dy := py - ty
+		dz := pz - tz
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist <= 1.5 {
+			if h.SurvivalHandler != nil {
+				h.SurvivalHandler.ApplyDamageFrom(h.Manager, p, sweepDamage, h.SurvivalHandler.AttackDamageTypeID, attacker.Name)
+			}
+		}
+	})
 }
 
 // applyDurabilityLoss reduces tool durability after a near-full-charge attack.

@@ -6,17 +6,21 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-// DimensionManager handles cross-dimension teleportation between the Overworld and the Nether.
+// DimensionManager handles cross-dimension teleportation between the Overworld, Nether, and End.
 type DimensionManager struct {
 	Manager       *game.PlayerManager
 	OverWorld     game.World
 	NetherWorld   game.World
+	EndWorld      game.World
 	OverEncoder   *ChunkSender
 	NetherEncoder *ChunkSender
+	EndEncoder    *ChunkSender
 	Logger        *log.Logger
+	AdvMgr        *AdvancementManager
 
 	// NetherDimTypeID is the registry index for minecraft:the_nether dimension type.
 	// Default: 3 (overworld=0, overworld_caves=1, the_end=2, the_nether=3).
@@ -26,11 +30,21 @@ type DimensionManager struct {
 	// Default: 0.
 	OverworldDimTypeID int32
 
+	// EndDimTypeID is the registry index for minecraft:the_end dimension type.
+	// Default: 2.
+	EndDimTypeID int32
+
 	// SpawnY is the overworld spawn Y coordinate.
 	OverworldSpawnY float64
 
 	// IsFlat indicates whether the overworld is a flat world (for respawn packet).
 	IsFlat bool
+
+	// EndPortalMgr handles end portal checks (optional).
+	EndPortalMgr *EndPortalManager
+
+	// DragonMgr manages the ender dragon boss (optional).
+	DragonMgr *EnderDragonManager
 }
 
 // Tick updates portal cooldowns and checks if players are standing in portals.
@@ -65,12 +79,20 @@ func (dm *DimensionManager) Tick(tick int64) {
 			return
 		}
 
+		// Check for end portal (instant teleport)
+		if isEndPortalState(int(state)) {
+			if dm.EndPortalMgr != nil {
+				dm.EndPortalMgr.CheckPlayerInEndPortal(player, world)
+			}
+			return
+		}
+
 		if isPortalState(int(state)) {
 			player.PortalTicks++
 			if player.PortalTicks >= 80 { // 4 seconds at 20 TPS
 				if player.Dimension == "minecraft:the_nether" {
 					dm.TeleportToOverworld(player)
-				} else {
+				} else if player.Dimension != "minecraft:the_end" {
 					dm.TeleportToNether(player)
 				}
 				player.PortalTicks = 0
@@ -95,6 +117,12 @@ func (dm *DimensionManager) TeleportToNether(player *game.Player) {
 	dm.sendRespawn(player, dm.NetherDimTypeID, "minecraft:the_nether", false)
 
 	player.Dimension = "minecraft:the_nether"
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnDimensionChange("minecraft:overworld", "minecraft:the_nether")
+	}
+	if dm.AdvMgr != nil {
+		dm.AdvMgr.CheckDimensionChange(player, "minecraft:the_nether")
+	}
 	player.LoadedChunks = make(map[game.ChunkPos]bool)
 	player.SetPosition(netherX, float64(netherY), netherZ)
 	player.FallStartY = -999
@@ -119,7 +147,11 @@ func (dm *DimensionManager) TeleportToOverworld(player *game.Player) {
 
 	dm.sendRespawn(player, dm.OverworldDimTypeID, "minecraft:overworld", dm.IsFlat)
 
+	prevDim := player.Dimension
 	player.Dimension = "minecraft:overworld"
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnDimensionChange(prevDim, "minecraft:overworld")
+	}
 	player.LoadedChunks = make(map[game.ChunkPos]bool)
 	player.SetPosition(owX, float64(owY), owZ)
 	player.FallStartY = -999
@@ -230,12 +262,94 @@ func (dm *DimensionManager) findSafeY(world game.World, x, z, minY, maxY int) in
 	return 65 // nether fallback
 }
 
+// TeleportToEnd sends a player from the Overworld to the End dimension.
+func (dm *DimensionManager) TeleportToEnd(player *game.Player) {
+	if dm.EndWorld == nil {
+		return
+	}
+
+	// End spawn: obsidian platform at 100, 49, 0
+	endX := 100.5
+	endY := 49.0
+	endZ := 0.5
+
+	// Build obsidian platform at spawn point
+	obsidianID, _ := block.ToStateID[block.Obsidian{}]
+	for dz := -2; dz <= 2; dz++ {
+		for dx := -2; dx <= 2; dx++ {
+			dm.EndWorld.SetBlock(100+dx, 48, dz, obsidianID)
+			// Clear blocks above the platform
+			dm.EndWorld.SetBlock(100+dx, 49, dz, 0) // air
+			dm.EndWorld.SetBlock(100+dx, 50, dz, 0) // air
+			dm.EndWorld.SetBlock(100+dx, 51, dz, 0) // air
+		}
+	}
+
+	dm.sendRespawn(player, dm.EndDimTypeID, "minecraft:the_end", false)
+
+	prevDim := player.Dimension
+	player.Dimension = "minecraft:the_end"
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnDimensionChange(prevDim, "minecraft:the_end")
+	}
+	if dm.AdvMgr != nil {
+		dm.AdvMgr.CheckDimensionChange(player, "minecraft:the_end")
+	}
+	player.LoadedChunks = make(map[game.ChunkPos]bool)
+	player.SetPosition(endX, endY, endZ)
+	player.FallStartY = -999
+	player.PortalCooldown = 300 // 15 seconds
+
+	dm.sendPlayerPosition(player, endX, endY, endZ)
+	dm.sendSpawnSequenceForDimension(player, dm.EndEncoder, "minecraft:the_end")
+
+	// Spawn dragon if not already active
+	if dm.DragonMgr != nil {
+		dm.DragonMgr.SpawnDragon()
+		dm.DragonMgr.SendDragonToPlayer(player)
+	}
+
+	dm.logf("Player %s teleported to the End at (%.1f, %.1f, %.1f)", player.Name, endX, endY, endZ)
+}
+
+// TeleportFromEnd sends a player from the End back to the Overworld spawn.
+func (dm *DimensionManager) TeleportFromEnd(player *game.Player) {
+	owX := 0.5
+	owY := dm.OverworldSpawnY
+	owZ := 0.5
+
+	// Remove boss bar if present
+	if dm.DragonMgr != nil {
+		dm.DragonMgr.RemoveBossBarFromPlayer(player)
+	}
+
+	dm.sendRespawn(player, dm.OverworldDimTypeID, "minecraft:overworld", dm.IsFlat)
+
+	player.Dimension = "minecraft:overworld"
+	if player.SessionEvents != nil {
+		player.SessionEvents.OnDimensionChange("minecraft:the_end", "minecraft:overworld")
+	}
+	player.LoadedChunks = make(map[game.ChunkPos]bool)
+	player.SetPosition(owX, owY, owZ)
+	player.FallStartY = -999
+	player.PortalCooldown = 300 // 15 seconds
+
+	dm.sendPlayerPosition(player, owX, owY, owZ)
+	dm.sendSpawnSequenceForDimension(player, dm.OverEncoder, "minecraft:overworld")
+
+	dm.logf("Player %s teleported from End to Overworld at (%.1f, %.1f, %.1f)", player.Name, owX, owY, owZ)
+}
+
 // worldForPlayer returns the world the player is currently in.
 func (dm *DimensionManager) worldForPlayer(player *game.Player) game.World {
-	if player.Dimension == "minecraft:the_nether" {
+	switch player.Dimension {
+	case "minecraft:the_nether":
 		return dm.NetherWorld
+	case "minecraft:the_end":
+		return dm.EndWorld
+	default:
+		return dm.OverWorld
 	}
-	return dm.OverWorld
 }
 
 // WorldForPlayer is a public accessor that returns the world the player is currently in.
@@ -245,10 +359,14 @@ func (dm *DimensionManager) WorldForPlayer(player *game.Player) game.World {
 
 // EncoderForPlayer returns the chunk encoder for the player's current dimension.
 func (dm *DimensionManager) EncoderForPlayer(player *game.Player) *ChunkSender {
-	if player.Dimension == "minecraft:the_nether" {
+	switch player.Dimension {
+	case "minecraft:the_nether":
 		return dm.NetherEncoder
+	case "minecraft:the_end":
+		return dm.EndEncoder
+	default:
+		return dm.OverEncoder
 	}
-	return dm.OverEncoder
 }
 
 func (dm *DimensionManager) logf(format string, args ...any) {

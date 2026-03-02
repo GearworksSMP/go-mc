@@ -36,10 +36,16 @@ import (
 	"github.com/Tnze/go-mc/yggdrasil/user"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
 	logger := log.New(os.Stdout, "[Server] ", log.LstdFlags)
+
+	tp, tracerShutdown := initTracer(logger)
+	defer tracerShutdown()
+
 	players := game.NewPlayerManager()
 
 	// Choose world generator: terrain (default) or superflat
@@ -115,6 +121,11 @@ func main() {
 	netherWorld := mem.NewWorld(netherGen, netherGen.Sections, netherGen.MinY)
 	logger.Printf("Nether world initialized (sections=%d, minY=%d)", netherGen.Sections, netherGen.MinY)
 
+	// Create End world (in-memory)
+	endGen := gen.NewEndGenerator(overworldSeed)
+	endWorld := mem.NewWorld(endGen, endGen.Sections, endGen.MinY)
+	logger.Printf("End world initialized (sections=%d, minY=%d)", endGen.Sections, endGen.MinY)
+
 	// Build minimal registries for 26.1-snapshot-2
 	regs := buildRegistries()
 
@@ -130,11 +141,22 @@ func main() {
 	chestMgr := handler.NewChestManager()
 	itemEntities := handler.NewItemEntityManager(players)
 	furnaceMgr := handler.NewFurnaceManager(players)
+	brewingMgr := handler.NewBrewingStandManager(players)
 	timeMgr := &handler.TimeManager{}
 	arrowMgr := handler.NewArrowManager(players, survHandler, world)
 	mobMgr := handler.NewMobManager(players, timeMgr, world, minY, survHandler, itemEntities)
 	mobMgr.ArrowMgr = arrowMgr
+	advancementMgr := handler.NewAdvancementManager(players)
+	mobMgr.AdvMgr = advancementMgr
 
+	barrelMgr := handler.NewBarrelManager()
+	smokerMgr := handler.NewSmokerManager(players)
+	blastFurnaceMgr := handler.NewBlastFurnaceManager(players)
+	shulkerBoxMgr := handler.NewShulkerBoxManager()
+	grindstoneMgr := handler.NewGrindstoneManager(world)
+	stonecutterMgr := handler.NewStonecutterManager(world)
+	smithingMgr := handler.NewSmithingTableManager(world)
+	spawnerMgr := handler.NewSpawnerManager(mobMgr, players, world)
 	enchantMgr := handler.NewEnchantManager(world)
 	anvilMgr := handler.NewAnvilManager(world)
 	villagerMgr := handler.NewVillagerManager(mobMgr, players)
@@ -152,11 +174,33 @@ func main() {
 		WeatherMgr: weatherMgr,
 		World:      world,
 		Logger:     logger,
+		AdvMgr:     advancementMgr,
 	}
 
 	bowMgr := &handler.BowManager{
 		Manager:  players,
 		ArrowMgr: arrowMgr,
+		Survival: survHandler,
+		Logger:   logger,
+	}
+
+	crossbowMgr := &handler.CrossbowManager{
+		Manager:  players,
+		ArrowMgr: arrowMgr,
+		Survival: survHandler,
+		Logger:   logger,
+	}
+
+	tridentMgr := &handler.TridentManager{
+		Manager:    players,
+		ArrowMgr:   arrowMgr,
+		Survival:   survHandler,
+		WeatherMgr: weatherMgr,
+		Logger:     logger,
+	}
+
+	elytraMgr := &handler.ElytraManager{
+		Manager:  players,
 		Survival: survHandler,
 		Logger:   logger,
 	}
@@ -167,6 +211,19 @@ func main() {
 	tntMgr := handler.NewTNTManager(players, world, survHandler, itemEntities, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
 	redstoneMgr := handler.NewRedstoneManager(players, world, logger)
+	wireMgr := handler.NewWireManager(players, world)
+	pistonMgr := handler.NewPistonManager(players, world)
+	hopperMgr := handler.NewHopperManager(players, world)
+	dispenserMgr := handler.NewDispenserManager(players, world, itemEntities)
+
+	// Wire redstone sub-managers
+	redstoneMgr.WireMgr = wireMgr
+	redstoneMgr.PistonMgr = pistonMgr
+	redstoneMgr.DispenserMgr = dispenserMgr
+	hopperMgr.Chests = chestMgr
+	hopperMgr.Furnaces = furnaceMgr
+	dispenserMgr.ArrowMgr = arrowMgr
+
 	minecartMgr := handler.NewMinecartManager(players, world, redstoneMgr, itemEntities, logger)
 
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
@@ -191,6 +248,7 @@ func main() {
 		chests:          chestMgr,
 		itemEntities:    itemEntities,
 		furnaces:        furnaceMgr,
+		brewingMgr:      brewingMgr,
 		timeMgr:         timeMgr,
 		mobMgr:          mobMgr,
 		arrowMgr:        arrowMgr,
@@ -204,6 +262,9 @@ func main() {
 		villagerMgr:     villagerMgr,
 		bedMgr:          bedMgr,
 		bowMgr:          bowMgr,
+		crossbowMgr:     crossbowMgr,
+		tridentMgr:      tridentMgr,
+		elytraMgr:       elytraMgr,
 		fishingMgr:      fishingMgr,
 		signMgr:         signMgr,
 		boatMgr:         boatMgr,
@@ -213,14 +274,28 @@ func main() {
 		tntMgr:          tntMgr,
 		fireMgr:         fireMgr,
 		redstoneMgr:     redstoneMgr,
+		wireMgr:         wireMgr,
+		pistonMgr:       pistonMgr,
+		hopperMgr:       hopperMgr,
+		dispenserMgr:    dispenserMgr,
+		barrelMgr:       barrelMgr,
+		grindstoneMgr:   grindstoneMgr,
+		stonecutterMgr:  stonecutterMgr,
+		smokerMgr:       smokerMgr,
+		blastFurnaceMgr: blastFurnaceMgr,
+		shulkerBoxMgr:   shulkerBoxMgr,
+		smithingMgr:     smithingMgr,
+		advancementMgr:  advancementMgr,
 		keepInventory:   &keepInventory,
+		tracer:          tp.Tracer("gearworks-mc"),
 	}
 
-	// Create DimensionManager for Nether teleportation
+	// Create DimensionManager for cross-dimension teleportation
 	dimensionMgr := &handler.DimensionManager{
 		Manager:     players,
 		OverWorld:   world,
 		NetherWorld: netherWorld,
+		EndWorld:    endWorld,
 		OverEncoder: &handler.ChunkSender{
 			World: world,
 			MinY:  minY,
@@ -229,13 +304,38 @@ func main() {
 			World: netherWorld,
 			MinY:  netherGen.MinY,
 		},
+		EndEncoder: &handler.ChunkSender{
+			World: endWorld,
+			MinY:  endGen.MinY,
+		},
 		Logger:             logger,
 		NetherDimTypeID:    3, // overworld=0, overworld_caves=1, the_end=2, the_nether=3
 		OverworldDimTypeID: 0,
+		EndDimTypeID:       2,
 		OverworldSpawnY:    spawnY,
 		IsFlat:             isFlat,
+		AdvMgr:             advancementMgr,
 	}
+
+	// Create Ender Dragon manager
+	dragonMgr := handler.NewEnderDragonManager(endWorld, players, mobMgr, survHandler, logger)
+
+	// Create End Portal manager
+	endPortalMgr := &handler.EndPortalManager{
+		World:        world, // overworld
+		EndWorld:     endWorld,
+		Manager:      players,
+		DimensionMgr: dimensionMgr,
+		Logger:       logger,
+	}
+
+	// Wire End managers into DimensionManager
+	dimensionMgr.EndPortalMgr = endPortalMgr
+	dimensionMgr.DragonMgr = dragonMgr
+
 	gp.dimensionMgr = dimensionMgr
+	gp.endPortalMgr = endPortalMgr
+	gp.dragonMgr = dragonMgr
 
 	// Load block entities (chests, furnaces) from DB
 	gp.loadBlockEntities()
@@ -272,8 +372,12 @@ func main() {
 			foodHandler.Tick(players)
 			itemEntities.Tick(tick)
 			furnaceMgr.Tick()
+			smokerMgr.TickSmokers()
+			blastFurnaceMgr.TickBlastFurnaces()
+			brewingMgr.Tick()
 			timeMgr.Tick(tick, players)
 			mobMgr.Tick(tick)
+			spawnerMgr.Tick(tick)
 			arrowMgr.Tick(tick)
 			fishingMgr.Tick(tick)
 			fluidMgr.Tick(tick)
@@ -289,7 +393,12 @@ func main() {
 			tntMgr.Tick(tick)
 			fireMgr.Tick(tick)
 			redstoneMgr.Tick(tick)
+			wireMgr.Tick(tick)
+			hopperMgr.Tick(tick)
+			tridentMgr.Tick(tick)
+			elytraMgr.Tick(tick)
 			dimensionMgr.Tick(tick)
+			dragonMgr.Tick(tick)
 		}),
 	)
 
@@ -306,6 +415,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		logger.Printf("Shutting down...")
+		tracerShutdown()
 		if dbw != nil {
 			n, err := dbw.FlushDirty(context.Background())
 			if err != nil {
@@ -366,6 +476,7 @@ type gamePlay struct {
 	chests          *handler.ChestManager
 	itemEntities    *handler.ItemEntityManager
 	furnaces        *handler.FurnaceManager
+	brewingMgr      *handler.BrewingStandManager
 	timeMgr         *handler.TimeManager
 	mobMgr          *handler.MobManager
 	arrowMgr        *handler.ArrowManager
@@ -379,6 +490,9 @@ type gamePlay struct {
 	villagerMgr     *handler.VillagerManager
 	bedMgr          *handler.BedManager
 	bowMgr          *handler.BowManager
+	crossbowMgr     *handler.CrossbowManager
+	tridentMgr      *handler.TridentManager
+	elytraMgr       *handler.ElytraManager
 	fishingMgr      *handler.FishingManager
 	signMgr         *handler.SignManager
 	boatMgr         *handler.BoatManager
@@ -388,8 +502,23 @@ type gamePlay struct {
 	tntMgr          *handler.TNTManager
 	fireMgr          *handler.FireManager
 	redstoneMgr     *handler.RedstoneManager
+	wireMgr         *handler.WireManager
+	pistonMgr       *handler.PistonManager
+	hopperMgr       *handler.HopperManager
+	dispenserMgr    *handler.DispenserManager
 	dimensionMgr    *handler.DimensionManager
+	endPortalMgr    *handler.EndPortalManager
+	dragonMgr       *handler.EnderDragonManager
+	barrelMgr       *handler.BarrelManager
+	grindstoneMgr   *handler.GrindstoneManager
+	stonecutterMgr  *handler.StonecutterManager
+	smokerMgr       *handler.SmokerManager
+	blastFurnaceMgr *handler.BlastFurnaceManager
+	shulkerBoxMgr   *handler.ShulkerBoxManager
+	smithingMgr     *handler.SmithingTableManager
 	keepInventory   *bool
+	advancementMgr  *handler.AdvancementManager
+	tracer          trace.Tracer
 }
 
 func (g *gamePlay) logf(format string, args ...any) {
@@ -484,7 +613,26 @@ func (g *gamePlay) loadBlockEntities() {
 
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
 	eid := g.players.NextEntityID()
+
+	// Start root session span (gives each player session a unique trace ID)
+	tracer := g.tracer
+	if tracer == nil {
+		tracer = trace.NewNoopTracerProvider().Tracer("")
+	}
+	ctx, sessionSpan := tracer.Start(context.Background(), "player.session",
+		trace.WithAttributes(
+			attribute.String("player.name", name),
+			attribute.String("player.uuid", id.String()),
+			attribute.Int("player.eid", int(eid)),
+		),
+	)
+	defer sessionSpan.End()
+
 	player := game.NewPlayer(name, id, eid, conn)
+	if sessionSpan.IsRecording() {
+		player.SessionEvents = &otelSessionEvents{span: sessionSpan}
+	}
+	_ = ctx // used for child spans below
 	player.Properties = properties
 	spawnX, spawnYVal, spawnZ := 0.5, g.spawnY, 0.5
 	var spawnYaw, spawnPitch float32
@@ -540,6 +688,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		// Wake player from bed on disconnect so other players' sleep check updates
 		if player.Sleeping && g.bedMgr != nil {
 			g.bedMgr.WakePlayer(player)
+		}
+
+		// Remove dragon boss bar on disconnect
+		if g.dragonMgr != nil {
+			g.dragonMgr.RemoveBossBarFromPlayer(player)
 		}
 
 		// Dismount vehicle if riding one
@@ -598,9 +751,28 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 				g.logf("Saved position for %s: (%.1f, %.1f, %.1f)", name, px, py, pz)
 			}
 		}
+		// Record disconnect position on the session span
+		if sessionSpan.IsRecording() {
+			px, py, pz := player.Position()
+			sessionSpan.AddEvent("player.disconnect", trace.WithAttributes(
+				attribute.Float64("x", px),
+				attribute.Float64("y", py),
+				attribute.Float64("z", pz),
+			))
+		}
+
 		g.players.Remove(id)
 		g.logf("Player %s (%s) left", name, id)
 	}()
+
+	// Join span: covers the entire join sequence (JoinGame → initial chunks → tab list)
+	_, joinSpan := tracer.Start(ctx, "player.join",
+		trace.WithAttributes(
+			attribute.Float64("spawn.x", spawnX),
+			attribute.Float64("spawn.y", spawnYVal),
+			attribute.Float64("spawn.z", spawnZ),
+		),
+	)
 
 	if err := g.sendJoinGame(conn, eid); err != nil {
 		g.logf("Error sending JoinGame to %s: %v", name, err)
@@ -720,12 +892,17 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
+	// Send advancements
+	g.advancementMgr.SendAdvancementsOnJoin(player)
+
+	joinSpan.End() // join sequence complete
+
 	// Packet read loop with handlers
 	g.packetLoop(player)
 }
 
 func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
-	dimensionNames := []pk.Identifier{"minecraft:overworld", "minecraft:the_nether"}
+	dimensionNames := []pk.Identifier{"minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"}
 
 	return conn.WritePacket(pk.Marshal(
 		packetid.ClientboundLogin,
@@ -812,6 +989,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		ItemEntities: g.itemEntities,
 		Chests:       g.chests,
 		Furnaces:     g.furnaces,
+		BrewingMgr:   g.brewingMgr,
 		TimeMgr:      g.timeMgr,
 		FluidMgr:     g.fluidMgr,
 		FallingMgr:   g.fallingMgr,
@@ -826,22 +1004,44 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		TNTMgr:       g.tntMgr,
 		FireMgr:      g.fireMgr,
 		RedstoneMgr:  g.redstoneMgr,
-		DimensionMgr: g.dimensionMgr,
+		WireMgr:      g.wireMgr,
+		PistonMgr:    g.pistonMgr,
+		HopperMgr:    g.hopperMgr,
+		DispenserMgr: g.dispenserMgr,
+		DimensionMgr:    g.dimensionMgr,
+		EndPortalMgr:    g.endPortalMgr,
+		BarrelMgr:       g.barrelMgr,
+		GrindstoneMgr:   g.grindstoneMgr,
+		StonecutterMgr:  g.stonecutterMgr,
+		SmokerMgr:       g.smokerMgr,
+		BlastFurnaceMgr: g.blastFurnaceMgr,
+		ShulkerBoxMgr:   g.shulkerBoxMgr,
+		SmithingMgr:     g.smithingMgr,
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
-			if blockName == "chest" || blockName == "furnace" {
+			if blockName == "chest" || blockName == "furnace" || blockName == "brewing_stand" || blockName == "hopper" || blockName == "dispenser" || blockName == "dropper" {
 				go g.pgStore.DeleteBlockEntity(context.Background(), "overworld", x, y, z)
 			}
 		}
 	}
 	invHandler := &handler.InventoryHandler{
-		Logger:      g.logger,
-		Chests:      g.chests,
-		Furnaces:    g.furnaces,
-		EnchantMgr:  g.enchantMgr,
-		AnvilMgr:    g.anvilMgr,
-		VillagerMgr: g.villagerMgr,
+		Logger:          g.logger,
+		Chests:          g.chests,
+		Furnaces:        g.furnaces,
+		BrewingMgr:      g.brewingMgr,
+		HopperMgr:       g.hopperMgr,
+		DispenserMgr:    g.dispenserMgr,
+		EnchantMgr:      g.enchantMgr,
+		AnvilMgr:        g.anvilMgr,
+		VillagerMgr:     g.villagerMgr,
+		BarrelMgr:       g.barrelMgr,
+		GrindstoneMgr:   g.grindstoneMgr,
+		StonecutterMgr:  g.stonecutterMgr,
+		SmokerMgr:       g.smokerMgr,
+		BlastFurnaceMgr: g.blastFurnaceMgr,
+		ShulkerBoxMgr:   g.shulkerBoxMgr,
+		SmithingMgr:     g.smithingMgr,
 	}
 	if g.pgStore != nil {
 		invHandler.OnContainerClose = func(containerType string, pos [3]int) {
@@ -862,8 +1062,9 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		Commands: cmdExecutor,
 	}
 	animHandler := &handler.AnimationHandler{
-		Manager: g.players,
-		BedMgr:  g.bedMgr,
+		Manager:   g.players,
+		BedMgr:    g.bedMgr,
+		ElytraMgr: g.elytraMgr,
 	}
 	combatHandler := &handler.CombatHandler{
 		Manager:         g.players,
@@ -873,6 +1074,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BoatMgr:         g.boatMgr,
 		MinecartMgr:     g.minecartMgr,
 		EffectMgr:       g.effectMgr,
+		DragonMgr:       g.dragonMgr,
 		Logger:          g.logger,
 	}
 	respawnHandler := &handler.RespawnHandler{
@@ -915,15 +1117,31 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		if movHandler.HandlePacket(player, p) {
 			continue
 		}
-		// Bow release (action=5) must be checked before blockHandler claims all PlayerAction packets
+		// Bow/crossbow/trident release (action=5) must be checked before blockHandler claims all PlayerAction packets
 		if g.bowMgr.HandlePlayerAction(player, p) {
+			continue
+		}
+		if g.crossbowMgr.HandlePlayerAction(player, p) {
+			continue
+		}
+		if g.tridentMgr.HandlePlayerAction(player, p) {
 			continue
 		}
 		if blockHandler.HandlePacket(player, p) {
 			continue
 		}
-		// Bow draw (UseItem with bow) must be checked before food handler
+		// Elytra firework boost (UseItem with firework_rocket while gliding) must be checked first
+		if g.elytraMgr.HandleUseItem(player, p) {
+			continue
+		}
+		// Bow/crossbow/trident draw (UseItem) must be checked before food handler
 		if g.bowMgr.HandleUseItem(player, p) {
+			continue
+		}
+		if g.crossbowMgr.HandleUseItem(player, p) {
+			continue
+		}
+		if g.tridentMgr.HandleUseItem(player, p) {
 			continue
 		}
 		if g.foodHandler.HandlePacket(player, p) {

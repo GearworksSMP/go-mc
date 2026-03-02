@@ -73,6 +73,8 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		if h.RedstoneMgr != nil && onGround {
 			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
 		}
+		// Sweet berry bush damage
+		h.checkSweetBerryBush(player, float64(x), float64(y), float64(z))
 		return true
 
 	case packetid.ServerboundMovePlayerPosRot:
@@ -110,6 +112,8 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		if h.RedstoneMgr != nil && onGround {
 			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
 		}
+		// Sweet berry bush damage
+		h.checkSweetBerryBush(player, float64(x), float64(y), float64(z))
 		return true
 
 	case packetid.ServerboundMovePlayerRot:
@@ -396,6 +400,37 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 							h.CropMgr.UnregisterCrop(bx, by+1, bz)
 						}
 					}
+				}
+			}
+		}
+	}
+}
+
+// checkSweetBerryBush applies damage when a player walks through a mature sweet berry bush.
+// In vanilla, berry bushes at age 2-3 deal 1 damage and slow movement.
+// We apply 1 damage per position change while inside the bush.
+func (h *MovementHandler) checkSweetBerryBush(player *game.Player, x, y, z float64) {
+	if player.Dead || player.GameMode == 1 || player.GameMode == 3 { // creative/spectator immune
+		return
+	}
+
+	w := h.worldForPlayer(player)
+	bx := int(math.Floor(x))
+	by := int(math.Floor(y))
+	bz := int(math.Floor(z))
+
+	// Check the block at the player's feet position
+	for dy := 0; dy <= 1; dy++ {
+		state, err := w.GetBlock(bx, by+dy, bz)
+		if err != nil {
+			continue
+		}
+		if int(state) < len(block.StateList) && block.StateList[state] != nil {
+			if bush, ok := block.StateList[state].(block.SweetBerryBush); ok {
+				if int(bush.Age) >= 2 && h.SurvivalHandler != nil {
+					player.LastDamageMessage = player.Name + " was poked to death by a sweet berry bush"
+					h.SurvivalHandler.ApplyDamage(h.Manager, player, 1.0, h.SurvivalHandler.FallDamageTypeID)
+					return
 				}
 			}
 		}

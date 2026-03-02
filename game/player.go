@@ -212,6 +212,16 @@ type AnvilSessionData struct {
 	RepairCost int32     // XP level cost
 }
 
+// SessionEvents receives lightweight event notifications for a player session.
+// Implementations must be safe to call from the player's packet-loop goroutine.
+// All methods are no-ops when the receiver is nil.
+type SessionEvents interface {
+	OnDeath(deathMessage string)
+	OnRespawn()
+	OnDimensionChange(from, to string)
+	OnCommand(command string)
+}
+
 // Player represents a connected player with their state.
 type Player struct {
 	Name       string
@@ -288,6 +298,14 @@ type Player struct {
 	DrawingBow   bool
 	BowDrawStart time.Time
 
+	// Crossbow state
+	LoadingCrossbow  bool
+	CrossbowLoadStart time.Time
+	CrossbowLoaded   bool
+
+	// Elytra gliding state
+	Gliding bool
+
 	// Riding state (e.g. boat)
 	RidingEntityEID int32
 
@@ -303,10 +321,13 @@ type Player struct {
 	LastSleepTick int64
 
 	// Container window state
-	OpenWindowID   int           // 0=none, 1=crafting table, 2=chest, 3=furnace
-	CraftingGrid   [9]ItemStack  // temporary 3x3 crafting grid
-	OpenChestPos   [3]int        // world position of open chest
-	OpenFurnacePos [3]int        // world position of open furnace
+	OpenWindowID        int           // 0=none, 1=crafting table, 2=chest, 3=furnace, 7=brewing stand
+	CraftingGrid        [9]ItemStack  // temporary 3x3 crafting grid
+	OpenChestPos        [3]int        // world position of open chest
+	OpenFurnacePos      [3]int        // world position of open furnace
+	OpenBrewingStandPos [3]int        // world position of open brewing stand
+	OpenHopperPos       [3]int        // world position of open hopper
+	OpenDispenserPos    [3]int        // world position of open dispenser/dropper
 	EnchantSession *EnchantSessionData // active enchanting table session
 	AnvilSession   *AnvilSessionData   // active anvil UI session
 
@@ -314,9 +335,15 @@ type Player struct {
 	EditingSignPos *[3]int // position of sign being edited, nil if not editing
 
 	// Dimension tracking
-	Dimension      string // "minecraft:overworld" or "minecraft:the_nether"
+	Dimension      string // "minecraft:overworld", "minecraft:the_nether", or "minecraft:the_end"
 	PortalCooldown int64  // ticks remaining before can use portal again
 	PortalTicks    int64  // ticks spent standing in portal (teleport at 80)
+
+	// Ender Dragon boss bar
+	DragonBossBarID uuid.UUID // UUID of the active boss bar, zero if none
+
+	// SessionEvents receives tracing events (nil when tracing is disabled).
+	SessionEvents SessionEvents
 }
 
 // NewPlayer creates a new Player with the given connection info.
