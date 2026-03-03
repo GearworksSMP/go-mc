@@ -143,6 +143,7 @@ func main() {
 	keepInventory := false
 
 	chestMgr := handler.NewChestManager()
+	chestMgr.Manager = players
 	itemEntities := handler.NewItemEntityManager(players)
 	furnaceMgr := handler.NewFurnaceManager(players)
 	brewingMgr := handler.NewBrewingStandManager(players)
@@ -150,6 +151,10 @@ func main() {
 	arrowMgr := handler.NewArrowManager(players, survHandler, world)
 	mobMgr := handler.NewMobManager(players, timeMgr, world, minY, survHandler, itemEntities)
 	mobMgr.ArrowMgr = arrowMgr
+	mobMgr.Logger = logger
+	if pg != nil {
+		mobMgr.MobStore = pg
+	}
 	advancementMgr := handler.NewAdvancementManager(players)
 	mobMgr.AdvMgr = advancementMgr
 
@@ -224,6 +229,7 @@ func main() {
 	redstoneMgr.WireMgr = wireMgr
 	redstoneMgr.PistonMgr = pistonMgr
 	redstoneMgr.DispenserMgr = dispenserMgr
+	redstoneMgr.TNTMgr = tntMgr
 	hopperMgr.Chests = chestMgr
 	hopperMgr.Furnaces = furnaceMgr
 	dispenserMgr.ArrowMgr = arrowMgr
@@ -344,6 +350,9 @@ func main() {
 	// Load block entities (chests, furnaces) from DB
 	gp.loadBlockEntities()
 
+	// Load persisted mobs
+	mobMgr.LoadSavedMobs("overworld")
+
 	srv := server.Server{
 		Logger:          logger,
 		ListPingHandler: &pingHandler{players: players},
@@ -420,6 +429,7 @@ func main() {
 		<-sigCh
 		logger.Printf("Shutting down...")
 		tracerShutdown()
+		mobMgr.SaveAllMobs("overworld")
 		if dbw != nil {
 			n, err := dbw.FlushDirty(context.Background())
 			if err != nil {
@@ -708,6 +718,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 			}
 		}
 
+		// Remove scoreboard score before leave broadcast
+		handler.RemovePlayerScore(g.players, player.Name)
+
 		// Broadcast leave before removing from manager
 		handler.BroadcastPlayerLeave(g.players, player)
 
@@ -887,6 +900,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	g.minecartMgr.SendExistingMinecarts(player)
 	g.tntMgr.SendExistingTNTs(player)
 	g.potionMgr.SendExistingPotions(player)
+
+	// Scoreboard: health below names
+	handler.SendScoreboard(g.players, player)
 
 	// Tab list header/footer
 	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}

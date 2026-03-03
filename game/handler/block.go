@@ -1123,6 +1123,11 @@ func (h *BlockHandler) placeBlock(player *game.Player, x, y, z int, state level.
 	h.broadcastBlockUpdate(x, y, z, int32(state))
 	h.sendAck(player, sequence)
 
+	// Play block place sound
+	placedBlockName := BlockNameFromState(int(state))
+	BroadcastSound(h.Manager, BlockPlaceSound(placedBlockName), SoundCategoryBlock,
+		float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 0.8)
+
 	// Consume item in survival mode
 	if player.GameMode == 0 {
 		slot := int(player.HeldSlot) + 36

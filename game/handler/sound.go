@@ -193,6 +193,33 @@ const (
 	SoundVexDeath             int32 = 1094
 	SoundVexHurt              int32 = 1096
 	SoundNoteBlock            int32 = 686
+
+	// Chest sounds
+	SoundChestOpen  int32 = 195 // block.chest.open
+	SoundChestClose int32 = 193 // block.chest.close
+
+	// Experience sounds
+	SoundXPPickup int32 = 353 // entity.experience_orb.pickup
+	SoundLevelUp  int32 = 804 // entity.player.levelup
+
+	// Eating sounds
+	SoundGenericEat int32 = 398 // entity.generic.eat
+	SoundPlayerBurp int32 = 797 // entity.player.burp
+
+	// Anvil sounds
+	SoundAnvilUse int32 = 45 // block.anvil.use
+
+	// Block material sounds
+	SoundGrassBreak int32 = 448  // block.grass.break
+	SoundGrassPlace int32 = 451  // block.grass.place
+	SoundStoneBreak int32 = 1005 // block.stone.break
+	SoundStonePlace int32 = 1010 // block.stone.place
+	SoundWoodBreak  int32 = 1147 // block.wood.break
+	SoundWoodPlace  int32 = 1152 // block.wood.place
+
+	// Fence gate sounds
+	SoundFenceGateOpen  int32 = 355 // block.fence_gate.open
+	SoundFenceGateClose int32 = 354 // block.fence_gate.close
 )
 
 // BroadcastSound sends a ClientboundSound packet to all players.
@@ -432,4 +459,60 @@ func MobSoundCategory(typeID int32) int32 {
 	default:
 		return SoundCategoryHostile
 	}
+}
+
+// BlockPlaceSound returns the place sound ID for a block based on its material category.
+func BlockPlaceSound(blockName string) int32 {
+	return blockMaterialSound(blockName, SoundGrassPlace, SoundStonePlace, SoundWoodPlace)
+}
+
+// BlockBreakSound returns the break sound ID for a block based on its material category.
+func BlockBreakSound(blockName string) int32 {
+	return blockMaterialSound(blockName, SoundGrassBreak, SoundStoneBreak, SoundWoodBreak)
+}
+
+// blockMaterialSound classifies a block name and returns the appropriate sound.
+func blockMaterialSound(blockName string, grass, stone, wood int32) int32 {
+	// Wood-based blocks
+	for _, w := range []string{"planks", "log", "wood", "fence", "door", "trapdoor", "stairs",
+		"slab", "button", "sign", "pressure_plate", "boat", "chest", "barrel",
+		"crafting_table", "bookshelf", "ladder", "jukebox", "note_block",
+		"composter", "beehive", "bee_nest", "campfire"} {
+		if contains(blockName, w) {
+			return wood
+		}
+	}
+	for _, w := range []string{"oak", "spruce", "birch", "jungle", "acacia", "cherry",
+		"dark_oak", "mangrove", "bamboo", "crimson", "warped"} {
+		if len(blockName) >= len(w) && blockName[:len(w)] == w {
+			return wood
+		}
+	}
+
+	// Grass/organic blocks
+	for _, g := range []string{"grass", "dirt", "farmland", "podzol", "mycelium",
+		"sand", "gravel", "soul_sand", "soul_soil", "clay",
+		"moss", "mud", "snow", "powder_snow", "hay", "sponge",
+		"leaves", "vine", "lily_pad", "flower", "fern",
+		"azalea", "moss_carpet", "sculk"} {
+		if contains(blockName, g) {
+			return grass
+		}
+	}
+
+	// Everything else: stone/metal
+	return stone
+}
+
+// contains checks if s contains substr (simple substring match).
+func contains(s, substr string) bool {
+	if len(substr) > len(s) {
+		return false
+	}
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

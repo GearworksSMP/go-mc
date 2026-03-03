@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
+	"log"
 	"math"
 	"math/rand"
 	"sync"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/google/uuid"
 )
@@ -126,6 +130,8 @@ type MobManager struct {
 	ItemEntities *ItemEntityManager
 	ArrowMgr     *ArrowManager
 	AdvMgr       *AdvancementManager
+	MobStore     store.MobStore
+	Logger       *log.Logger
 	mu           sync.Mutex
 	Mobs         map[int32]*Mob
 	maxMobs      int
@@ -186,6 +192,111 @@ func (m *MobManager) Tick(tick int64) {
 	// Enderman rain damage every 20 ticks
 	if tick%20 == 0 {
 		m.endermanRainDamage()
+	}
+}
+
+// mobExtraData holds type-specific mob fields for JSON persistence.
+type mobExtraData struct {
+	SlimeSize int32  `json:"slime_size,omitempty"`
+	Hostile   bool   `json:"hostile,omitempty"`
+	Damage    float32 `json:"damage,omitempty"`
+	Speed     float64 `json:"speed,omitempty"`
+}
+
+// SaveAllMobs serializes all living mobs and persists them.
+func (m *MobManager) SaveAllMobs(dimension string) {
+	if m.MobStore == nil {
+		return
+	}
+	m.mu.Lock()
+	var mobs []store.MobData
+	for _, mob := range m.Mobs {
+		if mob.Health <= 0 {
+			continue
+		}
+		extra, _ := json.Marshal(mobExtraData{
+			SlimeSize: mob.SlimeSize,
+			Hostile:   mob.Hostile,
+			Damage:    mob.Damage,
+			Speed:     mob.Speed,
+		})
+		mobs = append(mobs, store.MobData{
+			Dimension: dimension,
+			TypeID:    mob.TypeID,
+			X:         mob.X,
+			Y:         mob.Y,
+			Z:         mob.Z,
+			Yaw:       mob.Yaw,
+			Health:    mob.Health,
+			MaxHealth: mob.MaxHealth,
+			Extra:     extra,
+		})
+	}
+	m.mu.Unlock()
+
+	if err := m.MobStore.SaveMobs(context.Background(), dimension, mobs); err != nil {
+		if m.Logger != nil {
+			m.Logger.Printf("Failed to save mobs: %v", err)
+		}
+	} else if m.Logger != nil {
+		m.Logger.Printf("Saved %d mobs to database", len(mobs))
+	}
+}
+
+// LoadSavedMobs loads mobs from persistent storage and spawns them.
+func (m *MobManager) LoadSavedMobs(dimension string) {
+	if m.MobStore == nil {
+		return
+	}
+	mobs, err := m.MobStore.LoadMobs(context.Background(), dimension)
+	if err != nil {
+		if m.Logger != nil {
+			m.Logger.Printf("Failed to load mobs: %v", err)
+		}
+		return
+	}
+
+	m.mu.Lock()
+	for _, md := range mobs {
+		var extra mobExtraData
+		if len(md.Extra) > 0 {
+			json.Unmarshal(md.Extra, &extra)
+		}
+		eid := m.Manager.NextEntityID()
+		mob := &Mob{
+			EID:       eid,
+			TypeID:    md.TypeID,
+			X:         md.X,
+			Y:         md.Y,
+			Z:         md.Z,
+			PrevX:     md.X,
+			PrevY:     md.Y,
+			PrevZ:     md.Z,
+			Yaw:       md.Yaw,
+			Health:    md.Health,
+			MaxHealth: md.MaxHealth,
+			WanderYaw: md.Yaw,
+			Hostile:   extra.Hostile,
+			Damage:    extra.Damage,
+			Speed:     extra.Speed,
+			SlimeSize: extra.SlimeSize,
+		}
+		if mob.Speed == 0 {
+			mob.Speed = 0.1
+		}
+		m.Mobs[eid] = mob
+	}
+	m.mu.Unlock()
+
+	// Broadcast spawns to all online players
+	m.mu.Lock()
+	for _, mob := range m.Mobs {
+		m.broadcastSpawn(mob)
+	}
+	m.mu.Unlock()
+
+	if m.Logger != nil {
+		m.Logger.Printf("Loaded %d mobs from database", len(mobs))
 	}
 }
 
@@ -1295,6 +1406,10 @@ func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLe
 	// Death sound
 	BroadcastSound(m.Manager, MobDeathSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
 
+	// Death particles (poof + smoke)
+	BroadcastParticle(m.Manager, ParticlePoof, mob.X, mob.Y+0.5, mob.Z, 0.3, 0.5, 0.3, 0.05, 10)
+	BroadcastParticle(m.Manager, ParticleSmoke, mob.X, mob.Y+0.5, mob.Z, 0.2, 0.4, 0.2, 0.02, 5)
+
 	// Death animation
 	m.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pk.Marshal(
@@ -1338,6 +1453,10 @@ func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLe
 func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 	// Death sound
 	BroadcastSound(m.Manager, MobDeathSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
+
+	// Death particles (poof + smoke)
+	BroadcastParticle(m.Manager, ParticlePoof, mob.X, mob.Y+0.5, mob.Z, 0.3, 0.5, 0.3, 0.05, 10)
+	BroadcastParticle(m.Manager, ParticleSmoke, mob.X, mob.Y+0.5, mob.Z, 0.2, 0.4, 0.2, 0.02, 5)
 
 	// Death animation
 	m.Manager.ForEach(func(p *game.Player) {

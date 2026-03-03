@@ -18,9 +18,19 @@ func SendExperience(player *game.Player) {
 
 // AddExperience adds XP to a player and recalculates their level.
 func AddExperience(player *game.Player, amount int32) {
+	addExperienceInternal(player, amount, nil)
+}
+
+// AddExperienceWithSound adds XP and plays pickup/levelup sounds.
+func AddExperienceWithSound(manager *game.PlayerManager, player *game.Player, amount int32) {
+	addExperienceInternal(player, amount, manager)
+}
+
+func addExperienceInternal(player *game.Player, amount int32, manager *game.PlayerManager) {
 	if amount <= 0 {
 		return
 	}
+	oldLevel := player.ExperienceLevel
 	player.ExperienceTotal += amount
 
 	// Recalculate level and bar progress from total XP
@@ -43,6 +53,17 @@ func AddExperience(player *game.Player, amount int32) {
 	}
 
 	SendExperience(player)
+
+	// Sound effects
+	if manager != nil {
+		px, py, pz := player.Position()
+		// XP pickup sound (random pitch for variety)
+		BroadcastSound(manager, SoundXPPickup, SoundCategoryPlayer, px, py, pz, 0.1, 0.5+float32(amount%5)*0.1)
+		// Level up sound
+		if player.ExperienceLevel > oldLevel {
+			BroadcastSound(manager, SoundLevelUp, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+		}
+	}
 }
 
 // xpForNextLevel returns the XP needed to go from level to level+1.

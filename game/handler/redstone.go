@@ -48,14 +48,15 @@ type PowerSource struct {
 // RedstoneManager handles basic redstone mechanics: levers, buttons, pressure plates,
 // and their effects on iron doors, iron trapdoors, and redstone lamps.
 type RedstoneManager struct {
-	Manager    *game.PlayerManager
-	World      game.World
-	Logger     *log.Logger
-	WireMgr    *WireManager
-	PistonMgr  *PistonManager
+	Manager      *game.PlayerManager
+	World        game.World
+	Logger       *log.Logger
+	WireMgr      *WireManager
+	PistonMgr    *PistonManager
 	DispenserMgr *DispenserManager
-	mu         sync.Mutex
-	sources    map[[3]int]*PowerSource
+	TNTMgr       *TNTManager
+	mu           sync.Mutex
+	sources      map[[3]int]*PowerSource
 }
 
 // NewRedstoneManager creates a new RedstoneManager.
@@ -375,6 +376,16 @@ func (r *RedstoneManager) updatePoweredBlock(x, y, z int) {
 		r.UpdateRedstoneTorch(x, y, z)
 	case block.RedstoneWallTorch:
 		r.UpdateRedstoneTorch(x, y, z)
+	case block.Tnt:
+		if powered && r.TNTMgr != nil {
+			r.World.SetBlock(x, y, z, 0)
+			broadcastBlockUpdateDirect(r.Manager, x, y, z, 0)
+			r.TNTMgr.Ignite(x, y, z)
+		}
+	case block.PoweredRail:
+		r.updatePoweredRail(x, y, z, door, powered)
+	default:
+		r.updateFenceGate(x, y, z, b, powered)
 	}
 }
 
@@ -941,5 +952,103 @@ func (r *RedstoneManager) powerTripwireHooksNear(x, y, z int) {
 				return // non-tripwire block, stop
 			}
 		}
+	}
+}
+
+// updatePoweredRail updates a powered rail's state based on redstone power.
+func (r *RedstoneManager) updatePoweredRail(x, y, z int, rail block.PoweredRail, powered bool) {
+	if bool(rail.Powered) == powered {
+		return
+	}
+	rail.Powered = block.Boolean(powered)
+	if newID, ok := block.ToStateID[rail]; ok {
+		r.World.SetBlock(x, y, z, newID)
+		broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
+	}
+}
+
+// updateFenceGate checks if a block is a fence gate and toggles it.
+func (r *RedstoneManager) updateFenceGate(x, y, z int, b block.Block, powered bool) {
+	switch gate := b.(type) {
+	case block.OakFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.SpruceFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.BirchFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.JungleFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.AcaciaFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.CherryFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.DarkOakFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.MangroveFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.BambooFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.CrimsonFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	case block.WarpedFenceGate:
+		if bool(gate.Open) != powered {
+			gate.Open = block.Boolean(powered)
+			gate.Powered = block.Boolean(powered)
+			r.setFenceGate(x, y, z, gate, powered)
+		}
+	}
+}
+
+// setFenceGate sets the block state and plays the appropriate sound.
+func (r *RedstoneManager) setFenceGate(x, y, z int, gate block.Block, opened bool) {
+	if newID, ok := block.ToStateID[gate]; ok {
+		r.World.SetBlock(x, y, z, newID)
+		broadcastBlockUpdateDirect(r.Manager, x, y, z, int32(newID))
+		soundID := SoundFenceGateOpen
+		if !opened {
+			soundID = SoundFenceGateClose
+		}
+		BroadcastSound(r.Manager, soundID, SoundCategoryBlock,
+			float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
 	}
 }

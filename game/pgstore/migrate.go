@@ -68,6 +68,21 @@ var migrations = []string{
 	ALTER TABLE players ADD COLUMN IF NOT EXISTS spawn_z DOUBLE PRECISION NOT NULL DEFAULT 0;
 	ALTER TABLE players ADD COLUMN IF NOT EXISTS has_spawn_point BOOLEAN NOT NULL DEFAULT false;
 	UPDATE schema_version SET version = 5;`,
+
+	// Version 5 → 6: add mobs table
+	`CREATE TABLE IF NOT EXISTS mobs (
+		id SERIAL PRIMARY KEY,
+		dimension TEXT NOT NULL DEFAULT 'overworld',
+		type_id INTEGER NOT NULL,
+		x DOUBLE PRECISION NOT NULL,
+		y DOUBLE PRECISION NOT NULL,
+		z DOUBLE PRECISION NOT NULL,
+		yaw REAL NOT NULL DEFAULT 0,
+		health REAL NOT NULL,
+		max_health REAL NOT NULL,
+		extra JSONB NOT NULL DEFAULT '{}'
+	);
+	UPDATE schema_version SET version = 6;`,
 }
 
 // Migrate runs all pending schema migrations.

@@ -193,3 +193,54 @@ func (s *PGStore) DeleteBlockEntity(ctx context.Context, dimension string, x, y,
 	}
 	return nil
 }
+
+// SaveMobs deletes all mobs for the dimension and batch-inserts the new set.
+func (s *PGStore) SaveMobs(ctx context.Context, dimension string, mobs []store.MobData) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pgstore: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM mobs WHERE dimension=$1`, dimension); err != nil {
+		return fmt.Errorf("pgstore: delete mobs: %w", err)
+	}
+
+	for _, m := range mobs {
+		extra := m.Extra
+		if len(extra) == 0 {
+			extra = []byte("{}")
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO mobs (dimension, type_id, x, y, z, yaw, health, max_health, extra)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			dimension, m.TypeID, m.X, m.Y, m.Z, m.Yaw, m.Health, m.MaxHealth, extra,
+		)
+		if err != nil {
+			return fmt.Errorf("pgstore: insert mob: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+// LoadMobs loads all mobs for the given dimension.
+func (s *PGStore) LoadMobs(ctx context.Context, dimension string) ([]store.MobData, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT type_id, x, y, z, yaw, health, max_health, extra FROM mobs WHERE dimension=$1`, dimension)
+	if err != nil {
+		return nil, fmt.Errorf("pgstore: load mobs: %w", err)
+	}
+	defer rows.Close()
+
+	var mobs []store.MobData
+	for rows.Next() {
+		var m store.MobData
+		m.Dimension = dimension
+		if err := rows.Scan(&m.TypeID, &m.X, &m.Y, &m.Z, &m.Yaw, &m.Health, &m.MaxHealth, &m.Extra); err != nil {
+			return nil, fmt.Errorf("pgstore: scan mob: %w", err)
+		}
+		mobs = append(mobs, m)
+	}
+	return mobs, rows.Err()
+}

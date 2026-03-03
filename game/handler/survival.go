@@ -182,6 +182,9 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	// Update health display above player
 	BroadcastHealthTag(manager, player)
 
+	// Update scoreboard health
+	UpdateHealthScore(manager, player)
+
 	// Reduce armor durability (unbreaking enchant: skip with probability level/(level+1))
 	armorChanged := false
 	for _, slot := range []int{5, 6, 7, 8} {
@@ -363,6 +366,7 @@ func (s *SurvivalHandler) HungerTick(manager *game.PlayerManager, tick int64) {
 		if changed {
 			SendSetHealth(p)
 			BroadcastHealthTag(manager, p)
+			UpdateHealthScore(manager, p)
 		}
 	})
 }
@@ -520,6 +524,10 @@ func (h *FoodHandler) Tick(manager *game.PlayerManager) {
 
 		// Update health HUD
 		SendSetHealth(player)
+
+		// Play burp sound
+		px, py, pz := player.Position()
+		BroadcastSound(manager, SoundPlayerBurp, SoundCategoryPlayer, px, py, pz, 0.5, 1.0)
 
 		h.logf("Player %s ate %s (food=%d, sat=%.1f)", player.Name, itemName, player.Food, player.Saturation)
 	})

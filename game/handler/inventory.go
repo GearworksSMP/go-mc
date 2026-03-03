@@ -581,7 +581,12 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 			}
 		}
 	case 2:
-		// Closing chest — notify persistence layer
+		// Closing chest — play close sound + notify persistence layer
+		if h.Chests != nil && h.Chests.Manager != nil {
+			pos := player.OpenChestPos
+			BroadcastSound(h.Chests.Manager, SoundChestClose, SoundCategoryBlock,
+				float64(pos[0])+0.5, float64(pos[1])+0.5, float64(pos[2])+0.5, 1.0, 1.0)
+		}
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("chest", player.OpenChestPos)
 		}
@@ -1756,6 +1761,12 @@ func (h *InventoryHandler) handleAnvilOutputClick(player *game.Player) {
 	player.AnvilSession.Output = game.ItemStack{}
 	player.AnvilSession.RepairCost = 0
 	player.AnvilSession.RenameText = ""
+
+	// Play anvil use sound
+	if h.Chests != nil && h.Chests.Manager != nil {
+		px, py, pz := player.Position()
+		BroadcastSound(h.Chests.Manager, SoundAnvilUse, SoundCategoryBlock, px, py, pz, 1.0, 1.0)
+	}
 }
 
 func (h *InventoryHandler) handleAnvilShiftClick(player *game.Player, slot int) {

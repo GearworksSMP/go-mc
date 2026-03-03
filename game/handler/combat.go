@@ -214,6 +214,9 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		})
 	}
 
+	// Damage indicator particle at target position (resolved later per-target type)
+	h.emitDamageParticles(targetEID, isCritical)
+
 	// Try boat target
 	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
 		h.BoatMgr.DamageBoat(attacker.EID, targetEID, damage)
@@ -469,6 +472,35 @@ func (h *CombatHandler) applyThorns(attacker, target *game.Player) {
 		attacker.LastDamageMessage = attacker.Name + " was killed trying to hurt " + target.Name
 		h.SurvivalHandler.ApplyDamage(h.Manager, attacker, highestDamage, h.SurvivalHandler.AttackDamageTypeID)
 		h.logf("Thorns reflected %.1f damage from %s back to %s", highestDamage, target.Name, attacker.Name)
+	}
+}
+
+// emitDamageParticles sends damage indicator (and crit) particles at the target entity.
+func (h *CombatHandler) emitDamageParticles(targetEID int32, isCritical bool) {
+	var x, y, z float64
+	if h.MobManager != nil {
+		h.MobManager.mu.Lock()
+		if mob, ok := h.MobManager.Mobs[targetEID]; ok {
+			x, y, z = mob.X, mob.Y+1.0, mob.Z
+		}
+		h.MobManager.mu.Unlock()
+	}
+	if x == 0 && y == 0 && z == 0 {
+		if target := h.Manager.GetByEID(targetEID); target != nil {
+			x, y, z = target.Position()
+			y += 1.0
+		}
+	}
+	if x == 0 && y == 0 && z == 0 {
+		return
+	}
+
+	// Damage indicator particles
+	BroadcastParticle(h.Manager, ParticleDamageIndicator, x, y, z, 0.1, 0.2, 0.1, 0.2, 3)
+
+	// Extra crit particles
+	if isCritical {
+		BroadcastParticle(h.Manager, ParticleCrit, x, y, z, 0.3, 0.5, 0.3, 0.4, 8)
 	}
 }
 

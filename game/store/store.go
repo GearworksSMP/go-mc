@@ -69,3 +69,20 @@ type PlayerStore interface {
 	// SavePlayer upserts the player state.
 	SavePlayer(ctx context.Context, state *PlayerState) error
 }
+
+// MobData holds the persistent state of a mob entity.
+type MobData struct {
+	Dimension string  `json:"dimension"`
+	TypeID    int32   `json:"type_id"`
+	X, Y, Z   float64 `json:"x"`
+	Yaw       float32 `json:"yaw"`
+	Health    float32 `json:"health"`
+	MaxHealth float32 `json:"max_health"`
+	Extra     []byte  `json:"extra,omitempty"` // JSON for type-specific fields
+}
+
+// MobStore provides persistent storage for mob entities.
+type MobStore interface {
+	LoadMobs(ctx context.Context, dimension string) ([]MobData, error)
+	SaveMobs(ctx context.Context, dimension string, mobs []MobData) error
+}

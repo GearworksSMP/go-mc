@@ -18,8 +18,9 @@ type ChestState struct {
 
 // ChestManager tracks all chests in the world.
 type ChestManager struct {
-	Chests map[[3]int]*ChestState
-	mu     sync.RWMutex
+	Manager *game.PlayerManager
+	Chests  map[[3]int]*ChestState
+	mu      sync.RWMutex
 }
 
 // NewChestManager creates a new ChestManager.
@@ -56,6 +57,12 @@ func (cm *ChestManager) OpenChest(player *game.Player, x, y, z int) {
 
 	player.OpenWindowID = 2
 	player.OpenChestPos = [3]int{x, y, z}
+
+	// Play chest open sound
+	if cm.Manager != nil {
+		BroadcastSound(cm.Manager, SoundChestOpen, SoundCategoryBlock,
+			float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
+	}
 
 	if cs.Partner != nil {
 		// Double chest: generic_9x6 (menu type 5), 54 chest slots + 36 player = 90
