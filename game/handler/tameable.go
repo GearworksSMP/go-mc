@@ -12,10 +12,10 @@ import (
 
 // Tameable mob type IDs.
 const (
-	MobTypeWolf   int32 = 118
-	MobTypeCat    int32 = 12
-	MobTypeHorse  int32 = 50
-	MobTypeParrot int32 = 71
+	MobTypeWolf   int32 = 148
+	MobTypeCat    int32 = 21
+	MobTypeHorse  int32 = 66
+	MobTypeParrot int32 = 98
 )
 
 // TameableMobData holds taming and ownership state for a mob.
@@ -325,7 +325,7 @@ func (m *MobManager) tickWolf(mob *Mob, tick int64) {
 		mob.X = ox + (rand.Float64()-0.5)*2
 		mob.Z = oz + (rand.Float64()-0.5)*2
 		mob.Y = float64(m.findSurfaceY(int(mob.X), int(mob.Z)))
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobTeleport(mob)
 		return
 	}
 
@@ -355,7 +355,7 @@ func (m *MobManager) tickWolf(mob *Mob, tick int64) {
 						targetMob.X, targetMob.Y, targetMob.Z, 1.0, 1.0)
 				}
 			}
-			m.broadcastMoveEntity(mob)
+			m.broadcastMobMove(mob)
 			return
 		}
 		mob.Target = nil
@@ -367,7 +367,7 @@ func (m *MobManager) tickWolf(mob *Mob, tick int64) {
 		nz := dz / dist * mob.Speed * 1.2
 		m.tryMove(mob, nx, nz)
 		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		m.tickWander(mob, tick)
 	}
@@ -407,7 +407,7 @@ func (m *MobManager) tickCat(mob *Mob, tick int64) {
 		mob.X = ox + (rand.Float64()-0.5)*2
 		mob.Z = oz + (rand.Float64()-0.5)*2
 		mob.Y = float64(m.findSurfaceY(int(mob.X), int(mob.Z)))
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobTeleport(mob)
 		return
 	}
 
@@ -437,7 +437,7 @@ func (m *MobManager) tickCat(mob *Mob, tick int64) {
 		nz := dz / dist * mob.Speed * 1.2
 		m.tryMove(mob, nx, nz)
 		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		m.tickWander(mob, tick)
 	}
@@ -462,7 +462,7 @@ func (m *MobManager) tickHorse(mob *Mob, tick int64) {
 			mob.X = px
 			mob.Y = py
 			mob.Z = pz
-			m.broadcastMoveEntity(mob)
+			m.broadcastMobMove(mob)
 			return
 		}
 	}
@@ -504,7 +504,7 @@ func (m *MobManager) tickParrot(mob *Mob, tick int64) {
 		mob.X = ox + (rand.Float64()-0.5)*2
 		mob.Z = oz + (rand.Float64()-0.5)*2
 		mob.Y = float64(m.findSurfaceY(int(mob.X), int(mob.Z)))
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobTeleport(mob)
 		return
 	}
 
@@ -513,7 +513,7 @@ func (m *MobManager) tickParrot(mob *Mob, tick int64) {
 		nz := dz / dist * mob.Speed * 1.5
 		m.tryMove(mob, nx, nz)
 		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		m.tickWander(mob, tick)
 	}

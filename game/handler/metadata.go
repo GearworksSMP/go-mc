@@ -140,28 +140,30 @@ func healthDisplayText(p *game.Player) chat.Message {
 	}
 }
 
-// BroadcastHealthTag sends updated health display to all other players.
+// BroadcastHealthTag sends updated health display to nearby players.
 func BroadcastHealthTag(manager *game.PlayerManager, player *game.Player) {
 	var w MetadataWriter
 	w.WriteOptChat(2, healthDisplayText(player))
 	w.WriteBoolean(3, true)
 	data := w.Bytes()
 
-	manager.ForEach(func(p *game.Player) {
+	px, _, pz := player.Position()
+	manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			SendEntityMetadata(p, player.EID, data)
 		}
 	})
 }
 
-// BroadcastEntityFlags broadcasts updated entity flags + pose to all other players.
+// BroadcastEntityFlags broadcasts updated entity flags + pose to nearby players.
 func BroadcastEntityFlags(manager *game.PlayerManager, player *game.Player) {
 	var w MetadataWriter
 	w.WriteByte(0, EntityFlags(player))
 	w.WritePose(6, playerPose(player))
 	data := w.Bytes()
 
-	manager.ForEach(func(p *game.Player) {
+	px, _, pz := player.Position()
+	manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			SendEntityMetadata(p, player.EID, data)
 		}

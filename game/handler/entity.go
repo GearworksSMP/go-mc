@@ -57,8 +57,11 @@ func SendSpawnPlayer(target, about *game.Player) {
 	))
 }
 
-// BroadcastPlayerJoin sends PlayerInfoUpdate + AddEntity + metadata for 'joined' to all OTHER players,
-// and broadcasts a join message.
+// PlayerTrackingRange is the distance (in blocks) within which players can see each other.
+const PlayerTrackingRange = 64.0
+
+// BroadcastPlayerJoin sends PlayerInfoUpdate + AddEntity + metadata for 'joined' to all OTHER players
+// within tracking range, and broadcasts a join message to all.
 func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
 	joinMsg := chat.Message{Text: joined.Name + " joined the game", Color: "yellow"}
 	joinPkt := pk.Marshal(
@@ -66,28 +69,103 @@ func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
 		joinMsg,
 		pk.Boolean(false),
 	)
+	jx, _, jz := joined.Position()
+	r2 := PlayerTrackingRange * PlayerTrackingRange
 	manager.ForEach(func(p *game.Player) {
 		if p.UUID == joined.UUID {
 			return
 		}
+		// Always send join message and tab list info
 		SendPlayerInfo(p, joined)
-		SendSpawnPlayer(p, joined)
-		SendFullPlayerMetadata(p, joined)
-		SendEquipment(p, joined)
 		p.WritePacket(joinPkt)
+
+		// Only spawn entity if within tracking range
+		px, _, pz := p.Position()
+		dx := px - jx
+		dz := pz - jz
+		if dx*dx+dz*dz <= r2 {
+			SendSpawnPlayer(p, joined)
+			SendFullPlayerMetadata(p, joined)
+			SendEquipment(p, joined)
+			p.VisiblePlayers[joined.UUID] = true
+		}
 	})
 }
 
 // SendExistingPlayers sends PlayerInfoUpdate + AddEntity + metadata for all existing players to 'newPlayer'.
+// Only spawns entities for players within tracking range.
 func SendExistingPlayers(manager *game.PlayerManager, newPlayer *game.Player) {
+	nx, _, nz := newPlayer.Position()
+	r2 := PlayerTrackingRange * PlayerTrackingRange
 	manager.ForEach(func(p *game.Player) {
 		if p.UUID == newPlayer.UUID {
 			return
 		}
+		// Always send tab list info
 		SendPlayerInfo(newPlayer, p)
-		SendSpawnPlayer(newPlayer, p)
-		SendFullPlayerMetadata(newPlayer, p)
-		SendEquipment(newPlayer, p)
+
+		// Only spawn entity if within tracking range
+		px, _, pz := p.Position()
+		dx := px - nx
+		dz := pz - nz
+		if dx*dx+dz*dz <= r2 {
+			SendSpawnPlayer(newPlayer, p)
+			SendFullPlayerMetadata(newPlayer, p)
+			SendEquipment(newPlayer, p)
+			newPlayer.VisiblePlayers[p.UUID] = true
+		}
+	})
+}
+
+// UpdatePlayerVisibility checks all other players and spawns/despawns entities
+// as they enter/exit tracking range. Call this when a player crosses a chunk boundary.
+func UpdatePlayerVisibility(manager *game.PlayerManager, player *game.Player) {
+	px, _, pz := player.Position()
+	r2 := PlayerTrackingRange * PlayerTrackingRange
+	manager.ForEach(func(other *game.Player) {
+		if other.UUID == player.UUID {
+			return
+		}
+		ox, _, oz := other.Position()
+		dx := px - ox
+		dz := pz - oz
+		inRange := dx*dx+dz*dz <= r2
+
+		wasVisible := player.VisiblePlayers[other.UUID]
+		if inRange && !wasVisible {
+			// Other player entered our range — spawn them for us
+			SendSpawnPlayer(player, other)
+			SendFullPlayerMetadata(player, other)
+			SendEquipment(player, other)
+			player.VisiblePlayers[other.UUID] = true
+
+			// Also spawn us for the other player
+			otherSeesUs := other.VisiblePlayers[player.UUID]
+			if !otherSeesUs {
+				SendSpawnPlayer(other, player)
+				SendFullPlayerMetadata(other, player)
+				SendEquipment(other, player)
+				other.VisiblePlayers[player.UUID] = true
+			}
+		} else if !inRange && wasVisible {
+			// Other player left our range — despawn them for us
+			player.WritePacket(pk.Marshal(
+				packetid.ClientboundRemoveEntities,
+				pk.VarInt(1),
+				pk.VarInt(other.EID),
+			))
+			delete(player.VisiblePlayers, other.UUID)
+
+			// Also despawn us for the other player
+			if other.VisiblePlayers[player.UUID] {
+				other.WritePacket(pk.Marshal(
+					packetid.ClientboundRemoveEntities,
+					pk.VarInt(1),
+					pk.VarInt(player.EID),
+				))
+				delete(other.VisiblePlayers, player.UUID)
+			}
+		}
 	})
 }
 
@@ -104,6 +182,9 @@ func BroadcastPlayerLeave(manager *game.PlayerManager, left *game.Player) {
 		if p.UUID == left.UUID {
 			return
 		}
+		// Clean up visibility tracking
+		delete(p.VisiblePlayers, left.UUID)
+
 		// RemoveEntities
 		p.WritePacket(pk.Marshal(
 			packetid.ClientboundRemoveEntities,
@@ -162,9 +243,10 @@ func encodeSlot261(s game.Slot261) []byte {
 	return buf.Bytes()
 }
 
-// BroadcastEquipment sends equipment of 'player' to all other players.
+// BroadcastEquipment sends equipment of 'player' to all other players within tracking range.
 func BroadcastEquipment(manager *game.PlayerManager, player *game.Player) {
-	manager.ForEach(func(p *game.Player) {
+	px, _, pz := player.Position()
+	manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			SendEquipment(p, player)
 		}

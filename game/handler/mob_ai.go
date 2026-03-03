@@ -44,7 +44,7 @@ func (m *MobManager) tickGhast(mob *Mob, tick int64) {
 		} else if mob.Y > mob.FlyTargetY {
 			mob.Y -= 0.05
 		}
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 		return
 	}
 
@@ -73,7 +73,7 @@ func (m *MobManager) tickGhast(mob *Mob, tick int64) {
 		mob.Y -= 0.08
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Shoot fireball every 3 seconds when within range
 	if nearestDist <= 64.0 && mob.ShootCooldown <= 0 && m.ArrowMgr != nil {
@@ -142,7 +142,7 @@ func (m *MobManager) tickBlaze(mob *Mob, tick int64) {
 	}
 	mob.FlyTargetY = targetAlt
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Shoot 3 fireballs in quick succession, then cooldown
 	if nearestDist <= 48.0 && mob.ShootCooldown <= 0 && m.ArrowMgr != nil {
@@ -184,7 +184,7 @@ func (m *MobManager) tickGuardian(mob *Mob, tick int64) {
 		mob.X += (rand.Float64() - 0.5) * 0.15
 		mob.Z += (rand.Float64() - 0.5) * 0.15
 		mob.Y += (rand.Float64() - 0.5) * 0.1
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 		return
 	}
 
@@ -203,7 +203,7 @@ func (m *MobManager) tickGuardian(mob *Mob, tick int64) {
 		mob.Z += dz / dist * 0.15
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Beam attack: 2 seconds charge (40 ticks), 6 damage
 	if nearestDist <= 15.0 && mob.ShootCooldown <= 0 {
@@ -263,7 +263,7 @@ func (m *MobManager) tickIronGolem(mob *Mob, tick int64) {
 			BroadcastSound(m.Manager, SoundIronGolemAttack, SoundCategoryNeutral, mob.X, mob.Y, mob.Z, 1.0, 1.0)
 		}
 
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 		return
 	}
 
@@ -321,7 +321,7 @@ func (m *MobManager) tickPiglin(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // playerHasGoldArmor checks if a player has any gold armor equipped.
@@ -381,7 +381,7 @@ func (m *MobManager) tickZombifiedPiglin(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // AggroZombifiedPiglins makes all zombified piglins near a position hostile toward a player.
@@ -485,7 +485,7 @@ func (m *MobManager) tickMagmaCube(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickPillager runs pillager AI: ranged crossbow attack, patrols.
@@ -533,7 +533,7 @@ func (m *MobManager) tickPillager(mob *Mob, tick int64) {
 		m.moveWithPathfinding(mob, nearest, tick)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Crossbow attack every 2.5 seconds
 	if nearestDist <= 20.0 && mob.ShootCooldown <= 0 && m.ArrowMgr != nil {
@@ -597,7 +597,7 @@ func (m *MobManager) tickVindicator(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickEvoker runs evoker AI: summons vexes, casts fang attack.
@@ -645,7 +645,7 @@ func (m *MobManager) tickEvoker(mob *Mob, tick int64) {
 		m.moveWithPathfinding(mob, nearest, tick)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Evoker fangs attack: line of damage toward target
 	if nearestDist <= 16.0 && mob.ShootCooldown <= 0 {
@@ -698,7 +698,7 @@ func (m *MobManager) tickVex(mob *Mob, tick int64) {
 		mob.X += (rand.Float64() - 0.5) * 0.3
 		mob.Y += (rand.Float64() - 0.5) * 0.2
 		mob.Z += (rand.Float64() - 0.5) * 0.3
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 		return
 	}
 
@@ -724,7 +724,7 @@ func (m *MobManager) tickVex(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickRavager runs ravager AI: charges at players, breaks crops.
@@ -769,7 +769,7 @@ func (m *MobManager) tickRavager(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickHoglin runs hoglin AI: hostile, attacks players, flees from warped fungus.
@@ -813,7 +813,7 @@ func (m *MobManager) tickHoglin(mob *Mob, tick int64) {
 		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickWitherSkeleton runs wither skeleton AI: melee with wither effect.
@@ -862,7 +862,7 @@ func (m *MobManager) tickWitherSkeleton(mob *Mob, tick int64) {
 		}
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickDrowned runs drowned AI: underwater zombie with trident throw.
@@ -919,7 +919,7 @@ func (m *MobManager) tickDrowned(mob *Mob, tick int64) {
 		}
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // tickStray runs stray AI: like skeleton but applies slowness.
@@ -967,7 +967,7 @@ func (m *MobManager) tickHusk(mob *Mob, tick int64) {
 			}
 		}
 
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		mob.Target = nil
 		mob.Path = nil
@@ -1033,7 +1033,7 @@ func (m *MobManager) tickBee(mob *Mob, tick int64) {
 		mob.Z += (rand.Float64() - 0.5) * 0.15
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // sqDist3 returns the squared distance given dx,dy,dz (utility to avoid repeating).

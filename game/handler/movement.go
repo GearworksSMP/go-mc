@@ -166,6 +166,9 @@ func (h *MovementHandler) onChunkChange(player *game.Player, oldChunk, newChunk 
 	if encoder != nil {
 		encoder.UpdateChunks(player)
 	}
+
+	// Update player entity visibility (spawn/despawn based on distance)
+	UpdatePlayerVisibility(h.Manager, player)
 }
 
 // ChunkSender handles sending and unloading chunks for players based on view distance.
@@ -248,7 +251,7 @@ func (cs *ChunkSender) UpdateChunks(player *game.Player) {
 	}
 }
 
-// broadcastPos broadcasts a position-only movement to all other players.
+// broadcastPos broadcasts a position-only movement to nearby players.
 func (h *MovementHandler) broadcastPos(player *game.Player, oldX, oldY, oldZ, newX, newY, newZ float64) {
 	dx := pk.Short((newX - oldX) * 4096)
 	dy := pk.Short((newY - oldY) * 4096)
@@ -260,14 +263,14 @@ func (h *MovementHandler) broadcastPos(player *game.Player, oldX, oldY, oldZ, ne
 		dx, dy, dz,
 		pk.Boolean(player.OnGround),
 	)
-	h.Manager.ForEach(func(p *game.Player) {
+	h.Manager.ForEachNearby(newX, newZ, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			p.WritePacket(pkt)
 		}
 	})
 }
 
-// broadcastPosRot broadcasts position+rotation movement to all other players.
+// broadcastPosRot broadcasts position+rotation movement to nearby players.
 func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ, newX, newY, newZ float64, yaw, pitch float32) {
 	dx := pk.Short((newX - oldX) * 4096)
 	dy := pk.Short((newY - oldY) * 4096)
@@ -287,7 +290,7 @@ func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ,
 		pk.VarInt(player.EID),
 		aYaw,
 	)
-	h.Manager.ForEach(func(p *game.Player) {
+	h.Manager.ForEachNearby(newX, newZ, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			p.WritePacket(movPkt)
 			p.WritePacket(headPkt)
@@ -295,8 +298,9 @@ func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ,
 	})
 }
 
-// broadcastRot broadcasts rotation-only movement to all other players.
+// broadcastRot broadcasts rotation-only movement to nearby players.
 func (h *MovementHandler) broadcastRot(player *game.Player, yaw, pitch float32) {
+	px, _, pz := player.Position()
 	aYaw := pk.Angle(degToAngle(yaw))
 	aPitch := pk.Angle(degToAngle(pitch))
 
@@ -311,7 +315,7 @@ func (h *MovementHandler) broadcastRot(player *game.Player, yaw, pitch float32) 
 		pk.VarInt(player.EID),
 		aYaw,
 	)
-	h.Manager.ForEach(func(p *game.Player) {
+	h.Manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
 			p.WritePacket(rotPkt)
 			p.WritePacket(headPkt)

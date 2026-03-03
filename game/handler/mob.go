@@ -11,52 +11,51 @@ import (
 	"github.com/google/uuid"
 )
 
-// Mob type IDs (entity type for AddEntity packet).
+// Mob type IDs (entity type for AddEntity packet, 26.1-snapshot-2 registry).
 const (
-	MobTypeZombie   int32 = 120
-	MobTypeSkeleton int32 = 87
-	MobTypeCreeper  int32 = 20
-	MobTypeSpider   int32 = 96
+	MobTypeZombie   int32 = 150
+	MobTypeSkeleton int32 = 115
+	MobTypeCreeper  int32 = 32
+	MobTypeSpider   int32 = 124
 
-	MobTypeEnderman int32 = 30
-	MobTypeWitch    int32 = 114
-	MobTypeSlime    int32 = 89
-	MobTypePhantom  int32 = 72
+	MobTypeEnderman int32 = 41
+	MobTypeWitch    int32 = 144
+	MobTypeSlime    int32 = 117
+	MobTypePhantom  int32 = 99
 
-	MobTypeCow     int32 = 19
-	MobTypePig     int32 = 73
-	MobTypeSheep   int32 = 83
-	MobTypeChicken int32 = 16
+	MobTypeCow     int32 = 30
+	MobTypePig     int32 = 100
+	MobTypeSheep   int32 = 111
+	MobTypeChicken int32 = 26
 
-	// New mob types
-	MobTypeBlaze            int32 = 5
-	MobTypeGhast            int32 = 42
-	MobTypeIronGolem        int32 = 51
-	MobTypeSnowGolem        int32 = 91
-	MobTypeGuardian         int32 = 44
-	MobTypeElderGuardian    int32 = 27
-	MobTypeDrowned          int32 = 24
-	MobTypeHusk             int32 = 48
-	MobTypeStray            int32 = 99
-	MobTypeCaveSpider       int32 = 13
-	MobTypeSilverfish       int32 = 86
-	MobTypeEndermite        int32 = 31
-	MobTypeMagmaCube        int32 = 62
-	MobTypePiglin           int32 = 74
-	MobTypeZombifiedPiglin  int32 = 121
-	MobTypeHoglin           int32 = 46
-	MobTypeStrider          int32 = 100
-	MobTypeWitherSkeleton   int32 = 116
-	MobTypeShulker          int32 = 84
-	MobTypePillager         int32 = 75
-	MobTypeVindicator       int32 = 107
-	MobTypeEvoker           int32 = 32
-	MobTypeVex              int32 = 106
-	MobTypeRavager          int32 = 80
-	MobTypeBee              int32 = 4
-	MobTypeFox              int32 = 40
-	MobTypeRabbit           int32 = 79
-	MobTypeBat              int32 = 3
+	MobTypeBlaze            int32 = 14
+	MobTypeGhast            int32 = 57
+	MobTypeIronGolem        int32 = 70
+	MobTypeSnowGolem        int32 = 121
+	MobTypeGuardian         int32 = 63
+	MobTypeElderGuardian    int32 = 40
+	MobTypeDrowned          int32 = 38
+	MobTypeHusk             int32 = 67
+	MobTypeStray            int32 = 128
+	MobTypeCaveSpider       int32 = 22
+	MobTypeSilverfish       int32 = 114
+	MobTypeEndermite        int32 = 42
+	MobTypeMagmaCube        int32 = 80
+	MobTypePiglin           int32 = 101
+	MobTypeZombifiedPiglin  int32 = 154
+	MobTypeHoglin           int32 = 64
+	MobTypeStrider          int32 = 129
+	MobTypeWitherSkeleton   int32 = 146
+	MobTypeShulker          int32 = 112
+	MobTypePillager         int32 = 103
+	MobTypeVindicator       int32 = 140
+	MobTypeEvoker           int32 = 46
+	MobTypeVex              int32 = 138
+	MobTypeRavager          int32 = 109
+	MobTypeBee              int32 = 11
+	MobTypeFox              int32 = 54
+	MobTypeRabbit           int32 = 108
+	MobTypeBat              int32 = 10
 )
 
 // Mob represents a mob entity (hostile or passive).
@@ -74,6 +73,10 @@ type Mob struct {
 	WanderTick     int64
 	WanderYaw      float32
 	Hostile        bool
+
+	// Previous position/yaw for relative movement packets
+	PrevX, PrevY, PrevZ float64
+	PrevYaw             float32
 
 	// Creeper fuse
 	FuseStart    int64 // tick when fuse started (0 = not fusing)
@@ -256,6 +259,9 @@ func (m *MobManager) trySpawn() {
 		X:         spawnX + 0.5,
 		Y:         float64(spawnY),
 		Z:         spawnZ + 0.5,
+		PrevX:     spawnX + 0.5,
+		PrevY:     float64(spawnY),
+		PrevZ:     spawnZ + 0.5,
 		Health:    health,
 		MaxHealth: health,
 		Damage:    damage,
@@ -359,6 +365,9 @@ func (m *MobManager) trySpawnPassive() {
 		X:            spawnX + 0.5,
 		Y:            float64(spawnY),
 		Z:            spawnZ + 0.5,
+		PrevX:        spawnX + 0.5,
+		PrevY:        float64(spawnY),
+		PrevZ:        spawnZ + 0.5,
 		Health:       health,
 		MaxHealth:    health,
 		Damage:       0,
@@ -604,7 +613,7 @@ func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
 		}
 
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		mob.Target = nil
 		mob.Path = nil
@@ -652,7 +661,7 @@ func (m *MobManager) tickCreeper(mob *Mob, tick int64) {
 		m.moveWithPathfinding(mob, nearest, tick)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Fuse logic
 	if nearestDist <= 3.0 {
@@ -795,7 +804,7 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 		// Move closer using pathfinding
 		m.moveWithPathfinding(mob, nearest, tick)
 	}
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Shoot if within 15 blocks and cooldown ready
 	if nearestDist <= 15.0 && mob.ShootCooldown <= 0 && m.ArrowMgr != nil {
@@ -821,7 +830,7 @@ func (m *MobManager) tickPassive(mob *Mob, tick int64) {
 			nz := dz / dist * mob.Speed * 1.5
 			m.tryMove(mob, nx, nz)
 			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
-			m.broadcastMoveEntity(mob)
+			m.broadcastMobMove(mob)
 			return
 		}
 		mob.FleeTicks = 0
@@ -922,6 +931,9 @@ func (m *MobManager) tryBreed(mob *Mob) {
 			X:         babyX,
 			Y:         mob.Y,
 			Z:         babyZ,
+			PrevX:     babyX,
+			PrevY:     mob.Y,
+			PrevZ:     babyZ,
 			Health:    mob.MaxHealth / 2,
 			MaxHealth: mob.MaxHealth,
 			Speed:     mob.Speed,
@@ -981,7 +993,7 @@ func (m *MobManager) tickWander(mob *Mob, tick int64) {
 		mob.WanderYaw += (rand.Float32()-0.5)*180 + 90
 	}
 	mob.Yaw = mob.WanderYaw
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // moveWithPathfinding moves a mob toward a target player using A* pathfinding.
@@ -1183,7 +1195,7 @@ func (m *MobManager) DamageMobEx(attacker *game.Player, targetEID int32, damage 
 			kbDist := float64(knockbackLevel) * 0.5
 			mob.X += dx / dist * kbDist
 			mob.Z += dz / dist * kbDist
-			m.broadcastMoveEntity(mob)
+			m.broadcastMobTeleport(mob)
 		}
 	}
 
@@ -1668,7 +1680,7 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 		pk.Angle(degToAngle(mob.Yaw)), // head yaw
 		pk.VarInt(0),                  // data
 	)
-	m.Manager.ForEach(func(p *game.Player) {
+	m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
 		p.WritePacket(pkt)
 	})
 
@@ -1678,7 +1690,7 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 		w.writeIndex(16, metaSerializerInt)
 		writeVarIntBuf(&w.buf, mob.SlimeSize)
 		data := w.Bytes()
-		m.Manager.ForEach(func(p *game.Player) {
+		m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
 			SendEntityMetadata(p, mob.EID, data)
 		})
 	}
@@ -1689,8 +1701,47 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 	}
 }
 
-// broadcastMoveEntity sends a teleport update for a mob.
-func (m *MobManager) broadcastMoveEntity(mob *Mob) {
+// broadcastMobMove sends smooth relative movement packets for a mob.
+// Uses MoveEntityPosRot + RotateHead when deltas fit in int16,
+// otherwise falls back to TeleportEntity.
+func (m *MobManager) broadcastMobMove(mob *Mob) {
+	dx := (mob.X - mob.PrevX) * 4096
+	dy := (mob.Y - mob.PrevY) * 4096
+	dz := (mob.Z - mob.PrevZ) * 4096
+
+	// Check if deltas fit in int16 range (-32768..32767)
+	if dx >= -32768 && dx <= 32767 && dy >= -32768 && dy <= 32767 && dz >= -32768 && dz <= 32767 {
+		aYaw := pk.Angle(degToAngle(mob.Yaw))
+		aPitch := pk.Angle(degToAngle(mob.Pitch))
+		movPkt := pk.Marshal(
+			packetid.ClientboundMoveEntityPosRot,
+			pk.VarInt(mob.EID),
+			pk.Short(int16(dx)), pk.Short(int16(dy)), pk.Short(int16(dz)),
+			aYaw, aPitch,
+			pk.Boolean(true), // on ground
+		)
+		headPkt := pk.Marshal(
+			packetid.ClientboundRotateHead,
+			pk.VarInt(mob.EID),
+			aYaw,
+		)
+		m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+			p.WritePacket(movPkt)
+			p.WritePacket(headPkt)
+		})
+	} else {
+		m.broadcastMobTeleport(mob)
+	}
+
+	mob.PrevX = mob.X
+	mob.PrevY = mob.Y
+	mob.PrevZ = mob.Z
+	mob.PrevYaw = mob.Yaw
+}
+
+// broadcastMobTeleport sends an absolute teleport for a mob.
+// Used for enderman teleportation and large knockback jumps.
+func (m *MobManager) broadcastMobTeleport(mob *Mob) {
 	pkt := pk.Marshal(
 		packetid.ClientboundTeleportEntity,
 		pk.VarInt(mob.EID),
@@ -1700,11 +1751,23 @@ func (m *MobManager) broadcastMoveEntity(mob *Mob) {
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
 		pk.Float(mob.Yaw),
 		pk.Float(mob.Pitch),
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(true), // on ground
 	)
-	m.Manager.ForEach(func(p *game.Player) {
+	headPkt := pk.Marshal(
+		packetid.ClientboundRotateHead,
+		pk.VarInt(mob.EID),
+		pk.Angle(degToAngle(mob.Yaw)),
+	)
+	m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
 		p.WritePacket(pkt)
+		p.WritePacket(headPkt)
 	})
+
+	mob.PrevX = mob.X
+	mob.PrevY = mob.Y
+	mob.PrevZ = mob.Z
+	mob.PrevYaw = mob.Yaw
 }
 
 // SendExistingMobs sends all current mobs to a newly joined player.
@@ -1712,10 +1775,20 @@ func (m *MobManager) SendExistingMobs(player *game.Player) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	px, _, pz := player.Position()
+	r2 := PlayerTrackingRange * PlayerTrackingRange
+
 	for _, mob := range m.Mobs {
 		if mob.Health <= 0 {
 			continue
 		}
+		// Only send mobs within tracking range
+		dx := mob.X - px
+		dz := mob.Z - pz
+		if dx*dx+dz*dz > r2 {
+			continue
+		}
+
 		id := uuid.New()
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundAddEntity,
@@ -1730,6 +1803,13 @@ func (m *MobManager) SendExistingMobs(player *game.Player) {
 			pk.Angle(degToAngle(mob.Yaw)),
 			pk.Angle(degToAngle(mob.Yaw)),
 			pk.VarInt(0),
+		))
+
+		// Send head rotation
+		player.WritePacket(pk.Marshal(
+			packetid.ClientboundRotateHead,
+			pk.VarInt(mob.EID),
+			pk.Angle(degToAngle(mob.Yaw)),
 		))
 
 		// Send slime size metadata
@@ -1827,7 +1907,7 @@ func (m *MobManager) tickEnderman(mob *Mob, tick int64) {
 			m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.AttackDamageTypeID)
 		}
 
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 	} else {
 		m.tickWander(mob, tick)
 	}
@@ -1847,7 +1927,7 @@ func (m *MobManager) endermanTeleport(mob *Mob) {
 			mob.Y = float64(ny)
 			mob.Z = nz
 			BroadcastSound(m.Manager, SoundEndermanTeleport, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
-			m.broadcastMoveEntity(mob)
+			m.broadcastMobTeleport(mob)
 			return
 		}
 	}
@@ -1941,7 +2021,7 @@ func (m *MobManager) tickWitch(mob *Mob, tick int64) {
 		nz := dz / dist * mob.Speed
 		m.tryMove(mob, nx, nz)
 	}
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 
 	// Attack every 60 ticks when target in range (10 blocks)
 	if nearestDist <= 10.0 && mob.ShootCooldown <= 0 {
@@ -2025,7 +2105,7 @@ func (m *MobManager) tickSlime(mob *Mob, tick int64) {
 		BroadcastSound(m.Manager, SoundSlimeSquish, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // slimeSplit spawns 2-4 smaller slimes when a slime dies.
@@ -2051,13 +2131,18 @@ func (m *MobManager) slimeSplit(mob *Mob) {
 			health, damage = 4, 2
 		}
 
+		babyX := mob.X + (rand.Float64()-0.5)*2
+		babyZ := mob.Z + (rand.Float64()-0.5)*2
 		eid := m.Manager.NextEntityID()
 		baby := &Mob{
 			EID:       eid,
 			TypeID:    MobTypeSlime,
-			X:         mob.X + (rand.Float64()-0.5)*2,
+			X:         babyX,
 			Y:         mob.Y,
-			Z:         mob.Z + (rand.Float64()-0.5)*2,
+			Z:         babyZ,
+			PrevX:     babyX,
+			PrevY:     mob.Y,
+			PrevZ:     babyZ,
 			Health:    health,
 			MaxHealth: health,
 			Damage:    damage,
@@ -2134,6 +2219,9 @@ func (m *MobManager) trySpawnSlime() {
 		X:         spawnX + 0.5,
 		Y:         float64(spawnY),
 		Z:         spawnZ + 0.5,
+		PrevX:     spawnX + 0.5,
+		PrevY:     float64(spawnY),
+		PrevZ:     spawnZ + 0.5,
 		Health:    health,
 		MaxHealth: health,
 		Damage:    damage,
@@ -2174,7 +2262,7 @@ func (m *MobManager) tickPhantom(mob *Mob, tick int64) {
 		mob.Target = nil
 		// Hover in place, slowly drift
 		mob.CircleAngle += 0.02
-		m.broadcastMoveEntity(mob)
+		m.broadcastMobMove(mob)
 		return
 	}
 
@@ -2242,7 +2330,7 @@ func (m *MobManager) tickPhantom(mob *Mob, tick int64) {
 		}
 	}
 
-	m.broadcastMoveEntity(mob)
+	m.broadcastMobMove(mob)
 }
 
 // trySpawnPhantom spawns phantoms for players who haven't slept for 3+ in-game days.
@@ -2287,6 +2375,9 @@ func (m *MobManager) trySpawnPhantom(tick int64) {
 			X:           spawnX,
 			Y:           spawnY,
 			Z:           spawnZ,
+			PrevX:       spawnX,
+			PrevY:       spawnY,
+			PrevZ:       spawnZ,
 			Health:      20,
 			MaxHealth:   20,
 			Damage:      6,

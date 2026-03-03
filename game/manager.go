@@ -1,6 +1,7 @@
 package game
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -92,4 +93,32 @@ func (pm *PlayerManager) ForEach(fn func(*Player)) {
 	for _, p := range pm.players {
 		fn(p)
 	}
+}
+
+// ForEachNearby calls fn for each player within radius blocks (2D horizontal distance)
+// of the point (x, z). Do not call Add/Remove inside fn.
+func (pm *PlayerManager) ForEachNearby(x, z float64, radius float64, fn func(*Player)) {
+	r2 := radius * radius
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	for _, p := range pm.players {
+		px, _, pz := p.Position()
+		dx := px - x
+		dz := pz - z
+		if dx*dx+dz*dz <= r2 {
+			fn(p)
+		}
+	}
+}
+
+// DistanceSq2D returns the squared 2D horizontal distance between two points.
+func DistanceSq2D(x1, z1, x2, z2 float64) float64 {
+	dx := x1 - x2
+	dz := z1 - z2
+	return dx*dx + dz*dz
+}
+
+// Distance2D returns the 2D horizontal distance between two points.
+func Distance2D(x1, z1, x2, z2 float64) float64 {
+	return math.Sqrt(DistanceSq2D(x1, z1, x2, z2))
 }

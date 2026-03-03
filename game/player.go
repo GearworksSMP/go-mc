@@ -238,6 +238,9 @@ type Player struct {
 	// LoadedChunks tracks which chunks have been sent to this player.
 	LoadedChunks map[ChunkPos]bool
 
+	// VisiblePlayers tracks which other players are within tracking range.
+	VisiblePlayers map[uuid.UUID]bool
+
 	Conn *net.Conn
 
 	// ViewDistance is the player's view distance in chunks.
@@ -342,6 +345,9 @@ type Player struct {
 	// Ender Dragon boss bar
 	DragonBossBarID uuid.UUID // UUID of the active boss bar, zero if none
 
+	// Chat message index (per-player counter for ClientboundPlayerChat, 1.21.5+)
+	ChatIndex int32
+
 	// SessionEvents receives tracing events (nil when tracing is disabled).
 	SessionEvents SessionEvents
 }
@@ -349,19 +355,20 @@ type Player struct {
 // NewPlayer creates a new Player with the given connection info.
 func NewPlayer(name string, id uuid.UUID, eid int32, conn *net.Conn) *Player {
 	return &Player{
-		Name:         name,
-		UUID:         id,
-		EID:          eid,
-		Conn:         conn,
-		LoadedChunks: make(map[ChunkPos]bool),
-		ViewDistance:  10,
-		CreativeItem: make(map[int16]int32),
-		Health:       20,
-		Food:         20,
-		Saturation:   5,
-		FallStartY:   -999,
-		SkinParts:    0x7F,
-		Dimension:    "minecraft:overworld",
+		Name:           name,
+		UUID:           id,
+		EID:            eid,
+		Conn:           conn,
+		LoadedChunks:   make(map[ChunkPos]bool),
+		VisiblePlayers: make(map[uuid.UUID]bool),
+		ViewDistance:    10,
+		CreativeItem:   make(map[int16]int32),
+		Health:         20,
+		Food:           20,
+		Saturation:     5,
+		FallStartY:     -999,
+		SkinParts:      0x7F,
+		Dimension:      "minecraft:overworld",
 	}
 }
 
@@ -462,4 +469,12 @@ func (p *Player) InventorySlots() Slot261Array {
 func (p *Player) NextStateID() int32 {
 	p.StateID++
 	return p.StateID
+}
+
+// NextChatIndex returns the current chat index and increments it.
+// Used for the globalIndex field in ClientboundPlayerChat (1.21.5+).
+func (p *Player) NextChatIndex() int32 {
+	idx := p.ChatIndex
+	p.ChatIndex++
+	return idx
 }

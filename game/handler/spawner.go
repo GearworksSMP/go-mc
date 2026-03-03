@@ -161,6 +161,9 @@ func (m *MobManager) createMobOfType(typeID int32, x, y, z float64) *Mob {
 		X:      x,
 		Y:      y,
 		Z:      z,
+		PrevX:  x,
+		PrevY:  y,
+		PrevZ:  z,
 		Yaw:    float32(rand.Intn(360)),
 		Speed:  0.23,
 	}
