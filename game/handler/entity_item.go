@@ -62,7 +62,7 @@ func (m *ItemEntityManager) SpawnItem(manager *game.PlayerManager, x, y, z float
 		packetid.ClientboundAddEntity,
 		pk.VarInt(eid),
 		pk.UUID(entityUUID),
-		pk.VarInt(55),          // entity type = Item
+		pk.VarInt(71),          // entity type = Item (26.1-snapshot-2)
 		pk.Double(x),
 		pk.Double(y),
 		pk.Double(z),
@@ -93,7 +93,7 @@ func (m *ItemEntityManager) SendExistingItems(player *game.Player) {
 			packetid.ClientboundAddEntity,
 			pk.VarInt(item.EID),
 			pk.UUID(entityUUID),
-			pk.VarInt(55),
+			pk.VarInt(71), // entity type = Item (26.1-snapshot-2)
 			pk.Double(item.X),
 			pk.Double(item.Y),
 			pk.Double(item.Z),

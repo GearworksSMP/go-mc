@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// MobTypeEnderDragon is the entity type ID for the ender dragon.
-const MobTypeEnderDragon int32 = 28
+// MobTypeEnderDragon is the entity type ID for the ender dragon (26.1-snapshot-2 registry).
+const MobTypeEnderDragon int32 = 43
 
 // Dragon flight phases.
 const (
@@ -501,8 +501,9 @@ func (dm *EnderDragonManager) broadcastPosition() {
 		pk.Double(dm.Y),
 		pk.Double(dm.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
-		pk.Angle(degToAngle(dm.Yaw)),
-		pk.Angle(degToAngle(dm.Pitch)),
+		pk.Float(dm.Yaw),
+		pk.Float(dm.Pitch),
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false), // on ground
 	)
 	dm.Manager.ForEach(func(p *game.Player) {

@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// TNT entity type ID (from data/entity/entity.go: Tnt = 102).
-const tntEntityType int32 = 102
+// TNT entity type ID (26.1-snapshot-2 registry).
+const tntEntityType int32 = 132
 
 // Sound ID for entity.tnt.primed (from data/soundid/soundid.go: 1022).
 const SoundTNTPrimed int32 = 1022
@@ -316,6 +316,7 @@ func (tm *TNTManager) broadcastTNTMove(tnt *PrimedTNT) {
 		pk.Double(tnt.Z),
 		pk.Double(0), pk.Double(tnt.VelY), pk.Double(0), // velocity
 		pk.Float(0), pk.Float(0), // yaw, pitch
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false), // on ground
 	)
 	tm.Manager.ForEach(func(p *game.Player) {

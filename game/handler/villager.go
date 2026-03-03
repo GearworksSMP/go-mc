@@ -11,8 +11,8 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-// Villager entity type ID (from data/entity/entity.go: Villager.ID = 109).
-const MobTypeVillager int32 = 109
+// Villager entity type ID (26.1-snapshot-2 registry).
+const MobTypeVillager int32 = 139
 
 // Villager sound IDs (from data/soundid/soundid.go).
 const (

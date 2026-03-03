@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Minecart entity type ID (from data/entity/entity.go: Minecart.ID = 65).
-const minecartEntityType int32 = 65
+// Minecart entity type ID (26.1-snapshot-2 registry).
+const minecartEntityType int32 = 85
 
 // Sound IDs for minecarts (from data/soundid/soundid.go).
 const (
@@ -561,6 +561,7 @@ func (mm *MinecartManager) broadcastCartPosition(cart *Minecart) {
 		pk.Double(cart.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
 		pk.Float(cart.Yaw), pk.Float(0), // yaw, pitch
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false), // on ground
 	)
 	mm.Manager.ForEach(func(p *game.Player) {

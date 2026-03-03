@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Arrow entity type ID for AddEntity.
-const arrowEntityType int32 = 3
+// Arrow entity type ID for AddEntity (26.1-snapshot-2 registry).
+const arrowEntityType int32 = 6
 
 // Arrow represents a flying arrow projectile.
 type Arrow struct {
@@ -279,6 +279,7 @@ func (am *ArrowManager) broadcastArrowMove(arrow *Arrow) {
 		pk.Double(arrow.Z),
 		pk.Double(arrow.VelX), pk.Double(arrow.VelY), pk.Double(arrow.VelZ),
 		pk.Float(0), pk.Float(0),
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false),
 	)
 	am.Manager.ForEach(func(p *game.Player) {

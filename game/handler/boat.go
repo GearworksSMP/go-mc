@@ -13,8 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Boat entity type ID for AddEntity (from data/entity/entity.go: Boat.ID = 9).
-const boatEntityType int32 = 9
+// Boat entity type ID for AddEntity (26.1-snapshot-2: oak_boat = 89).
+const boatEntityType int32 = 89
 
 // Wood type constants for boat variants.
 const (
@@ -430,6 +430,7 @@ func (bm *BoatManager) broadcastBoatPosition(boat *Boat) {
 		pk.Double(boat.Z),
 		pk.Double(0), pk.Double(0), pk.Double(0), // velocity
 		pk.Float(boat.Yaw), pk.Float(0), // yaw, pitch
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false), // on ground
 	)
 	bm.Manager.ForEach(func(p *game.Player) {

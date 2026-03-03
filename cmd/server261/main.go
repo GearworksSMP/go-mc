@@ -25,6 +25,10 @@ import (
 	"github.com/Tnze/go-mc/game/dbworld"
 	"github.com/Tnze/go-mc/game/gen"
 	"github.com/Tnze/go-mc/game/handler"
+	// chatheads broadcaster disabled: authenticated clients reject unsigned
+	// PlayerChat messages (REJECT_ALL validator). Chat Heads mod uses name
+	// matching with DisguisedChat as fallback.
+	// "github.com/Tnze/go-mc/mods/chatheads"
 	"github.com/Tnze/go-mc/game/mem"
 	"github.com/Tnze/go-mc/game/pgstore"
 	"github.com/Tnze/go-mc/game/store"
@@ -344,7 +348,7 @@ func main() {
 		Logger:          logger,
 		ListPingHandler: &pingHandler{players: players},
 		LoginHandler: &server.MojangLoginHandler{
-			OnlineMode: false,
+			OnlineMode: true,
 			Threshold:  256,
 		},
 		ConfigHandler: &server.Configurations{
@@ -866,6 +870,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		return
 	}
 
+	// Send player's own PlayerInfo first (needed for tab list + Chat Heads mod)
+	handler.SendPlayerInfo(player, player)
+
 	// Broadcast new player to existing players & send existing players to new player
 	// Must happen AFTER JoinGame + chunks so the client's level is initialized.
 	handler.BroadcastPlayerJoin(g.players, player)
@@ -925,7 +932,7 @@ func (g *gamePlay) sendJoinGame(conn *net.Conn, eid int32) error {
 		pk.Boolean(false),          // has death location
 		pk.VarInt(0),               // portal cooldown
 		pk.VarInt(63),              // sea level
-		pk.Boolean(true),           // enforces secure chat (suppresses "can't be verified" toast; safe because we only use DisguisedChat/SystemChat)
+		pk.Boolean(false),          // enforces secure chat (false: unsigned PlayerChat works without "can't be verified" toast)
 	))
 }
 
@@ -1057,9 +1064,10 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		KeepInventory:   g.keepInventory,
 	}
 	chatHandler := &handler.ChatHandler{
-		Manager:  g.players,
-		Logger:   g.logger,
-		Commands: cmdExecutor,
+		Manager:     g.players,
+		Logger:      g.logger,
+		Commands:    cmdExecutor,
+		// Broadcaster: disabled, using default DisguisedChat (see import comment)
 	}
 	animHandler := &handler.AnimationHandler{
 		Manager:   g.players,

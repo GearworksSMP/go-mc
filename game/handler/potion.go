@@ -18,8 +18,8 @@ const (
 	SoundSplashPotionThrow int32 = 998 // entity.splash_potion.throw
 )
 
-// Splash potion entity type ID.
-const splashPotionEntityType int32 = 78
+// Splash potion entity type ID (26.1-snapshot-2 registry).
+const splashPotionEntityType int32 = 105
 
 // PotionEffect describes the effect a potion applies.
 type PotionEffect struct {
@@ -262,6 +262,7 @@ func (pm *PotionManager) Tick(tick int64) {
 			pk.Double(potion.Z),
 			pk.Double(potion.VelX), pk.Double(potion.VelY), pk.Double(potion.VelZ),
 			pk.Float(0), pk.Float(0),
+			pk.Int(0), // relative flags (all absolute)
 			pk.Boolean(false),
 		)
 		pm.Manager.ForEach(func(p *game.Player) {

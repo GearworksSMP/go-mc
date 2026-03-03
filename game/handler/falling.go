@@ -81,13 +81,13 @@ func (f *FallingBlockManager) CheckAndSpawnFalling(x, y, z int) {
 	f.blocks[eid] = fb
 	f.mu.Unlock()
 
-	// Entity type 28 = falling_block, data = block state ID
+	// Entity type 51 = falling_block (26.1-snapshot-2), data = block state ID
 	id := uuid.New()
 	pkt := pk.Marshal(
 		packetid.ClientboundAddEntity,
 		pk.VarInt(eid),
 		pk.UUID(id),
-		pk.VarInt(28), // falling_block
+		pk.VarInt(51), // falling_block
 		pk.Double(fb.X),
 		pk.Double(fb.Y),
 		pk.Double(fb.Z),
@@ -156,6 +156,7 @@ func (f *FallingBlockManager) Tick(tick int64) {
 			pk.Double(0), pk.Double(fb.VelY*8000), pk.Double(0),
 			pk.Float(0),
 			pk.Float(0),
+			pk.Int(0), // relative flags (all absolute)
 			pk.Boolean(false),
 		)
 		f.Manager.ForEach(func(p *game.Player) {

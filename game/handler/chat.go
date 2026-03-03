@@ -10,11 +10,17 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
+// ChatBroadcaster sends chat messages to all players.
+type ChatBroadcaster interface {
+	BroadcastChat(sender *game.Player, message string)
+}
+
 // ChatHandler processes chat messages and broadcasts them to all players.
 type ChatHandler struct {
-	Manager  *game.PlayerManager
-	Logger   *log.Logger
-	Commands *CommandExecutor
+	Manager     *game.PlayerManager
+	Logger      *log.Logger
+	Commands    *CommandExecutor
+	Broadcaster ChatBroadcaster // optional, overrides default DisguisedChat broadcast
 }
 
 // HandlePacket processes chat packets.
@@ -73,6 +79,10 @@ func (c *ChatHandler) handleChatCommand(player *game.Player, p pk.Packet) {
 }
 
 func (c *ChatHandler) broadcastChat(player *game.Player, message string) {
+	if c.Broadcaster != nil {
+		c.Broadcaster.BroadcastChat(player, message)
+		return
+	}
 	pkt := pk.Marshal(
 		packetid.ClientboundDisguisedChat,
 		chat.Text(message),

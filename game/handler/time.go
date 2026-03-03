@@ -37,15 +37,11 @@ func (t *TimeManager) Tick(tick int64, manager *game.PlayerManager) {
 		return
 	}
 
-	wireTime := dayTime
-	if frozen {
-		wireTime = -dayTime // negative = frozen client-side
-	}
-
 	pkt := pk.Marshal(
 		packetid.ClientboundSetTime,
 		pk.Long(age),
-		pk.Long(wireTime),
+		pk.Long(dayTime),
+		pk.Boolean(!frozen), // tickDayTime: advance client-side time?
 	)
 	manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pkt)
@@ -81,13 +77,10 @@ func (t *TimeManager) SendTime(player *game.Player) {
 	frozen := t.Frozen
 	t.mu.Unlock()
 
-	wireTime := dayTime
-	if frozen {
-		wireTime = -dayTime
-	}
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundSetTime,
 		pk.Long(age),
-		pk.Long(wireTime),
+		pk.Long(dayTime),
+		pk.Boolean(!frozen), // tickDayTime: advance client-side time?
 	))
 }

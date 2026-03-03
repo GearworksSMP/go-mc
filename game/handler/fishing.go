@@ -12,8 +12,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Fishing bobber entity type ID (26.1-snapshot-2).
-const fishingBobberEntityType int32 = 125
+// Fishing bobber entity type ID (26.1-snapshot-2 registry).
+const fishingBobberEntityType int32 = 156
 
 // Fishing sound IDs (from data/soundid — 0-indexed).
 const (
@@ -462,6 +462,7 @@ func (fm *FishingManager) broadcastBobberMove(bobber *FishingBobber) {
 		pk.Double(bobber.Z),
 		pk.Double(bobber.VelX), pk.Double(bobber.VelY), pk.Double(bobber.VelZ),
 		pk.Float(0), pk.Float(0),
+		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false),
 	)
 	fm.Manager.ForEach(func(p *game.Player) {

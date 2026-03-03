@@ -5,6 +5,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -195,15 +196,18 @@ func (am *AdvancementManager) sendFullAdvancementPacket(player *game.Player) {
 		pk.Boolean(true).WriteTo(&buf)
 		writeAdvancementDisplay(&buf, def)
 
-		// SendsTelemetryEvent
-		pk.Boolean(false).WriteTo(&buf)
-
 		// Requirements: 1 requirement group with 1 criterion
 		criterionName := string(def.ID) + "/done"
 		pk.VarInt(1).WriteTo(&buf) // number of requirement groups
 		pk.VarInt(1).WriteTo(&buf) // number of criteria in this group
 		pk.String(criterionName).WriteTo(&buf)
+
+		// SendsTelemetryEvent (after requirements)
+		pk.Boolean(false).WriteTo(&buf)
 	}
+
+	// Remove identifiers: empty (must come before progress)
+	pk.VarInt(0).WriteTo(&buf)
 
 	// Progress mapping: granted advancements
 	grantedList := am.granted[player.Name]
@@ -224,8 +228,8 @@ func (am *AdvancementManager) sendFullAdvancementPacket(player *game.Player) {
 		pk.Long(0).WriteTo(&buf) // epoch millis (0 = unspecified)
 	}
 
-	// Remove identifiers: empty
-	pk.VarInt(0).WriteTo(&buf)
+	// showAdvancements (26.1: trailing boolean)
+	pk.Boolean(false).WriteTo(&buf)
 
 	pkt := pk.Packet{
 		ID:   int32(packetid.ClientboundUpdateAdvancements),
@@ -269,14 +273,17 @@ func (am *AdvancementManager) sendAdvancementUpdate(player *game.Player, id Adva
 	pk.Boolean(true).WriteTo(&buf)
 	writeAdvancementDisplay(&buf, *def)
 
-	// SendsTelemetryEvent
-	pk.Boolean(false).WriteTo(&buf)
-
 	// Requirements
 	criterionName := string(def.ID) + "/done"
 	pk.VarInt(1).WriteTo(&buf)
 	pk.VarInt(1).WriteTo(&buf)
 	pk.String(criterionName).WriteTo(&buf)
+
+	// SendsTelemetryEvent (after requirements)
+	pk.Boolean(false).WriteTo(&buf)
+
+	// Remove identifiers: empty (must come before progress)
+	pk.VarInt(0).WriteTo(&buf)
 
 	// Progress: 1 advancement granted
 	pk.VarInt(1).WriteTo(&buf)
@@ -286,8 +293,8 @@ func (am *AdvancementManager) sendAdvancementUpdate(player *game.Player, id Adva
 	pk.Boolean(true).WriteTo(&buf)
 	pk.Long(0).WriteTo(&buf)
 
-	// Remove identifiers: empty
-	pk.VarInt(0).WriteTo(&buf)
+	// showAdvancements (26.1: trailing boolean)
+	pk.Boolean(true).WriteTo(&buf)
 
 	pkt := pk.Packet{
 		ID:   int32(packetid.ClientboundUpdateAdvancements),
@@ -308,22 +315,18 @@ func (am *AdvancementManager) showAdvancementToast(player *game.Player, def Adva
 
 // writeAdvancementDisplay writes the display data for an advancement.
 func writeAdvancementDisplay(w io.Writer, def AdvancementDef) {
-	// Title (Chat component — JSON string)
-	titleJSON := `{"text":"` + def.Title + `"}`
-	pk.String(titleJSON).WriteTo(w)
+	// Title (Chat component — NBT encoded)
+	chat.Text(def.Title).WriteTo(w)
 
-	// Description (Chat component)
-	descJSON := `{"text":"` + def.Desc + `"}`
-	pk.String(descJSON).WriteTo(w)
+	// Description (Chat component — NBT encoded)
+	chat.Text(def.Desc).WriteTo(w)
 
-	// Icon: Item ID + optional components
-	// Get item ID
+	// Icon: ItemStack (VarInt count + VarInt itemID + DataComponentPatch)
 	itemID := itemIDByName(def.Icon)
+	pk.VarInt(1).WriteTo(w)  // count (1 item)
 	pk.VarInt(itemID).WriteTo(w)
-	// Component count (0 = no extra components)
-	pk.VarInt(0).WriteTo(w)
-	// Removed components count
-	pk.VarInt(0).WriteTo(w)
+	pk.VarInt(0).WriteTo(w)  // added components count
+	pk.VarInt(0).WriteTo(w)  // removed components count
 
 	// Frame type (0=task, 1=goal, 2=challenge)
 	pk.VarInt(def.Frame).WriteTo(w)
