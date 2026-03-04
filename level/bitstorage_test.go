@@ -4,8 +4,6 @@ import (
 	"math/bits"
 	"reflect"
 	"testing"
-
-	pk "github.com/Tnze/go-mc/net/packet"
 )
 
 var (
@@ -33,7 +31,7 @@ func TestBitStorage_Set(t *testing.T) {
 }
 
 func ExampleNewBitStorage_heightmaps() {
-	// Create a BitStorage
+	// Create a BitStorage for heightmaps (e.g., 24 sections × 16 = 384 blocks height + 1)
 	bs := NewBitStorage(bits.Len(256), 16*16, nil)
 	// Fill your data
 	for i := 0; i < 16; i++ {
@@ -41,9 +39,8 @@ func ExampleNewBitStorage_heightmaps() {
 			bs.Set(i*16+j, 0)
 		}
 	}
-	// Encode as NBT, and this is ready for packet.Marshal
-	type HeightMaps struct {
-		MotionBlocking []uint64 `nbt:"MOTION_BLOCKING"`
-	}
-	_ = pk.NBT(HeightMaps{bs.Raw()})
+	// In 26.1, heightmaps use a map codec format:
+	// VarInt(count) + count × [VarInt(typeOrdinal) + VarInt(longCount) + longs]
+	// The level.Chunk.WriteTo handles this encoding automatically.
+	_ = bs.Raw()
 }

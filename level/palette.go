@@ -142,6 +142,10 @@ func (p *PaletteContainer[T]) ReadFrom(r io.Reader) (n int64, err error) {
 		return n, err
 	}
 
+	// In 26.1, data array length is inferred from bits + entry count (no VarInt prefix)
+	dataLen := calcBitStorageSize(p.bits, p.data.Len())
+	p.data.Resize(dataLen)
+
 	nn, err = p.data.ReadFrom(r)
 	n += nn
 	if err != nil {
@@ -151,8 +155,14 @@ func (p *PaletteContainer[T]) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 func (p *PaletteContainer[T]) WriteTo(w io.Writer) (n int64, err error) {
+	// In 26.1, write the actual bits per entry (from data.Bits()) not the raw p.bits,
+	// since after Set() resizing p.bits may hold a raw value rather than the config-mapped one.
+	actualBits := 0
+	if p.data != nil {
+		actualBits = p.data.Bits()
+	}
 	return pk.Tuple{
-		pk.UnsignedByte(p.bits),
+		pk.UnsignedByte(actualBits),
 		p.palette,
 		p.data,
 	}.WriteTo(w)

@@ -145,6 +145,25 @@ func (b *BitStorage) Len() int {
 	return b.length
 }
 
+// Bits returns the number of bits per value.
+func (b *BitStorage) Bits() int {
+	if b == nil {
+		return 0
+	}
+	return b.bits
+}
+
+// Resize sets the internal data slice to the given length.
+// Used to pre-allocate before ReadFrom in 26.1 format where the data length
+// is inferred from bitsPerEntry rather than read from the wire.
+func (b *BitStorage) Resize(n int) {
+	if cap(b.data) >= n {
+		b.data = b.data[:n]
+	} else {
+		b.data = make([]uint64, n)
+	}
+}
+
 // Raw return the underling array of uint64 for encoding/decoding.
 func (b *BitStorage) Raw() []uint64 {
 	if b == nil {
@@ -154,16 +173,7 @@ func (b *BitStorage) Raw() []uint64 {
 }
 
 func (b *BitStorage) ReadFrom(r io.Reader) (int64, error) {
-	var Len pk.VarInt
-	n, err := Len.ReadFrom(r)
-	if err != nil {
-		return n, err
-	}
-	if cap(b.data) >= int(Len) {
-		b.data = b.data[:Len]
-	} else {
-		b.data = make([]uint64, Len)
-	}
+	var n int64
 	var v pk.Long
 	for i := range b.data {
 		nn, err := v.ReadFrom(r)
@@ -177,13 +187,7 @@ func (b *BitStorage) ReadFrom(r io.Reader) (int64, error) {
 }
 
 func (b *BitStorage) WriteTo(w io.Writer) (int64, error) {
-	if b == nil {
-		return pk.VarInt(0).WriteTo(w)
-	}
-	n, err := pk.VarInt(len(b.data)).WriteTo(w)
-	if err != nil {
-		return n, err
-	}
+	var n int64
 	for _, v := range b.data {
 		nn, err := pk.Long(v).WriteTo(w)
 		n += nn

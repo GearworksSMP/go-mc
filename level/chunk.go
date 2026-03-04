@@ -2,6 +2,7 @@ package level
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -250,36 +251,63 @@ func writeBiomesPalette(paletteData *PaletteContainer[BiomesState]) (palette []s
 	return
 }
 
+// Heightmap type ordinals matching Minecraft's Heightmap.Types enum.
+const (
+	HeightmapWorldSurface           = 1
+	HeightmapMotionBlocking         = 4
+	HeightmapMotionBlockingNoLeaves = 5
+)
+
 func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 	data, err := c.Data()
 	if err != nil {
 		return 0, err
 	}
-	light := lightData{
-		SkyLightMask:   make(pk.BitSet, (16*16*16-1)>>6+1),
-		BlockLightMask: make(pk.BitSet, (16*16*16-1)>>6+1),
-		SkyLight:       []pk.ByteArray{},
-		BlockLight:     []pk.ByteArray{},
-	}
+
+	numLightSections := len(c.Sections) + 2
+	skyLightMask := make(pk.BitSet, (numLightSections+63)/64)
+	blockLightMask := make(pk.BitSet, (numLightSections+63)/64)
+	var skyLightArrays []pk.ByteArray
+	var blockLightArrays []pk.ByteArray
+
 	for i, v := range c.Sections {
+		lightIdx := i + 1
 		if v.SkyLight != nil {
-			light.SkyLightMask.Set(i, true)
-			light.SkyLight = append(light.SkyLight, v.SkyLight)
+			skyLightMask.Set(lightIdx, true)
+			skyLightArrays = append(skyLightArrays, v.SkyLight)
 		}
 		if v.BlockLight != nil {
-			light.BlockLightMask.Set(i, true)
-			light.BlockLight = append(light.BlockLight, v.BlockLight)
+			blockLightMask.Set(lightIdx, true)
+			blockLightArrays = append(blockLightArrays, v.BlockLight)
 		}
 	}
+
+	// If no sky light data, provide full sky light for all sections
+	if len(skyLightArrays) == 0 {
+		fullLight := make(pk.ByteArray, 2048)
+		for i := range fullLight {
+			fullLight[i] = 0xFF
+		}
+		for i := 0; i < numLightSections; i++ {
+			skyLightMask.Set(i, true)
+			skyLightArrays = append(skyLightArrays, fullLight)
+		}
+	}
+
+	emptySkyMask := make(pk.BitSet, len(skyLightMask))
+	emptyBlockMask := make(pk.BitSet, len(blockLightMask))
+
+	light := lightData{
+		SkyLightMask:   skyLightMask,
+		BlockLightMask: blockLightMask,
+		EmptySkyMask:   emptySkyMask,
+		EmptyBlockMask: emptyBlockMask,
+		SkyLight:       skyLightArrays,
+		BlockLight:     blockLightArrays,
+	}
+
 	return pk.Tuple{
-		// Heightmaps
-		pk.NBT(struct {
-			MotionBlocking []uint64 `nbt:"MOTION_BLOCKING"`
-			WorldSurface   []uint64 `nbt:"WORLD_SURFACE"`
-		}{
-			MotionBlocking: c.HeightMaps.MotionBlocking.Raw(),
-			WorldSurface:   c.HeightMaps.WorldSurface.Raw(),
-		}),
+		&heightmapEncoder{&c.HeightMaps, len(c.Sections)},
 		pk.ByteArray(data),
 		pk.Array(c.BlockEntity),
 		&light,
@@ -287,32 +315,30 @@ func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (c *Chunk) ReadFrom(r io.Reader) (int64, error) {
-	var (
-		heightmaps struct {
-			MotionBlocking []uint64 `nbt:"MOTION_BLOCKING"`
-			WorldSurface   []uint64 `nbt:"WORLD_SURFACE"`
-		}
-		data pk.ByteArray
-	)
+	var data pk.ByteArray
+
+	// Read heightmaps in 26.1 format: VarInt(count) + count × [VarInt(type) + VarInt(longCount) + longs]
+	hmDec := &heightmapDecoder{HeightMaps: &c.HeightMaps, NumSections: len(c.Sections)}
+
+	numLightSections := len(c.Sections) + 2
+	light := lightData{
+		SkyLightMask:   make(pk.BitSet, (numLightSections+63)/64),
+		BlockLightMask: make(pk.BitSet, (numLightSections+63)/64),
+		EmptySkyMask:   make(pk.BitSet, (numLightSections+63)/64),
+		EmptyBlockMask: make(pk.BitSet, (numLightSections+63)/64),
+		SkyLight:       []pk.ByteArray{},
+		BlockLight:     []pk.ByteArray{},
+	}
 
 	n, err := pk.Tuple{
-		pk.NBT(&heightmaps),
+		hmDec,
 		&data,
 		pk.Array(&c.BlockEntity),
-		&lightData{
-			SkyLightMask:   make(pk.BitSet, (16*16*16-1)>>6+1),
-			BlockLightMask: make(pk.BitSet, (16*16*16-1)>>6+1),
-			SkyLight:       []pk.ByteArray{},
-			BlockLight:     []pk.ByteArray{},
-		},
+		&light,
 	}.ReadFrom(r)
 	if err != nil {
 		return n, err
 	}
-
-	bitsForHeight := bits.Len( /* chunk height in blocks */ uint(len(c.Sections))*16 + 1)
-	c.HeightMaps.MotionBlocking = NewBitStorage(bitsForHeight, 16*16, heightmaps.MotionBlocking)
-	c.HeightMaps.WorldSurface = NewBitStorage(bitsForHeight, 16*16, heightmaps.WorldSurface)
 
 	err = c.PutData(data)
 	return n, err
@@ -429,38 +455,153 @@ func (s *Section) ReadFrom(r io.Reader) (int64, error) {
 type lightData struct {
 	SkyLightMask   pk.BitSet
 	BlockLightMask pk.BitSet
+	EmptySkyMask   pk.BitSet
+	EmptyBlockMask pk.BitSet
 	SkyLight       []pk.ByteArray
 	BlockLight     []pk.ByteArray
 }
 
-func bitSetRev(set pk.BitSet) pk.BitSet {
-	rev := make(pk.BitSet, len(set))
-	for i := range rev {
-		rev[i] = ^set[i]
-	}
-	return rev
-}
-
 func (l *lightData) WriteTo(w io.Writer) (int64, error) {
+	// 26.1: no Trust Edges boolean — just 4 BitSets + 2 arrays
 	return pk.Tuple{
-		pk.Boolean(true), // Trust Edges
 		l.SkyLightMask,
 		l.BlockLightMask,
-		bitSetRev(l.SkyLightMask),
-		bitSetRev(l.BlockLightMask),
+		l.EmptySkyMask,
+		l.EmptyBlockMask,
 		pk.Array(l.SkyLight),
 		pk.Array(l.BlockLight),
 	}.WriteTo(w)
 }
 
 func (l *lightData) ReadFrom(r io.Reader) (int64, error) {
-	var RevSkyLightMask, RevBlockLightMask pk.BitSet
 	return pk.Tuple{
 		&l.SkyLightMask,
 		&l.BlockLightMask,
-		&RevSkyLightMask,
-		&RevBlockLightMask,
+		&l.EmptySkyMask,
+		&l.EmptyBlockMask,
 		pk.Array(&l.SkyLight),
 		pk.Array(&l.BlockLight),
 	}.ReadFrom(r)
+}
+
+// heightmapEncoder writes heightmaps in 26.1 format:
+// VarInt(count) + count × [VarInt(typeOrdinal) + VarInt(longCount) + longs]
+type heightmapEncoder struct {
+	hm          *HeightMaps
+	numSections int
+}
+
+func (h *heightmapEncoder) WriteTo(w io.Writer) (int64, error) {
+	bitsForHeight := bits.Len(uint(h.numSections)*16 + 1)
+
+	type hmEntry struct {
+		ordinal int
+		storage *BitStorage
+	}
+
+	entries := []hmEntry{
+		{HeightmapWorldSurface, h.hm.WorldSurface},
+		{HeightmapMotionBlocking, h.hm.MotionBlocking},
+		{HeightmapMotionBlockingNoLeaves, h.hm.MotionBlockingNoLeaves},
+	}
+
+	// Ensure all entries have valid storage
+	for i := range entries {
+		if entries[i].storage == nil {
+			entries[i].storage = NewBitStorage(bitsForHeight, 16*16, nil)
+		}
+	}
+
+	var n int64
+	nn, err := pk.VarInt(len(entries)).WriteTo(w)
+	n += nn
+	if err != nil {
+		return n, err
+	}
+
+	for _, e := range entries {
+		nn, err = pk.VarInt(e.ordinal).WriteTo(w)
+		n += nn
+		if err != nil {
+			return n, err
+		}
+
+		raw := e.storage.Raw()
+		nn, err = pk.VarInt(len(raw)).WriteTo(w)
+		n += nn
+		if err != nil {
+			return n, err
+		}
+
+		for _, l := range raw {
+			err = binary.Write(w, binary.BigEndian, int64(l))
+			n += 8
+			if err != nil {
+				return n, err
+			}
+		}
+	}
+	return n, nil
+}
+
+func (h *heightmapEncoder) ReadFrom(io.Reader) (int64, error) {
+	panic("heightmapEncoder does not support ReadFrom; use heightmapDecoder")
+}
+
+// heightmapDecoder reads heightmaps in 26.1 format.
+type heightmapDecoder struct {
+	HeightMaps  *HeightMaps
+	NumSections int
+}
+
+func (h *heightmapDecoder) ReadFrom(r io.Reader) (int64, error) {
+	var count pk.VarInt
+	n, err := count.ReadFrom(r)
+	if err != nil {
+		return n, err
+	}
+
+	bitsForHeight := bits.Len(uint(h.NumSections)*16 + 1)
+
+	for i := 0; i < int(count); i++ {
+		var typeOrd pk.VarInt
+		nn, err := typeOrd.ReadFrom(r)
+		n += nn
+		if err != nil {
+			return n, err
+		}
+
+		var longCount pk.VarInt
+		nn, err = longCount.ReadFrom(r)
+		n += nn
+		if err != nil {
+			return n, err
+		}
+
+		longs := make([]uint64, int(longCount))
+		for j := range longs {
+			var v int64
+			err = binary.Read(r, binary.BigEndian, &v)
+			n += 8
+			if err != nil {
+				return n, err
+			}
+			longs[j] = uint64(v)
+		}
+
+		bs := NewBitStorage(bitsForHeight, 16*16, longs)
+		switch int(typeOrd) {
+		case HeightmapWorldSurface:
+			h.HeightMaps.WorldSurface = bs
+		case HeightmapMotionBlocking:
+			h.HeightMaps.MotionBlocking = bs
+		case HeightmapMotionBlockingNoLeaves:
+			h.HeightMaps.MotionBlockingNoLeaves = bs
+		}
+	}
+	return n, nil
+}
+
+func (h *heightmapDecoder) WriteTo(io.Writer) (int64, error) {
+	panic("heightmapDecoder does not support WriteTo; use heightmapEncoder")
 }

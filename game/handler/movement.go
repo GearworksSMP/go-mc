@@ -239,15 +239,26 @@ func (cs *ChunkSender) UpdateChunks(player *game.Player) {
 		}
 	}
 
-	// Load new chunks
-	newChunks := 0
+	// Load new chunks with batch framing
+	var newChunkPositions []game.ChunkPos
 	for pos := range needed {
 		if !player.LoadedChunks[pos] {
+			newChunkPositions = append(newChunkPositions, pos)
+		}
+	}
+	if len(newChunkPositions) > 0 {
+		player.WritePacket(pk.Marshal(packetid.ClientboundChunkBatchStart))
+		count := 0
+		for _, pos := range newChunkPositions {
 			if err := cs.sendChunk(player, pos); err != nil {
 				continue
 			}
-			newChunks++
+			count++
 		}
+		player.WritePacket(pk.Marshal(
+			packetid.ClientboundChunkBatchFinished,
+			pk.VarInt(int32(count)),
+		))
 	}
 }
 
