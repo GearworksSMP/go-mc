@@ -92,7 +92,7 @@ Old format: Byte(bitsPerEntry) + palette + VarInt(dataLongsCount) + longs
 New format: Byte(bitsPerEntry) + palette + longs  (count = ceil(entries * bits / 64))
 ```
 
-For single-value palettes (bitsPerEntry=0), there is no data array at all — just `Byte(0) + VarInt(value)`. An empty section is 6 bytes, not 8. This affects `level/bitstorage.go` (WriteTo/ReadFrom still use the old format with the VarInt prefix).
+For single-value palettes (bitsPerEntry=0), there is no data array at all — just `Byte(0) + VarInt(value)`. An empty section is 6 bytes, not 8. The `level/bitstorage.go` WriteTo/ReadFrom were updated to use the new format (commit 040a9e0).
 
 ### Chunk packet (LevelChunkWithLight)
 
@@ -117,6 +117,25 @@ The vanilla 26.1 server sends packets in this order (verified by packet capture)
 - Version: `0x40000120` (1073742112), name: `26.1-snapshot-2`
 - Packet IDs are in `data/packetid/packetid.go` (generated via iota)
 
+## NeoForge 26.1 Compatibility Notes
+
+NeoForge 26.1 is in **beta** (`26.1.0.1-beta`) as of March 2026 and is likely the next stable modding version. Key points affecting this project:
+
+- **Obfuscation removed.** Minecraft 26.1 ships with official Mojang parameter names. This makes protocol analysis and Java mod source reading significantly easier.
+- **Java 25 required** by NeoForge/vanilla. Our server doesn't run Java, but the vanilla JAR in `.cache/` needs Java 25 for packet capture comparisons.
+- **ItemStack/FluidStack now require loaded registries** to instantiate. This reflects a deeper change in how item data is structured — data components are part of the wire protocol. This may affect item serialization if vanilla updates the wire format.
+- **New NeoForge versioning:** `<mc.major>.<mc.minor>.<mc.patch>.<neoforge.build>-<suffix>` (e.g., `26.1.0.10-beta`).
+- NeoForge API is still unstable (beta) — breaking changes are expected.
+
+### Distributed Architecture (`cmd/proxy/`, `cmd/region/`, `cluster/`)
+
+The server supports two deployment modes:
+
+1. **Standalone** (`cmd/server261/`) — single-instance server with all gameplay systems
+2. **Clustered** (`cmd/proxy/` + `cmd/region/`) — proxy routes clients to region servers, Redis for state sync, range-based entity ID allocation
+
+Docker Compose supports both modes: `docker compose up` (standalone) or `docker compose --profile cluster up` (distributed).
+
 ## Debugging Tools
 
 - `cmd/server261/` — minimal working 26.1 server with headless integration tests (`TestChunkBlockContent` verifies chunk format)
@@ -127,7 +146,7 @@ The vanilla 26.1 server sends packets in this order (verified by packet capture)
 ## Common Pitfalls
 
 - **`bytes.Buffer.Bytes()` returns shared memory.** If you call `buf.Bytes()`, then `buf.Reset()` and write new data, the original slice is overwritten. Always copy with `append([]byte(nil), buf.Bytes()...)` if you need to keep the data.
-- **`level/chunk.go` WriteTo uses the old format.** The `Chunk.WriteTo()` and `lightData.WriteTo()` methods still write NBT heightmaps and Trust Edges. For 26.1, the `cmd/server261` server hand-crafts chunk packets instead.
+- **`level/chunk.go` was updated for 26.1** (commit 040a9e0). The `Chunk.WriteTo()` now uses the new heightmap and PalettedContainer formats. Verify against vanilla captures if changing chunk encoding.
 
 ## Reference Data
 
