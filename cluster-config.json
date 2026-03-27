@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "region-a": {"mc_addr": "region-a:25566"},
+    "region-b": {"mc_addr": "region-b:25566"}
+  },
+  "default_server": "region-a",
+  "regions": {
+    "minecraft:overworld:0:0": "region-a",
+    "minecraft:overworld:0:-1": "region-a",
+    "minecraft:overworld:-1:0": "region-b",
+    "minecraft:overworld:-1:-1": "region-b"
+  }
+}

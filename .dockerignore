@@ -1,0 +1,10 @@
+reference/
+external-docs/
+.cache/
+.git/
+logs/
+mods/
+versions/
+libraries/
+*.jar
+*.exe

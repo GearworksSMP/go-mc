@@ -15,6 +15,17 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 5
+
+  # Single-instance server (original, non-clustered)
   server:
     build: .
     ports:
@@ -24,6 +35,74 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    profiles:
+      - standalone
+
+  # --- Cluster mode (use: docker compose --profile cluster up) ---
+
+  proxy:
+    build:
+      context: .
+      dockerfile: cmd/proxy/Dockerfile
+    ports:
+      - "25565:25565"
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: "postgres://gomc:gomc@postgres:5432/gomc?sslmode=disable"
+      CLUSTER_CONFIG_FILE: /config/cluster.json
+    volumes:
+      - ./cluster-config.json:/config/cluster.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      region-a:
+        condition: service_started
+      region-b:
+        condition: service_started
+    profiles:
+      - cluster
+
+  region-a:
+    build:
+      context: .
+      dockerfile: cmd/region/Dockerfile
+    environment:
+      SERVER_ID: region-a
+      LISTEN_ADDR: ":25566"
+      DATABASE_URL: "postgres://gomc:gomc@postgres:5432/gomc?sslmode=disable"
+      REDIS_URL: redis://redis:6379
+      CLUSTER_CONFIG_FILE: /config/cluster.json
+    volumes:
+      - ./cluster-config.json:/config/cluster.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - cluster
+
+  region-b:
+    build:
+      context: .
+      dockerfile: cmd/region/Dockerfile
+    environment:
+      SERVER_ID: region-b
+      LISTEN_ADDR: ":25566"
+      DATABASE_URL: "postgres://gomc:gomc@postgres:5432/gomc?sslmode=disable"
+      REDIS_URL: redis://redis:6379
+      CLUSTER_CONFIG_FILE: /config/cluster.json
+    volumes:
+      - ./cluster-config.json:/config/cluster.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - cluster
 
 volumes:
   pgdata:

@@ -14,6 +14,10 @@ type PlayerManager struct {
 	mu      sync.RWMutex
 	players map[uuid.UUID]*Player
 	nextEID atomic.Int32
+
+	// EIDAllocFunc overrides the default entity ID allocation when set.
+	// Used by cluster.EIDAllocator to provide range-based allocation.
+	EIDAllocFunc func() int32
 }
 
 // NewPlayerManager creates a new PlayerManager.
@@ -27,6 +31,9 @@ func NewPlayerManager() *PlayerManager {
 
 // NextEntityID allocates and returns the next entity ID.
 func (pm *PlayerManager) NextEntityID() int32 {
+	if pm.EIDAllocFunc != nil {
+		return pm.EIDAllocFunc()
+	}
 	return pm.nextEID.Add(1) - 1
 }
 

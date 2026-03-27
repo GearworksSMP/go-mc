@@ -272,11 +272,11 @@ func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 
 	for i, v := range c.Sections {
 		lightIdx := i + 1
-		if v.SkyLight != nil {
+		if len(v.SkyLight) == 2048 {
 			skyLightMask.Set(lightIdx, true)
 			skyLightArrays = append(skyLightArrays, v.SkyLight)
 		}
-		if v.BlockLight != nil {
+		if len(v.BlockLight) == 2048 {
 			blockLightMask.Set(lightIdx, true)
 			blockLightArrays = append(blockLightArrays, v.BlockLight)
 		}
@@ -291,6 +291,15 @@ func (c *Chunk) WriteTo(w io.Writer) (int64, error) {
 		for i := 0; i < numLightSections; i++ {
 			skyLightMask.Set(i, true)
 			skyLightArrays = append(skyLightArrays, fullLight)
+		}
+	}
+
+	// If no block light data, provide empty block light for all sections
+	if len(blockLightArrays) == 0 {
+		emptyLight := make(pk.ByteArray, 2048)
+		for i := 0; i < numLightSections; i++ {
+			blockLightMask.Set(i, true)
+			blockLightArrays = append(blockLightArrays, emptyLight)
 		}
 	}
 

@@ -24,6 +24,10 @@ type MovementHandler struct {
 	MinecartMgr     *MinecartManager
 	RedstoneMgr     *RedstoneManager
 	DimensionMgr    *DimensionManager // optional; when set, uses dimension-aware world/encoder
+
+	// OnRegionCrossing is called when a player moves into a different region (32x32 chunks).
+	// Used by the cluster region server to trigger player transfers.
+	OnRegionCrossing func(player *game.Player, newRegion game.RegionPos)
 }
 
 // HandlePacket processes a single packet for the given player.
@@ -153,6 +157,15 @@ func (h *MovementHandler) encoderForPlayer(player *game.Player) *ChunkSender {
 
 // onChunkChange is called when a player crosses a chunk boundary.
 func (h *MovementHandler) onChunkChange(player *game.Player, oldChunk, newChunk game.ChunkPos) {
+	// Check for region boundary crossing
+	if h.OnRegionCrossing != nil {
+		oldRegion := game.ChunkToRegion(oldChunk)
+		newRegion := game.ChunkToRegion(newChunk)
+		if oldRegion != newRegion {
+			h.OnRegionCrossing(player, newRegion)
+		}
+	}
+
 	// Update chunk cache center
 	if err := player.WritePacket(pk.Marshal(
 		packetid.ClientboundSetChunkCacheCenter,
