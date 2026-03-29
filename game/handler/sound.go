@@ -257,6 +257,14 @@ const (
 	SoundArmorEquipNetherite int32 = 51  // item.armor.equip_netherite
 	SoundArmorEquipGeneric   int32 = 52  // item.armor.equip_generic
 
+	// Turtle sounds
+	SoundTurtleAmbient  int32 = 1045 // entity.turtle.ambient_land
+	SoundTurtleDeath    int32 = 1046 // entity.turtle.death
+	SoundTurtleHurt     int32 = 1051 // entity.turtle.hurt
+	SoundTurtleLayEgg   int32 = 1053 // entity.turtle.lay_egg
+	SoundTurtleEggHatch int32 = 1050 // entity.turtle.egg_hatch
+	SoundTurtleSwim     int32 = 1056 // entity.turtle.swim
+
 	// UI sounds
 	SoundUIButtonClick int32 = 1055 // ui.button.click
 )
@@ -388,6 +396,8 @@ func MobHurtSound(typeID int32) int32 {
 		return SoundStriderHurt
 	case MobTypeWarden:
 		return SoundWardenHurt
+	case MobTypeTurtle:
+		return SoundTurtleHurt
 	}
 	return SoundPlayerHurt
 }
@@ -483,6 +493,8 @@ func MobDeathSound(typeID int32) int32 {
 		return SoundStriderDeath
 	case MobTypeWarden:
 		return SoundWardenDeath
+	case MobTypeTurtle:
+		return SoundTurtleDeath
 	}
 	return SoundPlayerDeath
 }
@@ -494,7 +506,8 @@ func MobSoundCategory(typeID int32) int32 {
 		return SoundCategoryNeutral
 	case MobTypeWolf, MobTypeCat, MobTypeHorse, MobTypeParrot,
 		MobTypeFox, MobTypeRabbit, MobTypeBat, MobTypeBee,
-		MobTypeIronGolem, MobTypeSnowGolem, MobTypeStrider:
+		MobTypeIronGolem, MobTypeSnowGolem, MobTypeStrider,
+		MobTypeTurtle:
 		return SoundCategoryNeutral
 	case MobTypeEnderman:
 		// Enderman is neutral until provoked, but uses hostile sound category
@@ -537,6 +550,8 @@ func MobAmbientSound(typeID int32) int32 {
 		return SoundHorseAmbient
 	case MobTypeParrot:
 		return SoundParrotAmbient
+	case MobTypeTurtle:
+		return SoundTurtleAmbient
 	}
 	return -1
 }

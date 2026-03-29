@@ -188,6 +188,7 @@ func main() {
 	enchantMgr := handler.NewEnchantManager(world)
 	anvilMgr := handler.NewAnvilManager(world)
 	villagerMgr := handler.NewVillagerManager(mobMgr, players)
+	villageMgr := handler.NewVillageManager(mobMgr, players, world, logger)
 	fluidMgr := handler.NewFluidManager(world, players)
 	fallingMgr := handler.NewFallingBlockManager(world, players)
 	treeMgr := handler.NewTreeGrowthManager(world, players)
@@ -294,6 +295,9 @@ func main() {
 		Logger:   logger,
 	}
 	mobMgr.EffectMgr = effectMgr
+	turtleMgr := handler.NewTurtleManager(mobMgr, players, world, logger)
+	mobMgr.TurtleMgr = turtleMgr
+	conduitMgr := handler.NewConduitManager(players, world, effectMgr, mobMgr, logger)
 	raidMgr := handler.NewRaidManager(players, mobMgr, world, effectMgr, logger)
 
 	survHandler.ItemEntities = itemEntities
@@ -508,7 +512,10 @@ func main() {
 			witherMgr.Tick(tick)
 			leashMgr.Tick(tick)
 			raidMgr.Tick(tick)
+			turtleMgr.TickTurtleEggs(tick)
+			conduitMgr.Tick(tick)
 			villagerMgr.TickRestock(tick, timeMgr)
+			villageMgr.Tick(tick)
 
 			metrics.RecordTick(time.Since(tickStart))
 		}),

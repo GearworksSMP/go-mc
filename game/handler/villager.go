@@ -69,6 +69,15 @@ type VillagerData struct {
 	Trades          []Trade
 	RestocksToday   int   // number of restocks performed today (max 2 per day)
 	LastRestockTick int64 // tick when the last restock occurred
+	Gossip          []GossipEntry // gossip entries about players
+	WorkstationPos  [3]int        // claimed workstation block position (zero value = none)
+	LastSleepTick   int64         // tick when villager last slept
+}
+
+// SetProfession changes the villager's profession and regenerates trades.
+func (vd *VillagerData) SetProfession(profession string) {
+	vd.Profession = profession
+	vd.Trades = tradesForProfession(profession)
 }
 
 // Trade represents a single villager trade offer.
@@ -264,7 +273,6 @@ func (vm *VillagerManager) OpenMerchantUI(player *game.Player, villagerEID int32
 		title,
 	))
 
-	// Send merchant offers
 	vm.sendMerchantOffers(player, vd)
 
 	// Play trade sound
@@ -284,6 +292,8 @@ func (vm *VillagerManager) OpenMerchantUI(player *game.Player, villagerEID int32
 //	Int(xp) + Int(specialPrice) + Float(priceMultiplier) + Int(demand)
 func (vm *VillagerManager) sendMerchantOffers(player *game.Player, vd *VillagerData) {
 	var buf bytes.Buffer
+
+	rep := CalculateReputation(vd.Gossip, player.UUID)
 
 	// Window ID
 	pk.VarInt(MerchantWindowID).WriteTo(&buf)
@@ -318,8 +328,20 @@ func (vm *VillagerManager) sendMerchantOffers(player *game.Player, vd *VillagerD
 		// XP
 		pk.Int(t.XP).WriteTo(&buf)
 
-		// Special price adjustment
-		pk.Int(0).WriteTo(&buf)
+		// Special price adjustment (gossip reputation: +/-30% cap)
+		specialPrice := int32(0)
+		if rep != 0 && t.InputItem1.Count > 0 {
+			basePrice := float64(t.InputItem1.Count)
+			adjust := -float64(rep) * 0.003 * basePrice
+			maxAdj := 0.30 * basePrice
+			if adjust > maxAdj {
+				adjust = maxAdj
+			} else if adjust < -maxAdj {
+				adjust = -maxAdj
+			}
+			specialPrice = int32(adjust)
+		}
+		pk.Int(specialPrice).WriteTo(&buf)
 
 		// Price multiplier
 		pk.Float(t.PriceMultiplier).WriteTo(&buf)
@@ -503,12 +525,13 @@ func (vm *VillagerManager) ExecuteTrade(player *game.Player, tradeIndex int) {
 		SendSlotUpdate(player, slot)
 	}
 
-	// Increment uses
 	vm.MobMgr.mu.Lock()
 	if mob, ok := vm.MobMgr.Mobs[villagerEID]; ok && mob.VillagerData != nil {
 		if tradeIndex < len(mob.VillagerData.Trades) {
 			mob.VillagerData.Trades[tradeIndex].Uses++
 		}
+		mob.VillagerData.Gossip = AddGossip(mob.VillagerData.Gossip, GossipTrading, player.UUID, 2, vm.MobMgr.currentTick)
+		mob.VillagerData.Gossip = AddGossip(mob.VillagerData.Gossip, GossipMinorPositive, player.UUID, 1, vm.MobMgr.currentTick)
 	}
 	vm.MobMgr.mu.Unlock()
 

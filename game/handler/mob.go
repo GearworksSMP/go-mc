@@ -65,6 +65,7 @@ const (
 	MobTypeAxolotl          int32 = 7
 	MobTypeAllay            int32 = 2
 	MobTypeSniffer          int32 = 119
+	MobTypeTurtle           int32 = 131
 )
 
 // mobNameToType maps entity names to type IDs for /summon.
@@ -87,6 +88,7 @@ var mobNameToType = map[string]int32{
 	"bee": MobTypeBee, "fox": MobTypeFox, "rabbit": MobTypeRabbit, "bat": MobTypeBat,
 	"warden": MobTypeWarden, "frog": MobTypeFrog, "axolotl": MobTypeAxolotl,
 	"allay": MobTypeAllay, "sniffer": MobTypeSniffer,
+	"turtle": MobTypeTurtle,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -138,6 +140,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 20, 0, 0.08, false
 	case MobTypeSniffer:
 		return 14, 0, 0.09, false
+	case MobTypeTurtle:
+		return 30, 0, 0.1, false
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -285,6 +289,9 @@ type Mob struct {
 	AllayHeldItem  string // item name the allay is collecting (empty = none)
 	AllayDeliverTo *[3]int // position of note block to deliver to (nil = follow player)
 
+	// Turtle fields
+	TurtleEggCooldown int64 // ticks until can lay eggs again
+
 	// Sniffer fields
 	SnifferSniffTick int64 // next tick to sniff
 	SnifferDigging   bool  // currently digging
@@ -313,6 +320,7 @@ type MobManager struct {
 	EffectMgr    *EffectManager
 	MobStore     store.MobStore
 	HiveMgr      *HiveManager
+	TurtleMgr    *TurtleManager
 	Logger       *log.Logger
 	mu           sync.Mutex
 	Mobs         map[int32]*Mob
@@ -1060,6 +1068,13 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case mob.TypeID == MobTypeSniffer:
 		m.tickSniffer(mob, tick)
 		return
+	case mob.TypeID == MobTypeTurtle:
+		if m.TurtleMgr != nil {
+			m.TurtleMgr.tickTurtle(mob, tick)
+		} else {
+			m.tickPassive(mob, tick)
+		}
+		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
 		return
@@ -1528,6 +1543,8 @@ func isBreedingFood(mobType int32, itemName string) bool {
 		return itemName == "golden_carrot" || itemName == "golden_apple"
 	case MobTypeParrot:
 		return false // parrots don't breed
+	case MobTypeTurtle:
+		return itemName == "seagrass"
 	}
 	return false
 }
@@ -1897,7 +1914,10 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 		mob.FleeTicks = 60 // 3 seconds
 	}
 
+	m.applyVillagerDamageGossip(mob, attacker)
+
 	if mob.Health <= 0 {
+		m.applyVillagerKillGossip(mob, attacker)
 		m.killMob(mob, attacker)
 	}
 
@@ -1991,7 +2011,10 @@ func (m *MobManager) DamageMobEx(attacker *game.Player, targetEID int32, damage 
 		mob.FleeTicks = 60
 	}
 
+	m.applyVillagerDamageGossip(mob, attacker)
+
 	if mob.Health <= 0 {
+		m.applyVillagerKillGossip(mob, attacker)
 		m.killMobWithLooting(mob, attacker, lootingLevel)
 	}
 
@@ -2420,6 +2443,11 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		// Allays drop nothing in vanilla (but drop their held item)
 	case MobTypeSniffer:
 		drops = []drop{{"moss_block", 1, 1}}
+	case MobTypeTurtle:
+		if !mob.Baby {
+			drops = []drop{{"seagrass", 0, 2}}
+		}
+		// Baby turtles drop scute on growth, not on death
 	}
 
 	for _, d := range drops {
@@ -2766,6 +2794,41 @@ func (m *MobManager) IsMob(eid int32) bool {
 	defer m.mu.Unlock()
 	_, ok := m.Mobs[eid]
 	return ok
+}
+
+// applyVillagerDamageGossip adds minor negative gossip when a villager is hit.
+// Must be called with m.mu already held.
+func (m *MobManager) applyVillagerDamageGossip(mob *Mob, attacker *game.Player) {
+	if mob.TypeID != MobTypeVillager || mob.VillagerData == nil {
+		return
+	}
+	mob.VillagerData.Gossip = AddGossip(mob.VillagerData.Gossip, GossipMinorNegative, attacker.UUID, 5, m.currentTick)
+	m.spreadVillagerGossip(mob, GossipMinorNegative, attacker.UUID, 5)
+}
+
+// applyVillagerKillGossip adds major negative gossip when a villager is killed.
+// Must be called with m.mu already held.
+func (m *MobManager) applyVillagerKillGossip(mob *Mob, attacker *game.Player) {
+	if mob.TypeID != MobTypeVillager || mob.VillagerData == nil {
+		return
+	}
+	mob.VillagerData.Gossip = AddGossip(mob.VillagerData.Gossip, GossipMajorNegative, attacker.UUID, 25, m.currentTick)
+	m.spreadVillagerGossip(mob, GossipMajorNegative, attacker.UUID, 25)
+}
+
+// spreadVillagerGossip propagates a gossip entry to nearby villagers within 16 blocks.
+// Must be called with m.mu already held.
+func (m *MobManager) spreadVillagerGossip(source *Mob, gtype string, playerUUID uuid.UUID, value int) {
+	for _, other := range m.Mobs {
+		if other.EID == source.EID || other.TypeID != MobTypeVillager || other.Health <= 0 || other.VillagerData == nil {
+			continue
+		}
+		dx := other.X - source.X
+		dz := other.Z - source.Z
+		if dx*dx+dz*dz <= 16*16 {
+			other.VillagerData.Gossip = AddGossip(other.VillagerData.Gossip, gtype, playerUUID, value/2, m.currentTick)
+		}
+	}
 }
 
 // --- Enderman AI ---
