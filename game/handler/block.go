@@ -353,6 +353,15 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 						return
 					}
 				}
+			case "respawn_anchor":
+				if h.RespawnAnchorMgr != nil {
+					if anchor, ok := block.StateList[int(stateID)].(block.RespawnAnchor); ok {
+						if h.RespawnAnchorMgr.HandleInteraction(player, pos.X, pos.Y, pos.Z, anchor) {
+							h.sendAck(player, int32(sequence))
+							return
+						}
+					}
+				}
 			default:
 				if h.ShulkerBoxMgr != nil && IsShulkerBox(blockName) {
 					h.ShulkerBoxMgr.OpenShulkerBox(player, pos.X, pos.Y, pos.Z)
@@ -1899,7 +1908,7 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 		}
 	case block.RespawnAnchor:
 		if h.RespawnAnchorMgr != nil {
-			return h.RespawnAnchorMgr.UseRespawnAnchor(player, x, y, z)
+			return h.RespawnAnchorMgr.HandleInteraction(player, x, y, z, b.(block.RespawnAnchor))
 		}
 	case block.BeeNest:
 		if h.HiveMgr != nil {

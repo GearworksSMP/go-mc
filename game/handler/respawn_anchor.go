@@ -2,188 +2,149 @@ package handler
 
 import (
 	"log"
-	"math"
-	"math/rand"
 
-	"github.com/Tnze/go-mc/chat"
-	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
-	"github.com/Tnze/go-mc/game/handler/enchant"
 	"github.com/Tnze/go-mc/level/block"
-	pk "github.com/Tnze/go-mc/net/packet"
 )
 
-// RespawnAnchorManager handles respawn anchor block interactions.
+// Sound IDs for respawn anchor interactions.
+const (
+	SoundRespawnAnchorCharge   int32 = 862
+	SoundRespawnAnchorDeplete  int32 = 863
+	SoundRespawnAnchorSetSpawn int32 = 864
+)
+
+// RespawnAnchorManager handles respawn anchor block interactions:
+// charging with glowstone, setting Nether spawn, and exploding outside the Nether.
 type RespawnAnchorManager struct {
 	Manager  *game.PlayerManager
 	World    game.World
+	TNTMgr   *TNTManager
 	Survival *SurvivalHandler
 	Logger   *log.Logger
 }
 
-// UseRespawnAnchor handles right-click on a respawn anchor block.
+// HandleInteraction processes a right-click on a respawn anchor block.
 // Returns true if the interaction was handled.
-func (m *RespawnAnchorManager) UseRespawnAnchor(player *game.Player, x, y, z int) bool {
-	state, err := m.World.GetBlock(x, y, z)
-	if err != nil {
-		return false
-	}
-	if int(state) >= len(block.StateList) || block.StateList[state] == nil {
-		return false
-	}
-
-	anchor, ok := block.StateList[state].(block.RespawnAnchor)
-	if !ok {
-		return false
-	}
-
+func (rm *RespawnAnchorManager) HandleInteraction(player *game.Player, x, y, z int, anchor block.RespawnAnchor) bool {
 	charges := int(anchor.Charges)
-	held := &player.Inventory[int(player.HeldSlot)+36]
-	heldName := ItemNameByID(held.ID)
 
-	// Charge with glowstone
-	if heldName == "glowstone" && charges < 4 {
-		anchor.Charges = block.Integer(charges + 1)
-		newID, ok := block.ToStateID[anchor]
-		if !ok {
-			return false
+	// Check if the player is holding glowstone
+	heldItemID := player.HeldItemID()
+	holdingGlowstone := false
+	if heldItemID > 0 {
+		heldName := ItemNameByID(heldItemID)
+		if heldName == "glowstone" {
+			holdingGlowstone = true
 		}
-		m.World.SetBlock(x, y, z, newID)
-		broadcastBlockUpdateDirect(m.Manager, x, y, z, int32(newID))
-		held.Count--
-		if held.Count <= 0 {
-			held.ID = 0
-			held.Count = 0
-		}
-		SendSlotUpdate(player, int(player.HeldSlot)+36)
+	}
+
+	// If holding glowstone and charges < 4, charge the anchor
+	if holdingGlowstone && charges < 4 {
+		rm.charge(player, x, y, z, anchor)
 		return true
 	}
 
-	// Set spawn in the Nether
-	if player.Dimension == "minecraft:the_nether" && charges > 0 && heldName != "glowstone" {
-		player.SpawnX = float64(x) + 0.5
-		player.SpawnY = float64(y) + 1.0
-		player.SpawnZ = float64(z) + 0.5
-		player.HasSpawnPoint = true
-		anchor.Charges = block.Integer(charges - 1)
-		newID, ok := block.ToStateID[anchor]
-		if !ok {
-			return false
-		}
-		m.World.SetBlock(x, y, z, newID)
-		broadcastBlockUpdateDirect(m.Manager, x, y, z, int32(newID))
-
-		msg := chat.Message{Text: "Respawn point set", Color: "green"}
-		player.WritePacket(pk.Marshal(
-			packetid.ClientboundSystemChat,
-			msg,
-			pk.Boolean(false),
-		))
-		return true
-	}
-
-	// Explode outside the Nether (vanilla "Intentional Game Design")
+	// If not in the Nether, explode
 	if player.Dimension != "minecraft:the_nether" {
-		m.explode(x, y, z)
+		rm.explode(player, x, y, z)
+		return true
+	}
+
+	// In the Nether with charges > 0 and not holding glowstone: set spawn and consume a charge
+	if charges > 0 && !holdingGlowstone {
+		rm.setSpawn(player, x, y, z, anchor)
 		return true
 	}
 
 	return false
 }
 
-// explode creates an explosion at the respawn anchor position (stronger than TNT).
-func (m *RespawnAnchorManager) explode(x, y, z int) {
-	m.World.SetBlock(x, y, z, 0)
-	broadcastBlockUpdateDirect(m.Manager, x, y, z, 0)
-
-	cx := float64(x) + 0.5
-	cy := float64(y) + 0.5
-	cz := float64(z) + 0.5
-	const blockRadius = 5
-	const entityRadius = 8.0
-
-	BroadcastSound(m.Manager, SoundExplode, SoundCategoryBlock, cx, cy, cz, 4.0, 1.0)
-
-	for dx := -blockRadius; dx <= blockRadius; dx++ {
-		for dy := -blockRadius; dy <= blockRadius; dy++ {
-			for dz := -blockRadius; dz <= blockRadius; dz++ {
-				dist := math.Sqrt(float64(dx*dx + dy*dy + dz*dz))
-				if dist > float64(blockRadius) {
-					continue
-				}
-				bx := x + dx
-				by := y + dy
-				bz := z + dz
-
-				state, err := m.World.GetBlock(bx, by, bz)
-				if err != nil || state == 0 {
-					continue
-				}
-
-				blockName := BlockNameFromState(int(state))
-				if blockName == "" || isBlastResistant(blockName) {
-					continue
-				}
-
-				destructionChance := 1.0 - (dist / float64(blockRadius+1))
-				if rand.Float64() > destructionChance {
-					continue
-				}
-
-				m.World.SetBlock(bx, by, bz, 0)
-				broadcastBlockUpdateDirect(m.Manager, bx, by, bz, 0)
-				BroadcastLevelEvent(m.Manager, 2001, bx, by, bz, int32(state))
-			}
-		}
+// charge adds one charge to the respawn anchor and consumes a glowstone from the player's hand.
+func (rm *RespawnAnchorManager) charge(player *game.Player, x, y, z int, anchor block.RespawnAnchor) {
+	anchor.Charges++
+	newID, ok := block.ToStateID[anchor]
+	if !ok {
+		return
 	}
 
-	m.Manager.ForEach(func(p *game.Player) {
-		if p.Dead || p.IsInvulnerable() {
-			return
-		}
-		px, py, pz := p.Position()
-		dx := px - cx
-		dy := (py + 0.9) - cy
-		dz := pz - cz
-		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
-		if dist > entityRadius {
-			return
-		}
+	rm.World.SetBlock(x, y, z, newID)
+	broadcastBlockUpdateDirect(rm.Manager, x, y, z, int32(newID))
 
-		damage := float32(math.Max(1, (1-dist/entityRadius)*50))
-		blastProtTotal := int32(0)
-		for _, slot := range []int{5, 6, 7, 8} {
-			blastProtTotal += enchant.GetLevel(p.Inventory[slot].Enchantments, enchant.BlastProtection)
+	// Consume glowstone in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		player.Inventory[slot].Count--
+		if player.Inventory[slot].Count <= 0 {
+			player.Inventory[slot] = game.ItemStack{}
 		}
-		if blastProtTotal > 0 {
-			reduction := float32(blastProtTotal) * 0.08
-			if reduction > 0.8 {
-				reduction = 0.8
-			}
-			damage *= (1 - reduction)
-		}
+		SendSlotUpdate(player, slot)
+	}
 
-		p.LastDamageMessage = p.Name + " was killed by [Intentional Game Design]" // vanilla death message
-		if m.Survival != nil {
-			m.Survival.ApplyDamage(m.Manager, p, damage, m.Survival.AttackDamageTypeID)
-		}
+	BroadcastSound(rm.Manager, SoundRespawnAnchorCharge, SoundCategoryBlock,
+		float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
 
-		if dist > 0.01 {
-			scale := 7000.0 * (1 - dist/entityRadius) / dist
-			velX := int16(dx * scale)
-			velY := int16(3500 * (1 - dist/entityRadius))
-			velZ := int16(dz * scale)
-			p.WritePacket(pk.Marshal(
-				packetid.ClientboundSetEntityMotion,
-				pk.VarInt(p.EID),
-				pk.Short(velX),
-				pk.Short(velY),
-				pk.Short(velZ),
-			))
-		}
-	})
+	rm.logf("Respawn anchor at (%d,%d,%d) charged to %d by %s", x, y, z, int(anchor.Charges), player.Name)
+}
 
-	if m.Logger != nil {
-		m.Logger.Printf("Respawn anchor exploded at (%d, %d, %d)", x, y, z)
+// setSpawn sets the player's spawn point at this respawn anchor and consumes one charge.
+func (rm *RespawnAnchorManager) setSpawn(player *game.Player, x, y, z int, anchor block.RespawnAnchor) {
+	anchor.Charges--
+	newID, ok := block.ToStateID[anchor]
+	if !ok {
+		return
+	}
+
+	rm.World.SetBlock(x, y, z, newID)
+	broadcastBlockUpdateDirect(rm.Manager, x, y, z, int32(newID))
+
+	// Set the player's spawn point to the anchor location
+	player.SpawnX = float64(x) + 0.5
+	player.SpawnY = float64(y) + 1.0
+	player.SpawnZ = float64(z) + 0.5
+
+	BroadcastSound(rm.Manager, SoundRespawnAnchorSetSpawn, SoundCategoryBlock,
+		float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
+
+	rm.logf("Player %s set Nether spawn at (%d,%d,%d), charges remaining: %d", player.Name, x, y, z, int(anchor.Charges))
+}
+
+// explode detonates the respawn anchor when used outside the Nether.
+// This reuses the TNT explosion logic for block destruction and player damage.
+func (rm *RespawnAnchorManager) explode(player *game.Player, x, y, z int) {
+	// Remove the respawn anchor block (set to air)
+	oldState, err := rm.World.SetBlock(x, y, z, 0)
+	if err != nil {
+		return
+	}
+	broadcastBlockUpdateDirect(rm.Manager, x, y, z, 0)
+
+	if oldState > 0 {
+		BroadcastLevelEvent(rm.Manager, 2001, x, y, z, int32(oldState))
+	}
+
+	// Reuse TNT explosion if TNTManager is available
+	if rm.TNTMgr != nil {
+		// Create a temporary PrimedTNT at the anchor position and call explode
+		tnt := &PrimedTNT{
+			X: float64(x) + 0.5,
+			Y: float64(y),
+			Z: float64(z) + 0.5,
+		}
+		rm.TNTMgr.mu.Lock()
+		rm.TNTMgr.explode(tnt)
+		rm.TNTMgr.mu.Unlock()
+	} else {
+		// Fallback: just play explosion sound
+		BroadcastSound(rm.Manager, SoundExplode, SoundCategoryBlock,
+			float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 4.0, 1.0)
+	}
+
+	rm.logf("Respawn anchor exploded at (%d,%d,%d) — used outside Nether by %s", x, y, z, player.Name)
+}
+
+func (rm *RespawnAnchorManager) logf(format string, args ...any) {
+	if rm.Logger != nil {
+		rm.Logger.Printf(format, args...)
 	}
 }

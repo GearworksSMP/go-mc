@@ -283,6 +283,7 @@ func main() {
 	respawnAnchorMgr := &handler.RespawnAnchorManager{
 		Manager:  players,
 		World:    world,
+		TNTMgr:   tntMgr,
 		Survival: survHandler,
 		Logger:   logger,
 	}
