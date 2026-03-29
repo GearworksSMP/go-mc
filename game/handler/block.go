@@ -75,6 +75,7 @@ type BlockHandler struct {
 	BannerMgr        *BannerManager                      // optional; handles banner patterns
 	RespawnAnchorMgr *RespawnAnchorManager               // optional; handles respawn anchor interactions
 	CopperMgr        *CopperManager                      // optional; handles copper waxing/scraping
+	HiveMgr          *HiveManager                        // optional; handles beehive/bee_nest interactions
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -421,6 +422,10 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 		}
 		if isSignItem(heldName) && h.SignMgr != nil {
 			h.placeSign(player, placeX, placeY, placeZ, heldName, int(face), int32(sequence))
+			return
+		}
+		if isHangingSignItem(heldName) && h.SignMgr != nil {
+			h.placeHangingSign(player, placeX, placeY, placeZ, heldName, int(face), int32(sequence))
 			return
 		}
 		// Boat placement: place boat on water surface
@@ -1855,6 +1860,14 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 		if h.CauldronMgr != nil {
 			return h.CauldronMgr.UseCauldron(player, x, y, z)
 		}
+	case block.LavaCauldron:
+		if h.CauldronMgr != nil {
+			return h.CauldronMgr.UseCauldron(player, x, y, z)
+		}
+	case block.PowderSnowCauldron:
+		if h.CauldronMgr != nil {
+			return h.CauldronMgr.UseCauldron(player, x, y, z)
+		}
 	case block.DaylightDetector:
 		// Toggle inverted state on right-click
 		door.Inverted = !door.Inverted
@@ -1873,6 +1886,14 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 	case block.RespawnAnchor:
 		if h.RespawnAnchorMgr != nil {
 			return h.RespawnAnchorMgr.UseRespawnAnchor(player, x, y, z)
+		}
+	case block.BeeNest:
+		if h.HiveMgr != nil {
+			return h.HiveMgr.UseHive(player, x, y, z)
+		}
+	case block.Beehive:
+		if h.HiveMgr != nil {
+			return h.HiveMgr.UseHive(player, x, y, z)
 		}
 	}
 
@@ -2268,6 +2289,135 @@ func wallSignWithFacing(blockName string, facing block.Direction) block.Block {
 		return block.CrimsonWallSign{Facing: facing}
 	case "minecraft:warped_wall_sign":
 		return block.WarpedWallSign{Facing: facing}
+	}
+	return nil
+}
+
+// placeHangingSign handles hanging sign placement. Ceiling hanging signs are placed
+// below a block (face 0 = bottom), wall hanging signs on side faces (face 2-5).
+func (h *BlockHandler) placeHangingSign(player *game.Player, x, y, z int, itemName string, face int, sequence int32) {
+	if h.wouldCollideWithPlayer(x, y, z) {
+		h.broadcastBlockUpdate(x, y, z, 0)
+		h.sendAck(player, sequence)
+		return
+	}
+
+	var signBlock block.Block
+
+	if face >= 2 && face <= 5 {
+		// Wall hanging sign: attached to the side of a block
+		dir, ok := faceToWallSignDirection(face)
+		if !ok {
+			h.sendAck(player, sequence)
+			return
+		}
+		wallName := wallHangingSignBlockForItem(itemName)
+		if wallName == "" {
+			h.sendAck(player, sequence)
+			return
+		}
+		signBlock = wallHangingSignWithFacing(wallName, dir)
+	} else {
+		// Ceiling hanging sign: attached below a block, rotation from player yaw
+		yaw, _ := player.Rotation()
+		rotation := yawToSignRotation(yaw)
+		ceilingName := hangingSignBlockForItem(itemName)
+		if ceilingName == "" {
+			h.sendAck(player, sequence)
+			return
+		}
+		signBlock = ceilingHangingSignWithRotation(ceilingName, rotation)
+	}
+
+	if signBlock == nil {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	stateID, ok := block.ToStateID[signBlock]
+	if !ok {
+		h.sendAck(player, sequence)
+		return
+	}
+
+	h.World.SetBlock(x, y, z, stateID)
+	h.broadcastBlockUpdate(x, y, z, int32(stateID))
+	h.sendAck(player, sequence)
+
+	// Consume item in survival mode
+	if player.GameMode == 0 {
+		slot := int(player.HeldSlot) + 36
+		invItem := &player.Inventory[slot]
+		if invItem.Count > 0 {
+			invItem.Count--
+			if invItem.Count <= 0 {
+				*invItem = game.ItemStack{}
+			}
+			SendSlotUpdate(player, slot)
+		}
+	}
+
+	// Open sign editor
+	h.SignMgr.PlaceSign(player, x, y, z)
+
+	h.logf("Player %s placed hanging sign at (%d, %d, %d)", player.Name, x, y, z)
+}
+
+// ceilingHangingSignWithRotation creates a ceiling hanging sign block with the given rotation.
+func ceilingHangingSignWithRotation(blockName string, rotation int) block.Block {
+	rot := block.Integer(rotation)
+	switch blockName {
+	case "minecraft:oak_hanging_sign":
+		return block.OakHangingSign{Rotation: rot}
+	case "minecraft:spruce_hanging_sign":
+		return block.SpruceHangingSign{Rotation: rot}
+	case "minecraft:birch_hanging_sign":
+		return block.BirchHangingSign{Rotation: rot}
+	case "minecraft:jungle_hanging_sign":
+		return block.JungleHangingSign{Rotation: rot}
+	case "minecraft:acacia_hanging_sign":
+		return block.AcaciaHangingSign{Rotation: rot}
+	case "minecraft:cherry_hanging_sign":
+		return block.CherryHangingSign{Rotation: rot}
+	case "minecraft:dark_oak_hanging_sign":
+		return block.DarkOakHangingSign{Rotation: rot}
+	case "minecraft:mangrove_hanging_sign":
+		return block.MangroveHangingSign{Rotation: rot}
+	case "minecraft:bamboo_hanging_sign":
+		return block.BambooHangingSign{Rotation: rot}
+	case "minecraft:crimson_hanging_sign":
+		return block.CrimsonHangingSign{Rotation: rot}
+	case "minecraft:warped_hanging_sign":
+		return block.WarpedHangingSign{Rotation: rot}
+	}
+	return nil
+}
+
+// wallHangingSignWithFacing creates a wall hanging sign block with the given facing direction.
+func wallHangingSignWithFacing(blockName string, facing block.Direction) block.Block {
+	switch blockName {
+	case "minecraft:oak_wall_hanging_sign":
+		return block.OakWallHangingSign{Facing: facing}
+	case "minecraft:spruce_wall_hanging_sign":
+		return block.SpruceWallHangingSign{Facing: facing}
+	case "minecraft:birch_wall_hanging_sign":
+		return block.BirchWallHangingSign{Facing: facing}
+	case "minecraft:jungle_wall_hanging_sign":
+		return block.JungleWallHangingSign{Facing: facing}
+	case "minecraft:acacia_wall_hanging_sign":
+		return block.AcaciaWallHangingSign{Facing: facing}
+	case "minecraft:cherry_wall_hanging_sign":
+		return block.CherryWallHangingSign{Facing: facing}
+	case "minecraft:dark_oak_wall_hanging_sign":
+		return block.DarkOakWallHangingSign{Facing: facing}
+	case "minecraft:mangrove_wall_hanging_sign":
+		return block.MangroveWallHangingSign{Facing: facing}
+	case "minecraft:bamboo_wall_hanging_sign":
+		return block.BambooWallHangingSign{Facing: facing}
+	case "minecraft:crimson_wall_hanging_sign":
+		return block.CrimsonWallHangingSign{Facing: facing}
+	case "minecraft:warped_wall_hanging_sign":
+		return block.WarpedWallHangingSign{Facing: facing}
 	}
 	return nil
 }

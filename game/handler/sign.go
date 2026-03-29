@@ -203,13 +203,76 @@ func escapeJSON(s string) string {
 	return s
 }
 
-// isSignItem returns true if the item name refers to a placeable sign item.
-// Excludes "design" items that happen to contain "sign" in their name.
+// isSignItem returns true if the item name refers to a placeable sign item
+// (standing or wall signs, not hanging signs).
 func isSignItem(name string) bool {
 	if strings.Contains(name, "hanging_sign") {
-		return false // hanging signs have different placement logic
+		return false
 	}
 	return strings.HasSuffix(name, "_sign")
+}
+
+// isHangingSignItem returns true if the item name refers to a hanging sign item.
+func isHangingSignItem(name string) bool {
+	return strings.HasSuffix(name, "_hanging_sign")
+}
+
+// hangingSignBlockForItem returns the ceiling hanging sign block name for an item, or "".
+func hangingSignBlockForItem(itemName string) string {
+	switch itemName {
+	case "oak_hanging_sign":
+		return "minecraft:oak_hanging_sign"
+	case "spruce_hanging_sign":
+		return "minecraft:spruce_hanging_sign"
+	case "birch_hanging_sign":
+		return "minecraft:birch_hanging_sign"
+	case "jungle_hanging_sign":
+		return "minecraft:jungle_hanging_sign"
+	case "acacia_hanging_sign":
+		return "minecraft:acacia_hanging_sign"
+	case "cherry_hanging_sign":
+		return "minecraft:cherry_hanging_sign"
+	case "dark_oak_hanging_sign":
+		return "minecraft:dark_oak_hanging_sign"
+	case "mangrove_hanging_sign":
+		return "minecraft:mangrove_hanging_sign"
+	case "bamboo_hanging_sign":
+		return "minecraft:bamboo_hanging_sign"
+	case "crimson_hanging_sign":
+		return "minecraft:crimson_hanging_sign"
+	case "warped_hanging_sign":
+		return "minecraft:warped_hanging_sign"
+	}
+	return ""
+}
+
+// wallHangingSignBlockForItem returns the wall hanging sign block name for an item, or "".
+func wallHangingSignBlockForItem(itemName string) string {
+	switch itemName {
+	case "oak_hanging_sign":
+		return "minecraft:oak_wall_hanging_sign"
+	case "spruce_hanging_sign":
+		return "minecraft:spruce_wall_hanging_sign"
+	case "birch_hanging_sign":
+		return "minecraft:birch_wall_hanging_sign"
+	case "jungle_hanging_sign":
+		return "minecraft:jungle_wall_hanging_sign"
+	case "acacia_hanging_sign":
+		return "minecraft:acacia_wall_hanging_sign"
+	case "cherry_hanging_sign":
+		return "minecraft:cherry_wall_hanging_sign"
+	case "dark_oak_hanging_sign":
+		return "minecraft:dark_oak_wall_hanging_sign"
+	case "mangrove_hanging_sign":
+		return "minecraft:mangrove_wall_hanging_sign"
+	case "bamboo_hanging_sign":
+		return "minecraft:bamboo_wall_hanging_sign"
+	case "crimson_hanging_sign":
+		return "minecraft:crimson_wall_hanging_sign"
+	case "warped_hanging_sign":
+		return "minecraft:warped_wall_hanging_sign"
+	}
+	return ""
 }
 
 // signBlockForItem returns the block name (with minecraft: prefix) for a standing
