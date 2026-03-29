@@ -733,7 +733,15 @@ func (h *FoodHandler) Tick(manager *game.PlayerManager) {
 			return
 		}
 
-		if time.Since(player.EatingStart) < 1600*time.Millisecond {
+		elapsed := time.Since(player.EatingStart)
+		if elapsed < 1600*time.Millisecond {
+			// Play eating sound at ~400ms intervals (ticks 8, 16, 24 of the 32-tick eating)
+			tickInEat := int(elapsed.Milliseconds() / 50)
+			if tickInEat > 0 && tickInEat%8 == 0 {
+				px, py, pz := player.Position()
+				pitch := float32(0.9) + float32(rand.Float64())*0.2
+				BroadcastSound(manager, SoundGenericEat, SoundCategoryPlayer, px, py, pz, 0.5, pitch)
+			}
 			return // still eating
 		}
 

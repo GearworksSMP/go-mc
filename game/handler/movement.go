@@ -79,6 +79,10 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		player.WasOnGround = wasOnGround
 		h.broadcastPos(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
+		// Step and water sounds
+		h.trackStepSounds(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
+		h.trackSplashSound(player)
+		h.trackSwimSound(player, float64(x)-oldX, float64(y)-oldY, float64(z)-oldZ)
 		// Check pressure plates at new position
 		if h.RedstoneMgr != nil && onGround {
 			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
@@ -127,6 +131,10 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		player.WasOnGround = wasOnGround
 		h.broadcastPosRot(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z), float32(yaw), float32(pitch))
+		// Step and water sounds
+		h.trackStepSounds(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
+		h.trackSplashSound(player)
+		h.trackSwimSound(player, float64(x)-oldX, float64(y)-oldY, float64(z)-oldZ)
 		// Check pressure plates at new position
 		if h.RedstoneMgr != nil && onGround {
 			h.RedstoneMgr.CheckPressurePlateAt(float64(x), float64(y), float64(z))
@@ -433,6 +441,15 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 			if damage > 0 && h.SurvivalHandler != nil {
 				player.LastDamageMessage = player.Name + " fell from a high place"
 				h.SurvivalHandler.ApplyDamage(h.Manager, player, damage, h.SurvivalHandler.FallDamageTypeID)
+
+				// Fall damage sounds
+				px, py, pz := player.Position()
+				vol := float32(math.Min(1.0, float64(damage)/10.0))
+				if damage > 4 {
+					BroadcastSound(h.Manager, SoundFallBig, SoundCategoryPlayer, px, py, pz, vol, 1.0)
+				} else {
+					BroadcastSound(h.Manager, SoundFallSmall, SoundCategoryPlayer, px, py, pz, vol, 1.0)
+				}
 			}
 		}
 
@@ -462,6 +479,75 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 				}
 			}
 		}
+	}
+}
+
+// trackStepSounds plays footstep sounds based on accumulated walking distance.
+// Only plays for survival/adventure/creative modes, not spectator, and at most once per 5 ticks.
+func (h *MovementHandler) trackStepSounds(player *game.Player, oldX, _, oldZ, newX, newY, newZ float64) {
+	if player.Dead || player.GameMode == 3 { // spectator: no step sounds
+		return
+	}
+	if !player.OnGround {
+		return
+	}
+
+	dx := newX - oldX
+	dz := newZ - oldZ
+	horizDist := math.Sqrt(dx*dx + dz*dz)
+	if horizDist < 0.001 {
+		return
+	}
+
+	player.WalkDistAccum += horizDist
+
+	// Throttle: max 1 step sound per 5 movement ticks
+	player.LastStepTick++
+	if player.WalkDistAccum >= 1.5 && player.LastStepTick >= 5 {
+		player.WalkDistAccum = 0
+		player.LastStepTick = 0
+
+		// Determine block under feet
+		w := h.worldForPlayer(player)
+		bx := int(math.Floor(newX))
+		by := int(math.Floor(newY)) - 1
+		bz := int(math.Floor(newZ))
+		if state, err := w.GetBlock(bx, by, bz); err == nil {
+			blockName := BlockNameFromState(int(state))
+			if blockName != "" && blockName != "air" {
+				soundID := BlockStepSound(blockName)
+				BroadcastSound(h.Manager, soundID, SoundCategoryPlayer, newX, newY, newZ, 0.15, 1.0)
+			}
+		}
+	}
+}
+
+// trackSplashSound plays a splash sound when a player enters water.
+func (h *MovementHandler) trackSplashSound(player *game.Player) {
+	if player.Dead {
+		return
+	}
+	if player.InWater && !player.WasInWater {
+		px, py, pz := player.Position()
+		BroadcastSound(h.Manager, SoundGenericSplash, SoundCategoryPlayer, px, py, pz, 0.4, 1.0)
+	}
+	player.WasInWater = player.InWater
+}
+
+// trackSwimSound plays periodic swim sounds while moving in water.
+func (h *MovementHandler) trackSwimSound(player *game.Player, dx, dy, dz float64) {
+	if player.Dead || !player.InWater {
+		return
+	}
+	dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if dist < 0.01 {
+		return
+	}
+	player.SwimSoundTick++
+	if player.SwimSoundTick >= 20 {
+		player.SwimSoundTick = 0
+		px, py, pz := player.Position()
+		BroadcastSound(h.Manager, SoundGenericSwim, SoundCategoryPlayer, px, py, pz, 0.3, 1.0)
 	}
 }
 
