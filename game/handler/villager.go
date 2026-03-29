@@ -65,8 +65,10 @@ func villagerProfessionID(name string) int32 {
 
 // VillagerData holds the profession and trade list for a villager mob.
 type VillagerData struct {
-	Profession string
-	Trades     []Trade
+	Profession      string
+	Trades          []Trade
+	RestocksToday   int   // number of restocks performed today (max 2 per day)
+	LastRestockTick int64 // tick when the last restock occurred
 }
 
 // Trade represents a single villager trade offer.
@@ -589,4 +591,63 @@ func (vm *VillagerManager) GetOpenTradeIndex(player *game.Player) int {
 		return -1
 	}
 	return session.SelectedTrade
+}
+
+// TickRestock refreshes villager trades during the day, matching vanilla behavior.
+// Villagers restock up to 2 times per day, with at least 2400 ticks between restocks.
+// At midnight (time crosses 18000), the daily restock counter resets.
+func (vm *VillagerManager) TickRestock(tick int64, timeMgr *TimeManager) {
+	dayTime := timeMgr.GetDayTime()
+	isDaytime := dayTime < 13000
+
+	vm.MobMgr.mu.Lock()
+	defer vm.MobMgr.mu.Unlock()
+
+	for _, mob := range vm.MobMgr.Mobs {
+		if mob.TypeID != MobTypeVillager || mob.VillagerData == nil || mob.Health <= 0 {
+			continue
+		}
+		vd := mob.VillagerData
+
+		// Reset daily counter at midnight (dayTime wraps past 18000).
+		// We detect this by checking if dayTime is in the range [18000, 18020)
+		// since this tick runs once per server tick.
+		if dayTime >= 18000 && dayTime < 18020 && vd.RestocksToday > 0 {
+			vd.RestocksToday = 0
+		}
+
+		// Only restock during daytime
+		if !isDaytime {
+			continue
+		}
+
+		// Max 2 restocks per day
+		if vd.RestocksToday >= 2 {
+			continue
+		}
+
+		// At least 2400 ticks since last restock
+		if tick-vd.LastRestockTick < 2400 {
+			continue
+		}
+
+		// Check if any trade actually needs restocking
+		needsRestock := false
+		for i := range vd.Trades {
+			if vd.Trades[i].Uses > 0 {
+				needsRestock = true
+				break
+			}
+		}
+		if !needsRestock {
+			continue
+		}
+
+		// Restock: reset all trade uses
+		for i := range vd.Trades {
+			vd.Trades[i].Uses = 0
+		}
+		vd.RestocksToday++
+		vd.LastRestockTick = tick
+	}
 }
