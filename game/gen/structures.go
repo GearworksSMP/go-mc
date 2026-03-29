@@ -25,10 +25,13 @@ type StructurePlacer struct {
 	hasTorch   bool
 
 	// Sub-placers for additional structure types.
-	templePlacer     *TemplePlacer
-	strongholdPlacer *StrongholdPlacer
-	mineshaftPlacer  *MineshaftPlacer
-	villagePlacer    *VillagePlacer
+	templePlacer         *TemplePlacer
+	strongholdPlacer     *StrongholdPlacer
+	mineshaftPlacer      *MineshaftPlacer
+	villagePlacer        *VillagePlacer
+	oceanMonumentPlacer  *OceanMonumentPlacer
+	witchHutPlacer       *WitchHutPlacer
+	pillagerOutpostPlacer *PillagerOutpostPlacer
 }
 
 // NewStructurePlacer creates a StructurePlacer with resolved block state IDs.
@@ -56,6 +59,9 @@ func NewStructurePlacer(seed int64, waterID level.BlocksState) *StructurePlacer 
 	sp.strongholdPlacer = NewStrongholdPlacer(seed)
 	sp.mineshaftPlacer = NewMineshaftPlacer(seed)
 	sp.villagePlacer = NewVillagePlacer(seed)
+	sp.oceanMonumentPlacer = NewOceanMonumentPlacer(seed, waterID)
+	sp.witchHutPlacer = NewWitchHutPlacer(seed)
+	sp.pillagerOutpostPlacer = NewPillagerOutpostPlacer(seed)
 
 	return sp
 }
@@ -164,6 +170,39 @@ func (sp *StructurePlacer) PlaceStructures(chunk *level.Chunk, chunkX, chunkZ in
 
 	// Try stronghold placement (at deterministic positions).
 	sp.strongholdPlacer.PlaceStronghold(chunk, chunkX, chunkZ, gen)
+
+	// Try ocean monument placement (1% chance in ocean biome).
+	omHash := structureHash(chunkX, chunkZ, sp.Seed, 0x0CE4)
+	if abs64(omHash)%100 < 1 && centerBiome == BiomeOcean {
+		lx := int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x0CE5)) % 2)
+		lz := int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x0CE6)) % 2)
+		// Place underwater: use sea level minus the monument height.
+		monumentY := gen.SeaLevel - 12
+		sp.oceanMonumentPlacer.PlaceOceanMonument(chunk, lx, monumentY, lz, gen)
+	}
+
+	// Try witch hut placement (2% chance in taiga biome).
+	// NOTE: Uses BiomeTaiga as a stand-in; should be BiomeSwamp when that constant is added.
+	whHash := structureHash(chunkX, chunkZ, sp.Seed, 0xB17C)
+	if abs64(whHash)%50 < 1 && centerBiome == BiomeTaiga {
+		lx := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xB17D))%8)
+		lz := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xB17E))%8)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.witchHutPlacer.PlaceWitchHut(chunk, lx, surfaceY, lz, gen)
+		}
+	}
+
+	// Try pillager outpost placement (1.5% chance in plains or savanna biome).
+	poHash := structureHash(chunkX, chunkZ, sp.Seed, 0xF117)
+	if abs64(poHash)%200 < 3 && (centerBiome == BiomePlains || centerBiome == BiomeSavanna) {
+		lx := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xF118))%6)
+		lz := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xF119))%6)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.pillagerOutpostPlacer.PlaceOutpost(chunk, lx, surfaceY, lz, gen)
+		}
+	}
 }
 
 // placeDungeon places a 5x5x4 cobblestone dungeon room underground.
