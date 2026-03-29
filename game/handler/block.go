@@ -1027,6 +1027,20 @@ func (h *BlockHandler) validateBreakTime(player *game.Player, x, y, z int) bool 
 	if effLvl := enchant.GetLevel(heldSlot.Enchantments, enchant.Efficiency); effLvl > 0 {
 		expected /= float64(1 + effLvl*effLvl)
 	}
+	// Haste: 20% faster per level
+	if player.Effects != nil {
+		if eff, ok := player.Effects[EffectHaste]; ok {
+			expected /= 1.0 + 0.2*float64(eff.Level+1)
+		}
+		// Mining Fatigue: 3^level slower
+		if eff, ok := player.Effects[EffectMiningFatigue]; ok {
+			mult := 1.0
+			for i := int32(0); i <= eff.Level; i++ {
+				mult *= 3
+			}
+			expected *= mult
+		}
+	}
 	elapsed := time.Since(player.DigStartTime).Seconds()
 	// 20% tolerance for network latency
 	return elapsed >= expected*0.8

@@ -353,9 +353,9 @@ func main() {
 		armorStandMgr:   armorStandMgr,
 		itemFrameMgr:    itemFrameMgr,
 		paintingMgr:     paintingMgr,
-		leashMgr:           leashMgr,
-		respawnAnchorMgr:   respawnAnchorMgr,
-		advancementMgr:     advancementMgr,
+		leashMgr:         leashMgr,
+		respawnAnchorMgr: respawnAnchorMgr,
+		advancementMgr:   advancementMgr,
 		permMgr:         permMgr,
 		gameRules:       gameRules,
 		tracer:          tp.Tracer("gearworks-mc"),
@@ -652,9 +652,9 @@ type gamePlay struct {
 	armorStandMgr   *handler.ArmorStandManager
 	itemFrameMgr    *handler.ItemFrameManager
 	paintingMgr     *handler.PaintingManager
-	leashMgr           *handler.LeashManager
-	respawnAnchorMgr   *handler.RespawnAnchorManager
-	gameRules          *handler.GameRules
+	leashMgr         *handler.LeashManager
+	respawnAnchorMgr *handler.RespawnAnchorManager
+	gameRules        *handler.GameRules
 	advancementMgr  *handler.AdvancementManager
 	permMgr         *handler.PermissionManager
 	tracer          trace.Tracer
@@ -1182,8 +1182,12 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		LeashMgr:        g.leashMgr,
 		JukeboxMgr:      g.jukeboxMgr,
 		LecternMgr:      g.lecternMgr,
-		BannerMgr:          g.bannerMgr,
-		RespawnAnchorMgr:   g.respawnAnchorMgr,
+		BannerMgr:        g.bannerMgr,
+		RespawnAnchorMgr: g.respawnAnchorMgr,
+		CopperMgr: &handler.CopperManager{
+			Manager: g.players,
+			World:   g.world,
+		},
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
