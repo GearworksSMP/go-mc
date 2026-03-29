@@ -78,6 +78,7 @@ type BlockHandler struct {
 	HiveMgr          *HiveManager                        // optional; handles beehive/bee_nest interactions
 	DecoratedPotMgr  *DecoratedPotManager                // optional; handles decorated pot interactions
 	CampfireMgr      *CampfireManager                   // optional; handles campfire cooking
+	NoteBlockMgr     *NoteBlockManager                  // optional; handles note block tuning/playback
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -155,6 +156,11 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 		SendSlotUpdate(player, 45)
 		BroadcastEquipment(h.Manager, player)
 		return
+	}
+
+	// Note block: left-click plays the note (all game modes).
+	if action == 0 && h.NoteBlockMgr != nil {
+		h.tryPlayNoteBlockAttack(pos.X, pos.Y, pos.Z)
 	}
 
 	if player.GameMode == 1 { // creative — instant break
@@ -1918,7 +1924,9 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 			return h.LecternMgr.InteractLectern(player, x, y, z)
 		}
 	case block.NoteBlock:
-		if h.RedstoneMgr != nil {
+		if h.NoteBlockMgr != nil {
+			h.NoteBlockMgr.TuneNote(x, y, z)
+		} else if h.RedstoneMgr != nil {
 			h.RedstoneMgr.CycleNoteBlock(x, y, z)
 		}
 		return true

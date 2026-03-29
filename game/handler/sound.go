@@ -202,7 +202,30 @@ const (
 	SoundWardenSonicBoom      int32 = 1116
 	SoundWardenSniff          int32 = 1115
 
-	SoundNoteBlock            int32 = 686
+	// Note block instrument sounds
+	SoundNoteBlockBasedrum     int32 = 686
+	SoundNoteBlockBass         int32 = 687
+	SoundNoteBlockBell         int32 = 688
+	SoundNoteBlockChime        int32 = 689
+	SoundNoteBlockFlute        int32 = 690
+	SoundNoteBlockGuitar       int32 = 691
+	SoundNoteBlockHarp         int32 = 692
+	SoundNoteBlockHat          int32 = 693
+	SoundNoteBlockPling        int32 = 694
+	SoundNoteBlockSnare        int32 = 695
+	SoundNoteBlockXylophone    int32 = 696
+	SoundNoteBlockIronXylophone int32 = 697
+	SoundNoteBlockCowBell      int32 = 698
+	SoundNoteBlockDidgeridoo   int32 = 699
+	SoundNoteBlockBit          int32 = 700
+	SoundNoteBlockBanjo        int32 = 701
+
+	// Ambient sounds
+	SoundAmbientCave           int32 = 11  // ambient.cave
+	SoundAmbientUnderwaterLoop int32 = 24  // ambient.underwater.loop
+
+	// Sound category for ambient
+	SoundCategoryAmbient int32 = 8
 
 	// Chest sounds
 	SoundChestOpen  int32 = 195 // block.chest.open
