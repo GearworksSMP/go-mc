@@ -349,3 +349,39 @@ var brewingRecipes = map[string]map[string]brewRecipe{
 	"gunpowder":              {"potion": {OutputItem: "splash_potion", PotionType: ""}}, // potion → splash (keeps type)
 	"dragon_breath":          {"splash_potion": {OutputItem: "lingering_potion", PotionType: ""}},
 }
+
+// MatchTippedArrowRecipe checks if the 3x3 crafting grid contains the tipped arrow recipe:
+// 8 arrows surrounding 1 lingering potion in the center.
+// grid is a 9-element slice of ItemStack (row-major 3x3). Returns the tipped arrow
+// item ID, count (8), and the PotionType from the lingering potion. Returns (0,0,"") if no match.
+func MatchTippedArrowRecipe(grid []game.ItemStack) (resultID, count int32, potionType string) {
+	if len(grid) != 9 {
+		return 0, 0, ""
+	}
+
+	// Center slot (index 4) must be a lingering potion
+	centerName := ItemNameByID(grid[4].ID)
+	if centerName != "lingering_potion" || grid[4].Count <= 0 {
+		return 0, 0, ""
+	}
+
+	// All 8 surrounding slots must be arrows
+	arrowID := itemIDByName("arrow")
+	if arrowID <= 0 {
+		return 0, 0, ""
+	}
+	for i := 0; i < 9; i++ {
+		if i == 4 {
+			continue
+		}
+		if grid[i].ID != arrowID || grid[i].Count <= 0 {
+			return 0, 0, ""
+		}
+	}
+
+	tippedID := itemIDByName("tipped_arrow")
+	if tippedID <= 0 {
+		return 0, 0, ""
+	}
+	return tippedID, 8, grid[4].PotionType
+}

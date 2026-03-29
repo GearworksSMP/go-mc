@@ -171,13 +171,13 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 	dirY := -math.Sin(pitchRad)
 	dirZ := math.Cos(yawRad) * math.Cos(pitchRad)
 
-	// Spawn arrow at eye level
+	// Spawn arrow at eye level (potionType is set for tipped arrows)
 	px, py, pz := player.Position()
-	if arrowItemName == "tipped_arrow" && arrowPotionType != "" {
-		bm.ArrowMgr.SpawnTippedArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire, arrowPotionType)
-	} else {
-		bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire)
+	potionType := ""
+	if arrowItemName == "tipped_arrow" {
+		potionType = arrowPotionType
 	}
+	bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire, potionType)
 
 	// Reduce bow durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {

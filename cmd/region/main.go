@@ -202,6 +202,7 @@ func main() {
 	enchantMgr := handler.NewEnchantManager(world)
 	anvilMgr := handler.NewAnvilManager(world)
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
+	arrowMgr.EffectMgr = effectMgr
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
 
@@ -328,6 +329,7 @@ func main() {
 			minecartMgr.Tick(tick)
 			effectMgr.Tick(tick)
 			potionMgr.Tick(tick)
+			potionMgr.TickLingeringClouds(tick)
 			tntMgr.Tick(tick)
 			fireMgr.Tick(tick)
 			redstoneMgr.Tick(tick)

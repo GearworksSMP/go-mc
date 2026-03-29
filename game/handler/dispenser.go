@@ -183,7 +183,7 @@ func (dm *DispenserManager) Activate(x, y, z int) {
 	case "arrow":
 		if dm.ArrowMgr != nil {
 			dm.ArrowMgr.SpawnPlayerArrow(0, outX, outY, outZ,
-				float64(dx), float64(dy), float64(dz), 2.0, 0, false)
+				float64(dx), float64(dy), float64(dz), 2.0, 0, false, "")
 		}
 		item.Count--
 		if item.Count <= 0 {

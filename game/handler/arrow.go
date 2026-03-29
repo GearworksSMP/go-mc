@@ -115,8 +115,9 @@ func (am *ArrowManager) SpawnArrow(shooterEID int32, sx, sy, sz, tx, ty, tz floa
 	})
 }
 
-// SpawnTippedArrow creates and broadcasts a tipped arrow with a potion effect.
-func (am *ArrowManager) SpawnTippedArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool, potionType string) {
+// SpawnPlayerArrow creates and broadcasts an arrow shot by a player with a given direction and damage.
+// potionType may be empty for normal arrows, or a potion type string for tipped arrows.
+func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool, potionType string) {
 	speed := 3.0
 	velX := dirX * speed
 	velY := dirY * speed
@@ -136,53 +137,6 @@ func (am *ArrowManager) SpawnTippedArrow(shooterEID int32, x, y, z, dirX, dirY, 
 		PunchLevel: punchLevel,
 		OnFire:     onFire,
 		PotionType: potionType,
-	}
-
-	am.mu.Lock()
-	am.Arrows[eid] = arrow
-	am.mu.Unlock()
-
-	id := uuid.New()
-	data := shooterEID + 1
-	pkt := pk.Marshal(
-		packetid.ClientboundAddEntity,
-		pk.VarInt(eid),
-		pk.UUID(id),
-		pk.VarInt(arrowEntityType),
-		pk.Double(x),
-		pk.Double(y),
-		pk.Double(z),
-		pk.UnsignedByte(0),
-		pk.Angle(0),
-		pk.Angle(0),
-		pk.Angle(0),
-		pk.VarInt(data),
-	)
-	am.Manager.ForEach(func(p *game.Player) {
-		p.WritePacket(pkt)
-	})
-}
-
-// SpawnPlayerArrow creates and broadcasts an arrow shot by a player with a given direction and damage.
-func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool) {
-	speed := 3.0
-	velX := dirX * speed
-	velY := dirY * speed
-	velZ := dirZ * speed
-
-	eid := am.Manager.NextEntityID()
-	arrow := &Arrow{
-		EID:        eid,
-		ShooterEID: shooterEID,
-		X:          x,
-		Y:          y,
-		Z:          z,
-		VelX:       velX,
-		VelY:       velY,
-		VelZ:       velZ,
-		Damage:     float32(damage),
-		PunchLevel: punchLevel,
-		OnFire:     onFire,
 	}
 
 	am.mu.Lock()

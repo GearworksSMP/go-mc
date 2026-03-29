@@ -273,6 +273,7 @@ func main() {
 	minecartMgr := handler.NewMinecartManager(players, world, redstoneMgr, itemEntities, logger)
 
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
+	arrowMgr.EffectMgr = effectMgr
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
 	jukeboxMgr := handler.NewJukeboxManager(players, world, itemEntities)
 	lecternMgr := handler.NewLecternManager(players, world, itemEntities)
@@ -484,6 +485,7 @@ func main() {
 			minecartMgr.Tick(tick)
 			effectMgr.Tick(tick)
 			potionMgr.Tick(tick)
+			potionMgr.TickLingeringClouds(tick)
 			tntMgr.Tick(tick)
 			fireMgr.Tick(tick)
 			redstoneMgr.Tick(tick)

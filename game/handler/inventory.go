@@ -1271,6 +1271,13 @@ func (h *InventoryHandler) handleCraftingTableResultShiftClick(player *game.Play
 
 // craftingTableResult computes the crafting result for the 3x3 grid.
 func craftingTableResult(player *game.Player) game.ItemStack {
+	// Check tipped arrow recipe first (requires item metadata)
+	if tippedID, count, potionType := MatchTippedArrowRecipe(player.CraftingGrid[:]); tippedID > 0 {
+		result := NewItemStack(tippedID, count)
+		result.PotionType = potionType
+		return result
+	}
+
 	grid := make([]int32, 9)
 	for i := range player.CraftingGrid {
 		grid[i] = player.CraftingGrid[i].ID

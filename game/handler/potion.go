@@ -168,77 +168,17 @@ func (pm *PotionManager) HandleDrinkPotion(player *game.Player, itemName string)
 
 // ThrowSplashPotion creates a splash potion projectile in the player's look direction.
 func (pm *PotionManager) ThrowSplashPotion(player *game.Player, potionType string) {
-	px, py, pz := player.Position()
-	yaw, pitch := player.Rotation()
-
-	// Calculate throw direction from yaw/pitch
-	yawRad := float64(yaw) * math.Pi / 180.0
-	pitchRad := float64(pitch) * math.Pi / 180.0
-	dirX := -math.Sin(yawRad) * math.Cos(pitchRad)
-	dirY := -math.Sin(pitchRad)
-	dirZ := math.Cos(yawRad) * math.Cos(pitchRad)
-
-	speed := 0.5
-	velX := dirX * speed
-	velY := dirY*speed + 0.2 // slight upward arc
-	velZ := dirZ * speed
-
-	eid := pm.Manager.NextEntityID()
-	potion := &SplashPotion{
-		EID:        eid,
-		ThrowerEID: player.EID,
-		X:          px,
-		Y:          py + 1.5, // throw from eye height
-		Z:          pz,
-		VelX:       velX,
-		VelY:       velY,
-		VelZ:       velZ,
-		PotionType: potionType,
-	}
-
-	pm.mu.Lock()
-	pm.potions[eid] = potion
-	pm.mu.Unlock()
-
-	// Broadcast spawn entity
-	entityUUID := uuid.New()
-	data := player.EID + 1 // data = thrower entity ID + 1
-	spawnPkt := pk.Marshal(
-		packetid.ClientboundAddEntity,
-		pk.VarInt(eid),
-		pk.UUID(entityUUID),
-		pk.VarInt(splashPotionEntityType),
-		pk.Double(potion.X),
-		pk.Double(potion.Y),
-		pk.Double(potion.Z),
-		pk.UnsignedByte(0), // LpVec3 zero velocity
-		pk.Angle(0),        // pitch
-		pk.Angle(0),        // yaw
-		pk.Angle(0),        // head yaw
-		pk.VarInt(data),
-	)
-	pm.Manager.ForEach(func(p *game.Player) {
-		p.WritePacket(spawnPkt)
-	})
-
-	// Consume the splash potion from inventory
-	slot := int(player.HeldSlot) + 36
-	invItem := &player.Inventory[slot]
-	invItem.Count--
-	if invItem.Count <= 0 {
-		*invItem = game.ItemStack{}
-	}
-	SendSlotUpdate(player, slot)
-
-	// Play throw sound
-	BroadcastSound(pm.Manager, SoundSplashPotionThrow, SoundCategoryNeutral, px, py, pz, 1.0, 1.0)
-
-	pm.logf("Player %s threw a splash potion (%s)", player.Name, potionType)
+	pm.throwPotion(player, potionType, false)
 }
 
 // ThrowLingeringPotion creates a lingering potion projectile in the player's look direction.
 // On impact, it spawns an area-of-effect cloud instead of directly applying effects.
 func (pm *PotionManager) ThrowLingeringPotion(player *game.Player, potionType string) {
+	pm.throwPotion(player, potionType, true)
+}
+
+// throwPotion is the shared implementation for throwing splash and lingering potions.
+func (pm *PotionManager) throwPotion(player *game.Player, potionType string, lingering bool) {
 	px, py, pz := player.Position()
 	yaw, pitch := player.Rotation()
 
@@ -264,7 +204,7 @@ func (pm *PotionManager) ThrowLingeringPotion(player *game.Player, potionType st
 		VelY:       velY,
 		VelZ:       velZ,
 		PotionType: potionType,
-		Lingering:  true,
+		Lingering:  lingering,
 	}
 
 	pm.mu.Lock()
@@ -291,7 +231,6 @@ func (pm *PotionManager) ThrowLingeringPotion(player *game.Player, potionType st
 		p.WritePacket(spawnPkt)
 	})
 
-	// Consume the lingering potion from inventory
 	slot := int(player.HeldSlot) + 36
 	invItem := &player.Inventory[slot]
 	invItem.Count--
@@ -301,7 +240,12 @@ func (pm *PotionManager) ThrowLingeringPotion(player *game.Player, potionType st
 	SendSlotUpdate(player, slot)
 
 	BroadcastSound(pm.Manager, SoundSplashPotionThrow, SoundCategoryNeutral, px, py, pz, 1.0, 1.0)
-	pm.logf("Player %s threw a lingering potion (%s)", player.Name, potionType)
+
+	kind := "splash"
+	if lingering {
+		kind = "lingering"
+	}
+	pm.logf("Player %s threw a %s potion (%s)", player.Name, kind, potionType)
 }
 
 // Tick processes splash potion projectile physics and impacts.
@@ -481,11 +425,6 @@ func (pm *PotionManager) removeCloudEntity(eid int32) {
 	pm.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(removePkt)
 	})
-}
-
-// isLingeringPotion returns true if the item name indicates a lingering potion.
-func isLingeringPotion(itemName string) bool {
-	return itemName == "lingering_potion"
 }
 
 // splashImpact applies splash potion effects to nearby players.

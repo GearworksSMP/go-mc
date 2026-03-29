@@ -206,7 +206,7 @@ func (cm *CrossbowManager) fireCrossbow(player *game.Player, invItem *game.ItemS
 			dx = dirX*cos - dirZ*sin
 			dz = dirX*sin + dirZ*cos
 		}
-		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage, 0, false)
+		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage, 0, false, "")
 	}
 
 	// Reduce crossbow durability in survival mode

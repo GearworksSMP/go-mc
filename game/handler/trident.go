@@ -176,7 +176,7 @@ func (tm *TridentManager) throwTrident(player *game.Player, invItem *game.ItemSt
 
 	// Spawn trident as arrow projectile with trident damage
 	damage := tridentProjectileDamage * charge
-	tm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dirX, dirY, dirZ, damage, 0, false)
+	tm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dirX, dirY, dirZ, damage, 0, false, "")
 
 	// Check for Channeling enchantment: strike lightning on hit during thunderstorm
 	hasChanneling := false
