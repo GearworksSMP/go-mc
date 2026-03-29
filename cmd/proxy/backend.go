@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/Tnze/go-mc/cluster"
 	"github.com/Tnze/go-mc/data/packetid"
@@ -12,6 +14,27 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// connectBackendWithRetry wraps connectBackend with exponential backoff (1s, 2s, 4s).
+func connectBackendWithRetry(cfg *cluster.ClusterConfig, serverID string, name string, id uuid.UUID, properties []user.Property, protocol int32, logger *log.Logger) (*net.Conn, error) {
+	const maxRetries = 3
+	delay := 1 * time.Second
+
+	var lastErr error
+	for attempt := range maxRetries {
+		conn, err := connectBackend(cfg, serverID, name, id, properties, protocol)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if attempt < maxRetries-1 {
+			logger.Printf("Backend %s connect attempt %d failed: %v, retrying in %v", serverID, attempt+1, err, delay)
+			time.Sleep(delay)
+			delay *= 2
+		}
+	}
+	return nil, fmt.Errorf("all %d attempts failed: %w", maxRetries, lastErr)
+}
 
 // connectBackend dials a backend region server and completes the handshake, login,
 // and configuration phases as a Minecraft client. Returns a connection ready for

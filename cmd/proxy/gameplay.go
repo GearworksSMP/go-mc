@@ -19,6 +19,7 @@ type ProxyGamePlay struct {
 	Config *cluster.ClusterConfig
 	Redis  *redis.Client
 	Logger *log.Logger
+	Health *HealthChecker
 }
 
 func (gp *ProxyGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
@@ -30,9 +31,15 @@ func (gp *ProxyGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 		serverID = stored
 	}
 
+	// If the chosen server is unhealthy, fall back to the default server.
+	if gp.Health != nil && !gp.Health.IsHealthy(serverID) {
+		gp.Logger.Printf("Backend %s unhealthy for %s, falling back to %s", serverID, name, gp.Config.DefaultServer)
+		serverID = gp.Config.DefaultServer
+	}
+
 	gp.Logger.Printf("Player %s (%s) → backend %s", name, id, serverID)
 
-	backendConn, err := connectBackend(gp.Config, serverID, name, id, properties, protocol)
+	backendConn, err := connectBackendWithRetry(gp.Config, serverID, name, id, properties, protocol, gp.Logger)
 	if err != nil {
 		gp.Logger.Printf("Failed to connect %s to backend %s: %v", name, serverID, err)
 		return

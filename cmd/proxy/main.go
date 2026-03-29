@@ -52,10 +52,14 @@ func main() {
 
 	regs := buildProxyRegistries()
 
+	healthChecker := NewHealthChecker(logger)
+	go healthChecker.Run(ctx, cfg)
+
 	gameplay := &ProxyGamePlay{
-		Config: cfg,
-		Redis:  rdb,
-		Logger: logger,
+		Config:  cfg,
+		Redis:   rdb,
+		Logger:  logger,
+		Health:  healthChecker,
 	}
 
 	srv := server.Server{
