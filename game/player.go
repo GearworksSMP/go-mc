@@ -457,6 +457,12 @@ type Player struct {
 	LastValidZ         float64
 	AirTicks_AC        int64   // ticks spent airborne (anti-cheat tracker, separate from AirTicks)
 
+	// Movement enchantment state (updated periodically by enchant_effects.go)
+	DepthStriderLevel int32 // current Depth Strider level (0 = inactive)
+	SoulSpeedActive   bool  // true when Soul Speed is boosting movement
+	SwiftSneakLevel   int32 // current Swift Sneak level (0 = inactive)
+	EnchantMoveTick   int64 // tick counter for throttling enchantment checks
+
 	// SessionEvents receives tracing events (nil when tracing is disabled).
 	SessionEvents SessionEvents
 }
