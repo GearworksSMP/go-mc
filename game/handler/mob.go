@@ -61,6 +61,10 @@ const (
 	MobTypeRabbit           int32 = 108
 	MobTypeBat              int32 = 10
 	MobTypeWarden           int32 = 132
+	MobTypeFrog             int32 = 55
+	MobTypeAxolotl          int32 = 7
+	MobTypeAllay            int32 = 2
+	MobTypeSniffer          int32 = 119
 )
 
 // mobNameToType maps entity names to type IDs for /summon.
@@ -81,7 +85,8 @@ var mobNameToType = map[string]int32{
 	"vindicator": MobTypeVindicator, "evoker": MobTypeEvoker,
 	"vex": MobTypeVex, "ravager": MobTypeRavager,
 	"bee": MobTypeBee, "fox": MobTypeFox, "rabbit": MobTypeRabbit, "bat": MobTypeBat,
-	"warden": MobTypeWarden,
+	"warden": MobTypeWarden, "frog": MobTypeFrog, "axolotl": MobTypeAxolotl,
+	"allay": MobTypeAllay, "sniffer": MobTypeSniffer,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -125,6 +130,14 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 12, 2, 0.15, true
 	case MobTypeWarden:
 		return 500, 30, 0.3, true
+	case MobTypeFrog:
+		return 10, 0, 0.1, false
+	case MobTypeAxolotl:
+		return 14, 2, 0.1, false
+	case MobTypeAllay:
+		return 20, 0, 0.08, false
+	case MobTypeSniffer:
+		return 14, 0, 0.09, false
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -257,6 +270,25 @@ type Mob struct {
 	WardenLastHeartbeat int64      // last tick heartbeat sound played
 	WardenPlayerAnger map[int32]int32 // per-player anger tracking (player EID -> anger)
 	WardenPrevPos   map[int32][3]float64 // previous player positions for movement detection
+
+	// Frog fields
+	FrogVariant    int32 // 0=temperate, 1=warm, 2=cold
+	FrogJumpTick   int64 // next tick to jump
+	FrogTongueTick int64 // cooldown for tongue attack
+
+	// Axolotl fields
+	AxolotlPlayingDead bool  // true when playing dead
+	AxolotlPlayDeadEnd int64 // tick when play-dead ends
+	AxolotlVariant     int32 // 0-4 color variants
+
+	// Allay fields
+	AllayHeldItem  string // item name the allay is collecting (empty = none)
+	AllayDeliverTo *[3]int // position of note block to deliver to (nil = follow player)
+
+	// Sniffer fields
+	SnifferSniffTick int64 // next tick to sniff
+	SnifferDigging   bool  // currently digging
+	SnifferDigEnd    int64 // tick when digging finishes
 
 	// Death animation: tick when killed (0 = alive). Entity is removed after 20 ticks.
 	DeathTick int64
@@ -1015,6 +1047,18 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		return
 	case mob.TypeID == MobTypeWarden:
 		m.tickWarden(mob, tick)
+		return
+	case mob.TypeID == MobTypeFrog:
+		m.tickFrog(mob, tick)
+		return
+	case mob.TypeID == MobTypeAxolotl:
+		m.tickAxolotl(mob, tick)
+		return
+	case mob.TypeID == MobTypeAllay:
+		m.tickAllay(mob, tick)
+		return
+	case mob.TypeID == MobTypeSniffer:
+		m.tickSniffer(mob, tick)
 		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
@@ -2368,6 +2412,14 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		// Bees drop nothing in vanilla
 	case MobTypeWarden:
 		drops = []drop{{"sculk_catalyst", 1, 1}}
+	case MobTypeFrog:
+		// Frogs drop nothing in vanilla (froglights come from tongue attack)
+	case MobTypeAxolotl:
+		// Axolotls drop nothing in vanilla
+	case MobTypeAllay:
+		// Allays drop nothing in vanilla (but drop their held item)
+	case MobTypeSniffer:
+		drops = []drop{{"moss_block", 1, 1}}
 	}
 
 	for _, d := range drops {
