@@ -436,6 +436,7 @@ type Player struct {
 	OpenDispenserPos    [3]int        // world position of open dispenser/dropper
 	OpenBeaconPos       [3]int        // world position of open beacon
 	EnchantSession *EnchantSessionData // active enchanting table session
+	EnchantSeed    int32               // deterministic seed for enchant offers; rerolled after each enchant
 	AnvilSession   *AnvilSessionData   // active anvil UI session
 
 	// Sign editing state

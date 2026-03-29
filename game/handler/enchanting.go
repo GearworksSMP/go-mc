@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/binary"
 	"math/rand"
 
 	"github.com/Tnze/go-mc/chat"
@@ -26,12 +27,26 @@ type EnchantSession struct {
 
 // EnchantManager handles enchanting table interactions.
 type EnchantManager struct {
-	World game.World
+	World   game.World
+	lapisID int32 // cached item ID for lapis_lazuli
 }
 
 // NewEnchantManager creates a new EnchantManager.
 func NewEnchantManager(world game.World) *EnchantManager {
-	return &EnchantManager{World: world}
+	return &EnchantManager{World: world, lapisID: itemIDByName("lapis_lazuli")}
+}
+
+// initEnchantSeed sets the player's enchant seed from their UUID if not yet set.
+func initEnchantSeed(player *game.Player) {
+	if player.EnchantSeed != 0 {
+		return
+	}
+	hi := binary.BigEndian.Uint64(player.UUID[:8])
+	lo := binary.BigEndian.Uint64(player.UUID[8:])
+	player.EnchantSeed = int32(hi ^ lo)
+	if player.EnchantSeed == 0 {
+		player.EnchantSeed = 1 // avoid re-init on zero UUID
+	}
 }
 
 // OpenEnchantingTable opens the enchanting table UI for a player.
@@ -47,16 +62,14 @@ func (em *EnchantManager) OpenEnchantingTable(player *game.Player, x, y, z int) 
 		title,
 	))
 
-	// Count nearby bookshelves (within 2 blocks, 1 block air gap)
 	bookshelves := em.countBookshelves(x, y, z)
 	if bookshelves > 15 {
 		bookshelves = 15
 	}
 
-	// Generate 3 enchantment offers based on bookshelf count
-	offers := em.generateOffers(bookshelves)
+	initEnchantSeed(player)
+	offers := generateOffers(bookshelves, player.EnchantSeed)
 
-	// Store session data on player
 	player.EnchantSession = &game.EnchantSessionData{
 		TablePos: [3]int{x, y, z},
 		WindowID: windowID,
@@ -67,8 +80,7 @@ func (em *EnchantManager) OpenEnchantingTable(player *game.Player, x, y, z int) 
 		},
 	}
 
-	// Send enchantment slot levels via container properties
-	// Property 0,1,2 = required levels for slots 0,1,2
+	// Send enchantment slot levels via container properties (0,1,2)
 	for i := 0; i < 3; i++ {
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundContainerSetData,
@@ -77,17 +89,8 @@ func (em *EnchantManager) OpenEnchantingTable(player *game.Player, x, y, z int) 
 			pk.Short(int16(offers[i].RequiredLevel)),
 		))
 	}
-	// Property 4,5,6 = enchantment IDs (we'll send -1 for "hidden")
-	for i := 4; i <= 6; i++ {
-		player.WritePacket(pk.Marshal(
-			packetid.ClientboundContainerSetData,
-			pk.UnsignedByte(byte(windowID)),
-			pk.Short(int16(i)),
-			pk.Short(-1),
-		))
-	}
-	// Property 7,8,9 = enchantment levels
-	for i := 7; i <= 9; i++ {
+	// Properties 4-6: enchantment IDs, 7-9: enchantment levels (hidden)
+	for i := 4; i <= 9; i++ {
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundContainerSetData,
 			pk.UnsignedByte(byte(windowID)),
@@ -108,43 +111,69 @@ func (em *EnchantManager) HandleEnchantButton(player *game.Player, buttonID int)
 		return
 	}
 
-	// Check player has enough XP levels
 	if player.ExperienceLevel < offer.RequiredLevel {
 		return
 	}
 
-	// Check player has an item in the enchanting slot
 	heldSlot := int(player.HeldSlot) + 36
 	heldItem := &player.Inventory[heldSlot]
 	if heldItem.ID <= 0 || heldItem.Count <= 0 {
 		return
 	}
 
-	// Consume XP levels (cost = button index + 1)
 	lapisCost := int32(buttonID + 1)
+
+	// Find lapis lazuli in inventory (slots 9-44: main + hotbar)
+	lapisSlot := -1
+	if em.lapisID > 0 {
+		for i := 9; i <= 44; i++ {
+			if player.Inventory[i].ID == em.lapisID && player.Inventory[i].Count >= lapisCost {
+				lapisSlot = i
+				break
+			}
+		}
+		if lapisSlot < 0 {
+			msg := chat.Message{Text: "Not enough lapis lazuli!", Color: "red"}
+			player.WritePacket(pk.Marshal(
+				packetid.ClientboundSystemChat, msg, pk.Boolean(false),
+			))
+			return
+		}
+	}
+
+	// Consume XP levels
 	player.ExperienceLevel -= lapisCost
 	if player.ExperienceLevel < 0 {
 		player.ExperienceLevel = 0
 	}
 	SendExperience(player)
 
+	// Consume lapis lazuli
+	if lapisSlot >= 0 {
+		player.Inventory[lapisSlot].Count -= lapisCost
+		if player.Inventory[lapisSlot].Count <= 0 {
+			player.Inventory[lapisSlot] = game.ItemStack{}
+		}
+		SendSlotUpdate(player, lapisSlot)
+	}
+
 	// Apply enchantment
 	heldItem.Enchantments = enchant.ApplyToItem(heldItem.Enchantments, offer.EnchantID, offer.EnchantLevel)
-
 	SendSlotUpdate(player, heldSlot)
 
-	// Send success message
 	msg := chat.Message{
 		Text:  "Enchanted with " + offer.EnchantID + "!",
 		Color: "green",
 	}
 	player.WritePacket(pk.Marshal(
-		packetid.ClientboundSystemChat,
-		msg,
-		pk.Boolean(false),
+		packetid.ClientboundSystemChat, msg, pk.Boolean(false),
 	))
 
-	// Clear session
+	// Reroll seed so the next table open shows different offers
+	player.EnchantSeed ^= int32(offer.RequiredLevel*31 + offer.EnchantLevel*7)
+	if player.EnchantSeed == 0 {
+		player.EnchantSeed = 1
+	}
 	player.EnchantSession = nil
 }
 
@@ -153,10 +182,8 @@ func (em *EnchantManager) HandleEnchantButton(player *game.Player, buttonID int)
 // with an air gap between the table and the bookshelf.
 func (em *EnchantManager) countBookshelves(tx, ty, tz int) int {
 	count := 0
-	// Check 5x5 area around table, at table height and 1 block above
 	for dx := -2; dx <= 2; dx++ {
 		for dz := -2; dz <= 2; dz++ {
-			// Only check the outer ring (distance 2 in either axis)
 			if dx > -2 && dx < 2 && dz > -2 && dz < 2 {
 				continue
 			}
@@ -166,8 +193,7 @@ func (em *EnchantManager) countBookshelves(tx, ty, tz int) int {
 				if err != nil {
 					continue
 				}
-				name := BlockNameFromState(int(state))
-				if name == "bookshelf" {
+				if BlockNameFromState(int(state)) == "bookshelf" {
 					count++
 				}
 			}
@@ -176,17 +202,16 @@ func (em *EnchantManager) countBookshelves(tx, ty, tz int) int {
 	return count
 }
 
-// generateOffers creates 3 enchantment offers based on bookshelf count.
-func (em *EnchantManager) generateOffers(bookshelves int) [3]EnchantOffer {
+// generateOffers creates 3 deterministic enchantment offers from a seed and bookshelf count.
+func generateOffers(bookshelves int, seed int32) [3]EnchantOffer {
+	rng := rand.New(rand.NewSource(int64(seed)))
 	var offers [3]EnchantOffer
 
-	// Pool of enchantments with max levels
 	type enchDef struct {
 		id       string
 		maxLevel int32
 	}
 	pool := []enchDef{
-		// Melee
 		{enchant.Sharpness, enchant.MaxLevel(enchant.Sharpness)},
 		{enchant.Smite, enchant.MaxLevel(enchant.Smite)},
 		{enchant.BaneOfArthropods, enchant.MaxLevel(enchant.BaneOfArthropods)},
@@ -194,7 +219,6 @@ func (em *EnchantManager) generateOffers(bookshelves int) [3]EnchantOffer {
 		{enchant.FireAspect, enchant.MaxLevel(enchant.FireAspect)},
 		{enchant.Looting, enchant.MaxLevel(enchant.Looting)},
 		{enchant.SweepingEdge, enchant.MaxLevel(enchant.SweepingEdge)},
-		// Armor
 		{enchant.Protection, enchant.MaxLevel(enchant.Protection)},
 		{enchant.FireProtection, enchant.MaxLevel(enchant.FireProtection)},
 		{enchant.BlastProtection, enchant.MaxLevel(enchant.BlastProtection)},
@@ -203,53 +227,44 @@ func (em *EnchantManager) generateOffers(bookshelves int) [3]EnchantOffer {
 		{enchant.FeatherFalling, enchant.MaxLevel(enchant.FeatherFalling)},
 		{enchant.Respiration, enchant.MaxLevel(enchant.Respiration)},
 		{enchant.AquaAffinity, enchant.MaxLevel(enchant.AquaAffinity)},
-		// Tools
 		{enchant.Efficiency, enchant.MaxLevel(enchant.Efficiency)},
 		{enchant.Unbreaking, enchant.MaxLevel(enchant.Unbreaking)},
 		{enchant.Fortune, enchant.MaxLevel(enchant.Fortune)},
 		{enchant.SilkTouch, enchant.MaxLevel(enchant.SilkTouch)},
-		// Bows
 		{enchant.Power, enchant.MaxLevel(enchant.Power)},
 		{enchant.Punch, enchant.MaxLevel(enchant.Punch)},
 		{enchant.Flame, enchant.MaxLevel(enchant.Flame)},
 		{enchant.Infinity, enchant.MaxLevel(enchant.Infinity)},
-		// Fishing
 		{enchant.Lure, enchant.MaxLevel(enchant.Lure)},
 		{enchant.LuckOfTheSea, enchant.MaxLevel(enchant.LuckOfTheSea)},
 	}
 
-	for i := 0; i < 3; i++ {
-		// Required level scales with slot and bookshelves
-		// Slot 0: low cost, Slot 1: medium, Slot 2: high
-		base := (i + 1) * (bookshelves + 1) / 3
-		if base < 1 {
-			base = 1
-		}
-		maxLevel := (i + 1) * 10
-		if maxLevel > 30 {
-			maxLevel = 30
-		}
-		reqLevel := int32(base + rand.Intn(maxLevel-base+1))
-		if reqLevel < 1 {
-			reqLevel = 1
-		}
+	// Vanilla-style base level: rand(1, power/3+1) + 1 + rand(0, power/3)
+	power := bookshelves
+	b := rng.Intn(power/3+1) + 1 + rng.Intn(power/3+1)
 
-		// Pick random enchantment
-		ench := pool[rand.Intn(len(pool))]
+	slotCosts := [3]int32{
+		max(1, int32(b/3)),               // slot 0: lowest tier
+		int32(b*2/3 + 1),                 // slot 1: middle tier
+		max(int32(b), int32(power*2)),     // slot 2: highest tier
+	}
+	for i := range slotCosts {
+		slotCosts[i] = max(1, min(30, slotCosts[i]))
+	}
+
+	for i := 0; i < 3; i++ {
+		ench := pool[rng.Intn(len(pool))]
 		enchLevel := int32(1)
 		if ench.maxLevel > 1 {
-			enchLevel = 1 + int32(rand.Intn(int(ench.maxLevel)))
+			enchLevel = 1 + int32(rng.Intn(int(ench.maxLevel)))
 		}
-		// Scale enchant level with required XP level
-		if reqLevel >= 20 && enchLevel < ench.maxLevel {
+		if slotCosts[i] >= 20 && enchLevel < ench.maxLevel {
 			enchLevel++
 		}
-		if enchLevel > ench.maxLevel {
-			enchLevel = ench.maxLevel
-		}
+		enchLevel = min(enchLevel, ench.maxLevel)
 
 		offers[i] = EnchantOffer{
-			RequiredLevel: reqLevel,
+			RequiredLevel: slotCosts[i],
 			EnchantID:     ench.id,
 			EnchantLevel:  enchLevel,
 		}
