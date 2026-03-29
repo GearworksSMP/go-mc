@@ -1,0 +1,76 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/gearworkssmp/go-mc
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+server:
+  port: 25565
+  metricsPort: 8080
+  gameMode: survival
+  maxPlayers: 20
+  viewDistance: 10
+  worldType: ""
+  worldSeed: ""
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+
+postgresql:
+  enabled: true
+  host: postgres
+  port: 5432
+  database: gomc
+  username: gomc
+  password: gomc
+
+persistence:
+  enabled: false
+  size: 10Gi
+  storageClass: ""
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilization: 70
+
+cluster:
+  enabled: false
+  redis:
+    host: redis
+    port: 6379
+  regions: 2
+  proxy:
+    image:
+      repository: ghcr.io/gearworkssmp/go-mc-proxy
+      tag: latest
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  region:
+    image:
+      repository: ghcr.io/gearworkssmp/go-mc-region
+      tag: latest
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 2000m
+        memory: 2Gi

@@ -1,0 +1,85 @@
+{{- if .Values.cluster.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gearworks-mc.fullname" . }}-region
+  labels:
+    {{- include "gearworks-mc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: region
+spec:
+  serviceName: {{ include "gearworks-mc.fullname" . }}-region
+  replicas: {{ .Values.cluster.regions }}
+  selector:
+    matchLabels:
+      {{- include "gearworks-mc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: region
+  template:
+    metadata:
+      labels:
+        {{- include "gearworks-mc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: region
+    spec:
+      serviceAccountName: {{ include "gearworks-mc.serviceAccountName" . }}
+      containers:
+        - name: region
+          image: "{{ .Values.cluster.region.image.repository }}:{{ .Values.cluster.region.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: game
+              containerPort: 25566
+              protocol: TCP
+          env:
+            - name: SERVER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LISTEN_ADDR
+              value: ":25566"
+            - name: DATABASE_URL
+              value: {{ include "gearworks-mc.databaseURL" . | quote }}
+            - name: REDIS_URL
+              value: {{ include "gearworks-mc.redisURL" . | quote }}
+            - name: CLUSTER_CONFIG_FILE
+              value: /config/cluster.json
+          envFrom:
+            - configMapRef:
+                name: {{ include "gearworks-mc.fullname" . }}
+          volumeMounts:
+            - name: cluster-config
+              mountPath: /config
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: game
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: game
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.cluster.region.resources | nindent 12 }}
+      volumes:
+        - name: cluster-config
+          configMap:
+            name: {{ include "gearworks-mc.fullname" . }}-cluster
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gearworks-mc.fullname" . }}-region
+  labels:
+    {{- include "gearworks-mc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: region
+spec:
+  clusterIP: None
+  ports:
+    - port: 25566
+      targetPort: game
+      protocol: TCP
+      name: game
+  selector:
+    {{- include "gearworks-mc.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: region
+{{- end }}

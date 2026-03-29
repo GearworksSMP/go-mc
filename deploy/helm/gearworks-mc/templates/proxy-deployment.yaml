@@ -1,0 +1,59 @@
+{{- if .Values.cluster.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gearworks-mc.fullname" . }}-proxy
+  labels:
+    {{- include "gearworks-mc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gearworks-mc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
+  template:
+    metadata:
+      labels:
+        {{- include "gearworks-mc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
+    spec:
+      serviceAccountName: {{ include "gearworks-mc.serviceAccountName" . }}
+      containers:
+        - name: proxy
+          image: "{{ .Values.cluster.proxy.image.repository }}:{{ .Values.cluster.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: game
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+          env:
+            - name: REDIS_URL
+              value: {{ include "gearworks-mc.redisURL" . | quote }}
+            - name: DATABASE_URL
+              value: {{ include "gearworks-mc.databaseURL" . | quote }}
+            - name: CLUSTER_CONFIG_FILE
+              value: /config/cluster.json
+            - name: LISTEN_ADDR
+              value: ":{{ .Values.server.port }}"
+          volumeMounts:
+            - name: cluster-config
+              mountPath: /config
+              readOnly: true
+          livenessProbe:
+            tcpSocket:
+              port: game
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: game
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.cluster.proxy.resources | nindent 12 }}
+      volumes:
+        - name: cluster-config
+          configMap:
+            name: {{ include "gearworks-mc.fullname" . }}-cluster
+{{- end }}

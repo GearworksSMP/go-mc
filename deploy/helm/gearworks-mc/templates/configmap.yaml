@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gearworks-mc.fullname" . }}
+  labels:
+    {{- include "gearworks-mc.labels" . | nindent 4 }}
+data:
+  GAME_MODE: {{ .Values.server.gameMode | quote }}
+  MAX_PLAYERS: {{ .Values.server.maxPlayers | quote }}
+  VIEW_DISTANCE: {{ .Values.server.viewDistance | quote }}
+  METRICS_PORT: {{ .Values.server.metricsPort | quote }}
+  {{- if .Values.server.worldType }}
+  WORLD_TYPE: {{ .Values.server.worldType | quote }}
+  {{- end }}
+  {{- if .Values.server.worldSeed }}
+  WORLD_SEED: {{ .Values.server.worldSeed | quote }}
+  {{- end }}
