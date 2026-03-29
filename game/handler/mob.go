@@ -300,6 +300,13 @@ func NewMobManager(manager *game.PlayerManager, timeMgr *TimeManager, world game
 	}
 }
 
+// MobCount returns the number of tracked mobs.
+func (m *MobManager) MobCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Mobs)
+}
+
 // IsMobAlive returns true if a mob with the given EID exists and has positive health.
 func (m *MobManager) IsMobAlive(eid int32) bool {
 	m.mu.Lock()

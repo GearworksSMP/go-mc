@@ -448,6 +448,15 @@ func main() {
 		GamePlay: gp,
 	}
 
+	// Start metrics/health HTTP server
+	metrics := &MetricsServer{
+		Players: players,
+		MobMgr:  mobMgr,
+	}
+	metrics.StartMetricsServer(MetricsAddr())
+	metrics.SetReady()
+	logger.Printf("Metrics server listening on %s", MetricsAddr())
+
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -455,6 +464,8 @@ func main() {
 	gp.foodHandler = foodHandler
 	tickLoop := game.NewTickLoop(
 		game.TickHandlerFunc(func(tick int64) {
+			tickStart := time.Now()
+
 			gp.keepalive.Tick(tick, players)
 			survHandler.HungerTick(players, tick)
 			survHandler.VoidDamageTick(players, minY)
@@ -498,6 +509,8 @@ func main() {
 			leashMgr.Tick(tick)
 			raidMgr.Tick(tick)
 			villagerMgr.TickRestock(tick, timeMgr)
+
+			metrics.RecordTick(time.Since(tickStart))
 		}),
 	)
 
