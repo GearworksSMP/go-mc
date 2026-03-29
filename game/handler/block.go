@@ -160,7 +160,7 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 
 	// Note block: left-click plays the note (all game modes).
 	if action == 0 && h.NoteBlockMgr != nil {
-		h.tryPlayNoteBlockAttack(pos.X, pos.Y, pos.Z)
+		h.NoteBlockMgr.PlayNote(pos.X, pos.Y, pos.Z)
 	}
 
 	if player.GameMode == 1 { // creative — instant break

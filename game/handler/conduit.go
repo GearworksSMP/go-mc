@@ -8,7 +8,7 @@ import (
 	"github.com/Tnze/go-mc/level/block"
 )
 
-const EffectConduitPower int32 = 26
+// EffectConduitPower is defined in effect.go
 
 // ConduitManager tracks conduit block positions and applies Conduit Power effects.
 type ConduitManager struct {
