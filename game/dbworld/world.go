@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Tnze/go-mc/game"
 	"github.com/Tnze/go-mc/game/store"
@@ -19,37 +20,48 @@ import (
 // World is a chunk cache backed by a ChunkStore with dirty tracking.
 // Access path: in-memory map → database → generator.
 type World struct {
-	mu       sync.RWMutex
-	chunks   map[game.ChunkPos]*level.Chunk
-	dirty    map[game.ChunkPos]bool
-	store    store.ChunkStore
-	gen      game.ChunkGenerator
-	sections int
-	minY     int
-	dim      string // dimension key for store, e.g. "overworld"
-	logger   *log.Logger
+	mu         sync.RWMutex
+	chunks     map[game.ChunkPos]*level.Chunk
+	dirty      map[game.ChunkPos]bool
+	lastAccess map[game.ChunkPos]int64
+	store      store.ChunkStore
+	gen        game.ChunkGenerator
+	sections   int
+	minY       int
+	dim        string // dimension key for store, e.g. "overworld"
+	logger     *log.Logger
+
+	// currentTick is set atomically from the main tick loop.
+	currentTick atomic.Int64
 }
 
 // NewWorld creates a DB-backed world.
 func NewWorld(cs store.ChunkStore, gen game.ChunkGenerator, sections, minY int, dimension string, logger *log.Logger) *World {
 	return &World{
-		chunks:   make(map[game.ChunkPos]*level.Chunk),
-		dirty:    make(map[game.ChunkPos]bool),
-		store:    cs,
-		gen:      gen,
-		sections: sections,
-		minY:     minY,
-		dim:      dimension,
-		logger:   logger,
+		chunks:     make(map[game.ChunkPos]*level.Chunk),
+		dirty:      make(map[game.ChunkPos]bool),
+		lastAccess: make(map[game.ChunkPos]int64),
+		store:      cs,
+		gen:        gen,
+		sections:   sections,
+		minY:       minY,
+		dim:        dimension,
+		logger:     logger,
 	}
 }
 
+// SetTick updates the current tick counter (called from the main tick loop).
+func (w *World) SetTick(tick int64) { w.currentTick.Store(tick) }
+
 // LoadChunk returns the chunk at pos: memory → DB → generate.
 func (w *World) LoadChunk(pos game.ChunkPos) (*level.Chunk, error) {
+	tick := w.currentTick.Load()
+
 	// Fast path: already in memory
 	w.mu.RLock()
 	if c, ok := w.chunks[pos]; ok {
 		w.mu.RUnlock()
+		w.touchAccess(pos, tick)
 		return c, nil
 	}
 	w.mu.RUnlock()
@@ -59,6 +71,7 @@ func (w *World) LoadChunk(pos game.ChunkPos) (*level.Chunk, error) {
 
 	// Double-check
 	if c, ok := w.chunks[pos]; ok {
+		w.lastAccess[pos] = tick
 		return c, nil
 	}
 
@@ -74,6 +87,7 @@ func (w *World) LoadChunk(pos game.ChunkPos) (*level.Chunk, error) {
 			return nil, fmt.Errorf("dbworld: deserialize chunk (%d,%d): %w", pos.X, pos.Z, err)
 		}
 		w.chunks[pos] = c
+		w.lastAccess[pos] = tick
 		return c, nil
 	}
 
@@ -81,6 +95,7 @@ func (w *World) LoadChunk(pos game.ChunkPos) (*level.Chunk, error) {
 	c := w.gen.Generate(pos)
 	w.chunks[pos] = c
 	w.dirty[pos] = true
+	w.lastAccess[pos] = tick
 	return c, nil
 }
 
@@ -108,6 +123,7 @@ func (w *World) SetBlock(x, y, z int, state level.BlocksState) (level.BlocksStat
 	chunk.Sections[secIdx].SetBlock(idx, state)
 	w.updateHeightmaps(chunk, x&0xF, y, z&0xF, state)
 	w.dirty[pos] = true
+	w.lastAccess[pos] = w.currentTick.Load()
 	return old, nil
 }
 
@@ -214,6 +230,40 @@ func (w *World) FlushTick(intervalTicks int64) game.TickHandlerFunc {
 			w.logger.Printf("Flushed %d dirty chunks", n)
 		}
 	}
+}
+
+// touchAccess updates the lastAccess timestamp for a chunk position.
+func (w *World) touchAccess(pos game.ChunkPos, tick int64) {
+	w.mu.Lock()
+	w.lastAccess[pos] = tick
+	w.mu.Unlock()
+}
+
+// UnloadChunk flushes the chunk to the store if dirty, then removes it from memory.
+func (w *World) UnloadChunk(pos game.ChunkPos) {
+	w.mu.Lock()
+	if w.dirty[pos] {
+		chunk := w.chunks[pos]
+		w.mu.Unlock()
+
+		if chunk != nil {
+			w.flushPositions([]game.ChunkPos{pos})
+		}
+
+		w.mu.Lock()
+	}
+	delete(w.chunks, pos)
+	delete(w.dirty, pos)
+	delete(w.lastAccess, pos)
+	w.mu.Unlock()
+}
+
+// ChunkCount returns the number of chunks currently loaded in memory.
+func (w *World) ChunkCount() int {
+	w.mu.RLock()
+	n := len(w.chunks)
+	w.mu.RUnlock()
+	return n
 }
 
 // emptyListNBT is a RawMessage representing an empty NBT list (TagList with 0 elements).
