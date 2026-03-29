@@ -3,6 +3,7 @@ package handler
 import (
 	"log"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -13,7 +14,6 @@ import (
 // visibility toggling, and gamemode transition effects.
 type SpectatorManager struct {
 	Manager *game.PlayerManager
-	MobMgr  *MobManager
 	Logger  *log.Logger
 }
 
@@ -42,9 +42,7 @@ func (s *SpectatorManager) StopSpectating(p *game.Player) {
 	))
 }
 
-// HandleSpectatorTeleport teleports a spectator to the target player identified
-// by UUID. The spectator's position is updated server-side and a
-// ClientboundPlayerPosition packet is sent to move the client.
+// HandleSpectatorTeleport teleports a spectator to the target player.
 func (s *SpectatorManager) HandleSpectatorTeleport(p *game.Player, targetUUID uuid.UUID) {
 	if !IsSpectator(p) {
 		return
@@ -59,9 +57,9 @@ func (s *SpectatorManager) HandleSpectatorTeleport(p *game.Player, targetUUID uu
 	p.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerPosition,
 		pk.VarInt(101),    // teleport ID
-		pk.Double(tx),     // x
-		pk.Double(ty),     // y
-		pk.Double(tz),     // z
+		pk.Double(tx),
+		pk.Double(ty),
+		pk.Double(tz),
 		pk.Double(0),      // vel_x
 		pk.Double(0),      // vel_y
 		pk.Double(0),      // vel_z
@@ -72,27 +70,23 @@ func (s *SpectatorManager) HandleSpectatorTeleport(p *game.Player, targetUUID uu
 }
 
 // OnGamemodeChange handles visibility updates when a player's gamemode changes.
-// When switching TO spectator (newMode==3), the player is hidden from all
-// non-spectator players. When switching FROM spectator, the player is
-// re-spawned for nearby players.
+// Entering spectator hides the player from non-spectators; leaving spectator
+// re-spawns the player entity for nearby players.
 func (s *SpectatorManager) OnGamemodeChange(p *game.Player, oldMode, newMode int32) {
 	if oldMode == newMode {
 		return
 	}
 
 	if newMode == 3 {
-		// Entering spectator: remove entity from other non-spectator players
 		s.hideFromOthers(p)
-		// Reset camera to self (in case they were spectating via a previous session)
 		s.StopSpectating(p)
 	} else if oldMode == 3 {
-		// Leaving spectator: re-spawn for nearby players
 		s.showToOthers(p)
 	}
 }
 
-// hideFromOthers sends RemoveEntities for 'p' to all non-spectator players
-// that currently have 'p' visible.
+// hideFromOthers sends RemoveEntities for p to all non-spectator players
+// that currently have p visible.
 func (s *SpectatorManager) hideFromOthers(p *game.Player) {
 	removePkt := pk.Marshal(
 		packetid.ClientboundRemoveEntities,
@@ -100,11 +94,7 @@ func (s *SpectatorManager) hideFromOthers(p *game.Player) {
 		pk.VarInt(p.EID),
 	)
 	s.Manager.ForEach(func(other *game.Player) {
-		if other.UUID == p.UUID {
-			return
-		}
-		// Only hide from non-spectators
-		if other.GameMode == 3 {
+		if other.UUID == p.UUID || IsSpectator(other) {
 			return
 		}
 		if other.VisiblePlayers[p.UUID] {
@@ -134,40 +124,25 @@ func (s *SpectatorManager) showToOthers(p *game.Player) {
 	})
 }
 
-// SendSpectatorMenu sends a chat-based list of online players that the
-// spectator can teleport to. Each entry is displayed as a clickable message.
+// SendSpectatorMenu sends a chat-based list of online non-spectator players.
 func (s *SpectatorManager) SendSpectatorMenu(p *game.Player) {
 	if !IsSpectator(p) {
 		return
 	}
 	s.Manager.ForEach(func(other *game.Player) {
-		if other.UUID == p.UUID || other.GameMode == 3 {
+		if other.UUID == p.UUID || IsSpectator(other) {
 			return
 		}
-		sendSystemChat(p, other.Name, "aqua")
+		p.WritePacket(pk.Marshal(
+			packetid.ClientboundSystemChat,
+			chat.Message{Text: other.Name, Color: "aqua"},
+			pk.Boolean(false),
+		))
 	})
 }
 
-// ShouldHideFromPlayer reports whether 'subject' should be hidden from
-// 'viewer'. Spectators are invisible to non-spectators.
+// ShouldHideFromPlayer reports whether subject should be hidden from viewer.
+// Spectators are invisible to non-spectators.
 func ShouldHideFromPlayer(viewer, subject *game.Player) bool {
-	return subject.GameMode == 3 && viewer.GameMode != 3
-}
-
-func (s *SpectatorManager) logf(format string, args ...any) {
-	if s.Logger != nil {
-		s.Logger.Printf(format, args...)
-	}
-}
-
-// sendSystemChat is a small helper to send a colored system chat message.
-func sendSystemChat(p *game.Player, text, color string) {
-	// Encode as JSON chat component inline to avoid importing chat package
-	// just for a simple message. The wire format is a JSON string.
-	jsonMsg := `{"text":"` + text + `","color":"` + color + `"}`
-	p.WritePacket(pk.Marshal(
-		packetid.ClientboundSystemChat,
-		pk.String(jsonMsg),
-		pk.Boolean(false),
-	))
+	return IsSpectator(subject) && !IsSpectator(viewer)
 }

@@ -33,6 +33,7 @@ type CommandExecutor struct {
 	EffectMgr       *EffectManager
 	BanMgr          *BanManager
 	ScoreboardMgr   *ScoreboardManager
+	SpectatorMgr    *SpectatorManager
 }
 
 // Execute parses and dispatches a command line (without the leading /).
@@ -149,7 +150,12 @@ func (c *CommandExecutor) cmdGamemode(player *game.Player, args []string) {
 		return
 	}
 
+	oldMode := player.GameMode
 	player.GameMode = mode
+
+	if c.SpectatorMgr != nil {
+		c.SpectatorMgr.OnGamemodeChange(player, oldMode, mode)
+	}
 
 	// Send GameEvent (event 3 = change game mode)
 	player.WritePacket(pk.Marshal(

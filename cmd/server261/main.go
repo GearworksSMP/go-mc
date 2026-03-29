@@ -1344,6 +1344,10 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 			go g.saveBlockEntity(containerType, pos)
 		}
 	}
+	spectatorMgr := &handler.SpectatorManager{
+		Manager: g.players,
+		Logger:  g.logger,
+	}
 	cmdExecutor := &handler.CommandExecutor{
 		Manager:         g.players,
 		Logger:          g.logger,
@@ -1357,6 +1361,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		EffectMgr:       g.effectMgr,
 		BanMgr:          g.banMgr,
 		ScoreboardMgr:   g.scoreboardMgr,
+		SpectatorMgr:    spectatorMgr,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:     g.players,

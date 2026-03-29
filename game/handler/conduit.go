@@ -2,7 +2,6 @@ package handler
 
 import (
 	"log"
-	"math"
 	"sync"
 
 	"github.com/Tnze/go-mc/game"

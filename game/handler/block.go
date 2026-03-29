@@ -98,7 +98,23 @@ func (h *BlockHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		h.World = h.DimensionMgr.WorldForPlayer(player)
 	}
 
-	switch packetid.ServerboundPacketID(p.ID) {
+	pid := packetid.ServerboundPacketID(p.ID)
+
+	// Spectators cannot break, place, or interact with blocks
+	if IsSpectator(player) {
+		switch pid {
+		case packetid.ServerboundPlayerAction,
+			packetid.ServerboundUseItemOn,
+			packetid.ServerboundSetCreativeModeSlot:
+			return true // silently consume
+		case packetid.ServerboundSetCarriedItem:
+			h.handleSetCarriedItem(player, p)
+			return true
+		}
+		return false
+	}
+
+	switch pid {
 	case packetid.ServerboundPlayerAction:
 		h.handlePlayerAction(player, p)
 		return true

@@ -99,6 +99,10 @@ func BroadcastPlayerJoin(manager *game.PlayerManager, joined *game.Player) {
 		SendPlayerInfo(p, joined)
 		p.WritePacket(joinPkt)
 
+		// Don't spawn spectators for non-spectators
+		if ShouldHideFromPlayer(p, joined) {
+			return
+		}
 		// Only spawn entity if within tracking range
 		px, _, pz := p.Position()
 		dx := px - jx
@@ -123,6 +127,10 @@ func SendExistingPlayers(manager *game.PlayerManager, newPlayer *game.Player) {
 		}
 		// Always send tab list info
 		SendPlayerInfo(newPlayer, p)
+
+		if ShouldHideFromPlayer(newPlayer, p) {
+			return
+		}
 
 		// Only spawn entity if within tracking range
 		px, _, pz := p.Position()
@@ -153,15 +161,15 @@ func UpdatePlayerVisibility(manager *game.PlayerManager, player *game.Player) {
 
 		wasVisible := player.VisiblePlayers[other.UUID]
 		if inRange && !wasVisible {
-			// Other player entered our range — spawn them for us
-			SendSpawnPlayer(player, other)
-			SendFullPlayerMetadata(player, other)
-			SendEquipment(player, other)
-			player.VisiblePlayers[other.UUID] = true
+			if !ShouldHideFromPlayer(player, other) {
+				SendSpawnPlayer(player, other)
+				SendFullPlayerMetadata(player, other)
+				SendEquipment(player, other)
+				player.VisiblePlayers[other.UUID] = true
+			}
 
-			// Also spawn us for the other player
 			otherSeesUs := other.VisiblePlayers[player.UUID]
-			if !otherSeesUs {
+			if !otherSeesUs && !ShouldHideFromPlayer(other, player) {
 				SendSpawnPlayer(other, player)
 				SendFullPlayerMetadata(other, player)
 				SendEquipment(other, player)
