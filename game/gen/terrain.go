@@ -17,11 +17,14 @@ type TerrainGenerator struct {
 	MinY     int
 	Sections int
 
-	heightNoise  *SimplexNoise
-	caveNoise    *SimplexNoise
-	caveNoise2   *SimplexNoise
-	ravineNoise  *SimplexNoise
-	oreNoise     *SimplexNoise
+	heightNoise    *SimplexNoise
+	caveNoise      *SimplexNoise
+	caveNoise2     *SimplexNoise
+	ravineNoise    *SimplexNoise
+	oreNoise       *SimplexNoise
+	aquiferNoise   *SimplexNoise
+	lushNoise      *SimplexNoise
+	dripstoneNoise *SimplexNoise
 
 	bedrockID, stoneID, dirtID, grassID, airID level.BlocksState
 	coalOreID, ironOreID, copperOreID           level.BlocksState
@@ -68,6 +71,20 @@ type TerrainGenerator struct {
 	azureBluetID                                 level.BlocksState
 	oxeyeDaisyID                                 level.BlocksState
 	clayID                                       level.BlocksState
+	// Cave decoration blocks
+	mossBlockID                                  level.BlocksState
+	glowLichenID                                 level.BlocksState
+	caveVinesID                                  level.BlocksState
+	caveVinesPlantID                             level.BlocksState
+	pointedDripstoneUpTipID                      level.BlocksState
+	pointedDripstoneUpBaseID                     level.BlocksState
+	pointedDripstoneDownTipID                    level.BlocksState
+	pointedDripstoneDownBaseID                   level.BlocksState
+	pointedDripstoneDownMiddleID                 level.BlocksState
+	pointedDripstoneUpMiddleID                   level.BlocksState
+	dripstoneBlockID                             level.BlocksState
+	azaleaID                                     level.BlocksState
+	smallDripleafID                              level.BlocksState
 
 	biomeNoise                                   *SimplexNoise
 	humidNoise                                   *SimplexNoise
@@ -82,11 +99,14 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 		MinY:     -64,
 		Sections: 24,
 
-		heightNoise: NewSimplexNoise(seed),
-		caveNoise:   NewSimplexNoise(seed + 1),
-		caveNoise2:  NewSimplexNoise(seed + 5),
-		ravineNoise: NewSimplexNoise(seed + 6),
-		oreNoise:    NewSimplexNoise(seed + 2),
+		heightNoise:    NewSimplexNoise(seed),
+		caveNoise:      NewSimplexNoise(seed + 1),
+		caveNoise2:     NewSimplexNoise(seed + 5),
+		ravineNoise:    NewSimplexNoise(seed + 6),
+		oreNoise:       NewSimplexNoise(seed + 2),
+		aquiferNoise:   NewSimplexNoise(seed + 10),
+		lushNoise:      NewSimplexNoise(seed + 11),
+		dripstoneNoise: NewSimplexNoise(seed + 12),
 	}
 
 	g.bedrockID, _ = block.ToStateID[block.Bedrock{}]
@@ -152,6 +172,21 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.azureBluetID, _ = block.ToStateID[block.AzureBluet{}]
 	g.oxeyeDaisyID, _ = block.ToStateID[block.OxeyeDaisy{}]
 	g.clayID, _ = block.ToStateID[block.Clay{}]
+
+	// Cave decoration blocks
+	g.mossBlockID, _ = block.ToStateID[block.MossBlock{}]
+	g.glowLichenID, _ = block.ToStateID[block.GlowLichen{Down: true}]
+	g.caveVinesID, _ = block.ToStateID[block.CaveVines{Age: 0, Berries: false}]
+	g.caveVinesPlantID, _ = block.ToStateID[block.CaveVinesPlant{Berries: false}]
+	g.pointedDripstoneUpTipID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessTip, Vertical_direction: block.Up}]
+	g.pointedDripstoneUpBaseID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessBase, Vertical_direction: block.Up}]
+	g.pointedDripstoneUpMiddleID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessMiddle, Vertical_direction: block.Up}]
+	g.pointedDripstoneDownTipID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessTip, Vertical_direction: block.Down}]
+	g.pointedDripstoneDownBaseID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessBase, Vertical_direction: block.Down}]
+	g.pointedDripstoneDownMiddleID, _ = block.ToStateID[block.PointedDripstone{Thickness: block.DripstoneThicknessMiddle, Vertical_direction: block.Down}]
+	g.dripstoneBlockID, _ = block.ToStateID[block.DripstoneBlock{}]
+	g.azaleaID, _ = block.ToStateID[block.Azalea{}]
+	g.smallDripleafID, _ = block.ToStateID[block.SmallDripleaf{Facing: block.North, Half: block.DoubleBlockHalfLower}]
 
 	g.biomeNoise = NewSimplexNoise(seed + 3)
 	g.humidNoise = NewSimplexNoise(seed + 4)
@@ -297,6 +332,9 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 			h := heights[z*16+x]
 			biome := biomes[z*16+x]
 
+			// Precompute aquifer water table for this column (only depends on X,Z)
+			waterTableY := int(-10 + g.aquiferNoise.Noise2D(float64(worldX)*0.005, float64(worldZ)*0.005)*20)
+
 			for worldY := g.MinY; worldY < g.MinY+g.Sections*16; worldY++ {
 				var stateID level.BlocksState
 				switch {
@@ -315,7 +353,16 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 				// Cave carving (only in stone, not in desert sand or surface)
 				if stateID == g.stoneID && worldY > g.MinY+1 && worldY < h-2 {
 					if g.isCave(worldX, worldY, worldZ) {
-						continue
+						// Aquifer: below Y=0, fill carved space with water if below local water table
+						if worldY < 0 {
+							if worldY <= waterTableY {
+								stateID = g.waterID
+							} else {
+								continue // air above water table
+							}
+						} else {
+							continue // air above Y=0
+						}
 					}
 				}
 
@@ -363,6 +410,7 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 	g.placeBiomeVegetation(chunk, pos, heights, biomes)
 	g.placeSugarCane(chunk, pos, heights, biomes)
 	g.placePumpkins(chunk, pos, heights, biomes)
+	g.decorateCaves(chunk, pos, heights)
 	g.structurePlacer.PlaceStructures(chunk, pos.X, pos.Z, g)
 	g.computeHeightmaps(chunk)
 
@@ -990,6 +1038,209 @@ func (g *TerrainGenerator) placePumpkins(chunk *level.Chunk, pos game.ChunkPos, 
 
 			// Place pumpkin on top of grass
 			g.setBlock(chunk, x, ty+1, z, g.pumpkinID)
+		}
+	}
+}
+
+// getBlock reads a block state from the chunk at local (x, worldY, z).
+func (g *TerrainGenerator) getBlock(chunk *level.Chunk, x, worldY, z int) level.BlocksState {
+	secIdx := (worldY - g.MinY) / 16
+	if secIdx < 0 || secIdx >= g.Sections {
+		return g.airID
+	}
+	localY := (worldY - g.MinY) % 16
+	idx := localY*16*16 + z*16 + x
+	return chunk.Sections[secIdx].GetBlock(idx)
+}
+
+// isStoneOrDeepslate returns true if the block is stone or deepslate.
+func (g *TerrainGenerator) isStoneOrDeepslate(state level.BlocksState) bool {
+	return state == g.stoneID || state == g.deepslateID
+}
+
+// decorateCaves adds lush cave and dripstone decorations to carved cave regions.
+// This runs as a second pass after all terrain generation and cave carving is done.
+func (g *TerrainGenerator) decorateCaves(chunk *level.Chunk, pos game.ChunkPos, heights [256]int) {
+	for z := 0; z < 16; z++ {
+		for x := 0; x < 16; x++ {
+			worldX := pos.X*16 + x
+			worldZ := pos.Z*16 + z
+			h := heights[z*16+x]
+
+			// Only scan underground: from bedrock+1 up to 2 below surface
+			maxY := h - 2
+			if maxY > g.MinY+g.Sections*16-1 {
+				maxY = g.MinY + g.Sections*16 - 1
+			}
+
+			for worldY := g.MinY + 1; worldY <= maxY; worldY++ {
+				cur := g.getBlock(chunk, x, worldY, z)
+
+				// We only decorate air or water blocks that are inside caves
+				isAir := cur == g.airID
+				isWater := cur == g.waterID
+				if !isAir && !isWater {
+					continue
+				}
+
+				// Check if this was a carved cave (verify by checking original terrain was stone)
+				if !g.isCave(worldX, worldY, worldZ) {
+					continue
+				}
+
+				below := g.getBlock(chunk, x, worldY-1, z)
+				above := g.getBlock(chunk, x, worldY+1, z)
+
+				// Lush cave decoration: Y=-32 to Y=32
+				if worldY >= -32 && worldY <= 32 && isAir {
+					lushVal := g.lushNoise.Noise2D(float64(worldX)*0.01, float64(worldZ)*0.01)
+					if lushVal > 0.3 {
+						g.decorateLushCave(chunk, pos, x, worldY, z, worldX, worldZ, below, above)
+						continue
+					}
+				}
+
+				// Dripstone cave decoration: Y=-64 to Y=16
+				if worldY >= -64 && worldY <= 16 && isAir {
+					dripVal := g.dripstoneNoise.Noise2D(float64(worldX)*0.01, float64(worldZ)*0.01)
+					if dripVal > 0.4 {
+						g.decorateDripstoneCave(chunk, pos, x, worldY, z, worldX, worldZ, below, above)
+					}
+				}
+			}
+		}
+	}
+}
+
+// decorateLushCave adds moss, glow lichen, cave vines, dripleaf, and azalea to a lush cave position.
+func (g *TerrainGenerator) decorateLushCave(chunk *level.Chunk, pos game.ChunkPos, x, worldY, z, worldX, worldZ int, below, above level.BlocksState) {
+	h := posHash(worldX, worldY, worldZ, g.Seed+500)
+
+	// Floor decoration: moss blocks replace stone/deepslate directly below air
+	if g.isStoneOrDeepslate(below) {
+		g.setBlock(chunk, x, worldY-1, z, g.mossBlockID)
+
+		// Small dripleaf on moss (~5%)
+		if g.smallDripleafID != 0 && h%20 == 0 {
+			g.setBlock(chunk, x, worldY, z, g.smallDripleafID)
+			return
+		}
+
+		// Azalea bush on moss (~2%)
+		if g.azaleaID != 0 && h%50 == 0 {
+			g.setBlock(chunk, x, worldY, z, g.azaleaID)
+			return
+		}
+		return
+	}
+
+	// Ceiling decoration: cave vines hanging from stone/deepslate above air
+	if g.isStoneOrDeepslate(above) && g.caveVinesID != 0 {
+		if h%8 == 0 {
+			// Determine vine length (1-5 blocks)
+			vineLen := 1 + int(h/8)%5
+			for dy := 0; dy < vineLen; dy++ {
+				vy := worldY - dy
+				if vy <= g.MinY {
+					break
+				}
+				cur := g.getBlock(chunk, x, vy, z)
+				if cur != g.airID {
+					break
+				}
+				if dy == vineLen-1 || dy == 0 && vineLen == 1 {
+					// Tip: use CaveVines (has age)
+					g.setBlock(chunk, x, vy, z, g.caveVinesID)
+				} else {
+					// Body: use CaveVinesPlant
+					g.setBlock(chunk, x, vy, z, g.caveVinesPlantID)
+				}
+			}
+			return
+		}
+	}
+
+	// Wall decoration: glow lichen on walls adjacent to air
+	if g.glowLichenID != 0 && h%6 == 0 {
+		// Check if any horizontal neighbor is stone/deepslate
+		hasWall := false
+		if x > 0 && g.isStoneOrDeepslate(g.getBlock(chunk, x-1, worldY, z)) {
+			hasWall = true
+		}
+		if x < 15 && g.isStoneOrDeepslate(g.getBlock(chunk, x+1, worldY, z)) {
+			hasWall = true
+		}
+		if z > 0 && g.isStoneOrDeepslate(g.getBlock(chunk, x, worldY, z-1)) {
+			hasWall = true
+		}
+		if z < 15 && g.isStoneOrDeepslate(g.getBlock(chunk, x, worldY, z+1)) {
+			hasWall = true
+		}
+		if hasWall {
+			g.setBlock(chunk, x, worldY, z, g.glowLichenID)
+		}
+	}
+}
+
+// decorateDripstoneCave adds dripstone blocks and pointed dripstone formations.
+func (g *TerrainGenerator) decorateDripstoneCave(chunk *level.Chunk, pos game.ChunkPos, x, worldY, z, worldX, worldZ int, below, above level.BlocksState) {
+	h := posHash(worldX, worldY, worldZ, g.Seed+600)
+
+	// Floor: dripstone block patches and stalagmites growing up
+	if g.isStoneOrDeepslate(below) {
+		if h%4 == 0 {
+			// Replace floor with dripstone block
+			g.setBlock(chunk, x, worldY-1, z, g.dripstoneBlockID)
+
+			// Stalagmite growing up (1-3 blocks)
+			if g.pointedDripstoneUpTipID != 0 && h%8 == 0 {
+				stalagH := 1 + int(h/8)%3
+				for dy := 0; dy < stalagH; dy++ {
+					sy := worldY + dy
+					cur := g.getBlock(chunk, x, sy, z)
+					if cur != g.airID {
+						break
+					}
+					if dy == stalagH-1 {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneUpTipID)
+					} else if dy == 0 {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneUpBaseID)
+					} else {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneUpMiddleID)
+					}
+				}
+			}
+		}
+		return
+	}
+
+	// Ceiling: dripstone block patches and stalactites hanging down
+	if g.isStoneOrDeepslate(above) {
+		if h%4 == 0 {
+			// Replace ceiling with dripstone block
+			g.setBlock(chunk, x, worldY+1, z, g.dripstoneBlockID)
+
+			// Stalactite hanging down (1-4 blocks)
+			if g.pointedDripstoneDownTipID != 0 && h%8 == 0 {
+				stalacH := 1 + int(h/8)%4
+				for dy := 0; dy < stalacH; dy++ {
+					sy := worldY - dy
+					if sy <= g.MinY {
+						break
+					}
+					cur := g.getBlock(chunk, x, sy, z)
+					if cur != g.airID {
+						break
+					}
+					if dy == stalacH-1 {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneDownTipID)
+					} else if dy == 0 {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneDownBaseID)
+					} else {
+						g.setBlock(chunk, x, sy, z, g.pointedDripstoneDownMiddleID)
+					}
+				}
+			}
 		}
 	}
 }
