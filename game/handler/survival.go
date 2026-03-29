@@ -701,6 +701,14 @@ func (h *FoodHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			h.PotionMgr.ThrowSplashPotion(player, potionType)
 			return true
 		}
+		if itemName == "lingering_potion" {
+			potionType := invItem.PotionType
+			if potionType == "" {
+				potionType = "healing"
+			}
+			h.PotionMgr.ThrowLingeringPotion(player, potionType)
+			return true
+		}
 	}
 
 	food := LookupFood(itemName)

@@ -71,16 +71,32 @@ type SplashPotion struct {
 	VelX, VelY, VelZ     float64
 	PotionType           string
 	LifeTick             int64
+	Lingering            bool // true if this is a lingering potion (spawns cloud on impact)
 }
+
+// LingeringCloud represents an area-of-effect cloud spawned by a lingering potion.
+type LingeringCloud struct {
+	X, Y, Z        float64
+	PotionType      string
+	Radius          float64
+	MaxDuration     int64 // total lifetime in ticks
+	RemainingTicks  int64
+	SpawnTick       int64
+	EID             int32
+}
+
+// Area effect cloud entity type ID (26.1-snapshot-2 registry: index 1).
+const areaEffectCloudEntityType int32 = 1
 
 // PotionManager manages potion drinking and splash potion projectiles.
 type PotionManager struct {
-	Manager   *game.PlayerManager
-	EffectMgr *EffectManager
-	Survival  *SurvivalHandler
-	Logger    *log.Logger
-	mu        sync.Mutex
-	potions   map[int32]*SplashPotion
+	Manager         *game.PlayerManager
+	EffectMgr       *EffectManager
+	Survival        *SurvivalHandler
+	Logger          *log.Logger
+	mu              sync.Mutex
+	potions         map[int32]*SplashPotion
+	lingeringClouds []*LingeringCloud
 }
 
 // NewPotionManager creates a new PotionManager.
@@ -220,6 +236,74 @@ func (pm *PotionManager) ThrowSplashPotion(player *game.Player, potionType strin
 	pm.logf("Player %s threw a splash potion (%s)", player.Name, potionType)
 }
 
+// ThrowLingeringPotion creates a lingering potion projectile in the player's look direction.
+// On impact, it spawns an area-of-effect cloud instead of directly applying effects.
+func (pm *PotionManager) ThrowLingeringPotion(player *game.Player, potionType string) {
+	px, py, pz := player.Position()
+	yaw, pitch := player.Rotation()
+
+	yawRad := float64(yaw) * math.Pi / 180.0
+	pitchRad := float64(pitch) * math.Pi / 180.0
+	dirX := -math.Sin(yawRad) * math.Cos(pitchRad)
+	dirY := -math.Sin(pitchRad)
+	dirZ := math.Cos(yawRad) * math.Cos(pitchRad)
+
+	speed := 0.5
+	velX := dirX * speed
+	velY := dirY*speed + 0.2
+	velZ := dirZ * speed
+
+	eid := pm.Manager.NextEntityID()
+	potion := &SplashPotion{
+		EID:        eid,
+		ThrowerEID: player.EID,
+		X:          px,
+		Y:          py + 1.5,
+		Z:          pz,
+		VelX:       velX,
+		VelY:       velY,
+		VelZ:       velZ,
+		PotionType: potionType,
+		Lingering:  true,
+	}
+
+	pm.mu.Lock()
+	pm.potions[eid] = potion
+	pm.mu.Unlock()
+
+	entityUUID := uuid.New()
+	data := player.EID + 1
+	spawnPkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(entityUUID),
+		pk.VarInt(splashPotionEntityType),
+		pk.Double(potion.X),
+		pk.Double(potion.Y),
+		pk.Double(potion.Z),
+		pk.UnsignedByte(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.VarInt(data),
+	)
+	pm.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(spawnPkt)
+	})
+
+	// Consume the lingering potion from inventory
+	slot := int(player.HeldSlot) + 36
+	invItem := &player.Inventory[slot]
+	invItem.Count--
+	if invItem.Count <= 0 {
+		*invItem = game.ItemStack{}
+	}
+	SendSlotUpdate(player, slot)
+
+	BroadcastSound(pm.Manager, SoundSplashPotionThrow, SoundCategoryNeutral, px, py, pz, 1.0, 1.0)
+	pm.logf("Player %s threw a lingering potion (%s)", player.Name, potionType)
+}
+
 // Tick processes splash potion projectile physics and impacts.
 func (pm *PotionManager) Tick(tick int64) {
 	pm.mu.Lock()
@@ -281,17 +365,146 @@ func (pm *PotionManager) Tick(tick int64) {
 	}
 }
 
-// splashImpact applies splash potion effects to nearby players.
-func (pm *PotionManager) splashImpact(potion *SplashPotion) {
-	pe, ok := potionTypeEffects[potion.PotionType]
-	if !ok {
-		// Default to healing for unknown types
-		pe = PotionEffect{EffectInstantHealth, 0, 1}
+// SpawnLingeringCloud creates an area-of-effect cloud at the given position.
+func (pm *PotionManager) SpawnLingeringCloud(x, y, z float64, potionType string, tick int64) {
+	eid := pm.Manager.NextEntityID()
+	cloud := &LingeringCloud{
+		X:              x,
+		Y:              y,
+		Z:              z,
+		PotionType:      potionType,
+		Radius:          3.0,
+		MaxDuration:     600, // 30 seconds
+		RemainingTicks:  600,
+		SpawnTick:       tick,
+		EID:             eid,
 	}
+	pm.lingeringClouds = append(pm.lingeringClouds, cloud)
 
+	// Broadcast spawn entity for the area effect cloud
+	entityUUID := uuid.New()
+	spawnPkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(entityUUID),
+		pk.VarInt(areaEffectCloudEntityType),
+		pk.Double(x),
+		pk.Double(y),
+		pk.Double(z),
+		pk.UnsignedByte(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.VarInt(0),
+	)
+	pm.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(spawnPkt)
+	})
+}
+
+// TickLingeringClouds processes all lingering clouds: applies effects and shrinks radius.
+func (pm *PotionManager) TickLingeringClouds(tick int64) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	var remaining []*LingeringCloud
+	for _, cloud := range pm.lingeringClouds {
+		cloud.RemainingTicks--
+		if cloud.RemainingTicks <= 0 || cloud.Radius <= 0 {
+			// Remove cloud entity
+			pm.removeCloudEntity(cloud.EID)
+			continue
+		}
+
+		// Shrink radius linearly over lifetime
+		cloud.Radius = 3.0 * (float64(cloud.RemainingTicks) / float64(cloud.MaxDuration))
+
+		// Broadcast particle effect at cloud position each tick
+		BroadcastParticle(pm.Manager, ParticleEffect,
+			cloud.X, cloud.Y+0.2, cloud.Z,
+			float32(cloud.Radius)*0.5, 0.1, float32(cloud.Radius)*0.5,
+			0.01, 3)
+
+		// Every 20 ticks, apply effects to players within the cloud
+		if tick%20 == 0 {
+			pe, ok := potionTypeEffects[cloud.PotionType]
+			if !ok {
+				remaining = append(remaining, cloud)
+				continue
+			}
+
+			pm.Manager.ForEach(func(p *game.Player) {
+				if p.Dead || p.IsInvulnerable() {
+					return
+				}
+				px, py, pz := p.Position()
+				dx := px - cloud.X
+				dy := (py + 0.9) - cloud.Y
+				dz := pz - cloud.Z
+				dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+
+				if dist > cloud.Radius {
+					return
+				}
+
+				// Apply effect with 1/4 normal duration
+				if pe.EffectID == EffectInstantHealth || pe.EffectID == EffectInstantDamage {
+					pm.EffectMgr.ApplyEffect(p, pe.EffectID, pe.Level, 1, false)
+				} else {
+					dur := pe.Duration / 4
+					if dur < 20 {
+						dur = 20
+					}
+					pm.EffectMgr.ApplyEffect(p, pe.EffectID, pe.Level, dur, false)
+				}
+
+				// Shrink radius slightly when affecting a player
+				cloud.Radius -= 0.5
+				if cloud.Radius < 0 {
+					cloud.Radius = 0
+				}
+			})
+		}
+
+		remaining = append(remaining, cloud)
+	}
+	pm.lingeringClouds = remaining
+}
+
+// removeCloudEntity broadcasts entity removal for a lingering cloud.
+func (pm *PotionManager) removeCloudEntity(eid int32) {
+	removePkt := pk.Marshal(
+		packetid.ClientboundRemoveEntities,
+		pk.VarInt(1),
+		pk.VarInt(eid),
+	)
+	pm.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(removePkt)
+	})
+}
+
+// isLingeringPotion returns true if the item name indicates a lingering potion.
+func isLingeringPotion(itemName string) bool {
+	return itemName == "lingering_potion"
+}
+
+// splashImpact applies splash potion effects to nearby players.
+// If the potion is a lingering type, it spawns an area-of-effect cloud instead.
+func (pm *PotionManager) splashImpact(potion *SplashPotion) {
 	// Play break sound and particles at impact location
 	BroadcastSound(pm.Manager, SoundSplashPotionBreak, SoundCategoryNeutral,
 		potion.X, potion.Y, potion.Z, 1.0, 1.0)
+
+	// Lingering potions spawn a cloud instead of direct effects
+	if potion.Lingering {
+		pm.SpawnLingeringCloud(potion.X, potion.Y, potion.Z, potion.PotionType, potion.LifeTick)
+		return
+	}
+
+	pe, ok := potionTypeEffects[potion.PotionType]
+	if !ok {
+		pe = PotionEffect{EffectInstantHealth, 0, 1}
+	}
 
 	// Apply effects to all players within 4 blocks
 	pm.Manager.ForEach(func(p *game.Player) {
