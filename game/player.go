@@ -416,6 +416,9 @@ type Player struct {
 	// Bad Omen level (0 = none, 1-7 = active)
 	BadOmen int32
 
+	// Unlocked recipes (persisted across sessions)
+	UnlockedRecipes []string
+
 	// Sleep state
 	Sleeping      bool
 	LastSleepTick int64

@@ -86,18 +86,20 @@ func (s *PGStore) SaveChunks(ctx context.Context, chunks []store.ChunkData) erro
 // LoadPlayer returns the player state, or nil if not found.
 func (s *PGStore) LoadPlayer(ctx context.Context, id uuid.UUID) (*store.PlayerState, error) {
 	ps := &store.PlayerState{}
-	var invJSON, enderJSON, effectsJSON []byte
+	var invJSON, enderJSON, effectsJSON, advJSON, recipesJSON []byte
 	err := s.pool.QueryRow(ctx,
 		`SELECT uuid, name, dimension, x, y, z, yaw, pitch, game_mode, health, food, saturation, inventory,
 		        COALESCE(experience, 0), COALESCE(experience_level, 0), COALESCE(experience_total, 0),
 		        COALESCE(spawn_x, 0), COALESCE(spawn_y, 0), COALESCE(spawn_z, 0), COALESCE(has_spawn_point, false),
-		        ender_chest, effects, COALESCE(exhaustion, 0)
+		        ender_chest, effects, COALESCE(exhaustion, 0),
+		        player_advancements, player_recipes
 		 FROM players WHERE uuid=$1`, id,
 	).Scan(&ps.UUID, &ps.Name, &ps.Dimension, &ps.X, &ps.Y, &ps.Z, &ps.Yaw, &ps.Pitch, &ps.GameMode,
 		&ps.Health, &ps.Food, &ps.Saturation, &invJSON,
 		&ps.Experience, &ps.ExperienceLevel, &ps.ExperienceTotal,
 		&ps.SpawnX, &ps.SpawnY, &ps.SpawnZ, &ps.HasSpawnPoint,
-		&enderJSON, &effectsJSON, &ps.Exhaustion)
+		&enderJSON, &effectsJSON, &ps.Exhaustion,
+		&advJSON, &recipesJSON)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
@@ -117,6 +119,16 @@ func (s *PGStore) LoadPlayer(ctx context.Context, id uuid.UUID) (*store.PlayerSt
 	if len(effectsJSON) > 0 {
 		if err := json.Unmarshal(effectsJSON, &ps.Effects); err != nil {
 			return nil, fmt.Errorf("pgstore: unmarshal effects for %x: %w", id, err)
+		}
+	}
+	if len(advJSON) > 0 {
+		if err := json.Unmarshal(advJSON, &ps.Advancements); err != nil {
+			return nil, fmt.Errorf("pgstore: unmarshal advancements for %x: %w", id, err)
+		}
+	}
+	if len(recipesJSON) > 0 {
+		if err := json.Unmarshal(recipesJSON, &ps.UnlockedRecipes); err != nil {
+			return nil, fmt.Errorf("pgstore: unmarshal recipes for %x: %w", id, err)
 		}
 	}
 	return ps, nil
@@ -147,12 +159,20 @@ func (s *PGStore) SavePlayer(ctx context.Context, state *store.PlayerState) erro
 	if err != nil {
 		return fmt.Errorf("pgstore: marshal effects for %s: %w", state.Name, err)
 	}
+	advJSON, err := marshalJSONOrNil(state.Advancements)
+	if err != nil {
+		return fmt.Errorf("pgstore: marshal advancements for %s: %w", state.Name, err)
+	}
+	recipesJSON, err := marshalJSONOrNil(state.UnlockedRecipes)
+	if err != nil {
+		return fmt.Errorf("pgstore: marshal recipes for %s: %w", state.Name, err)
+	}
 
 	_, err = s.pool.Exec(ctx,
 		`INSERT INTO players (uuid, name, dimension, x, y, z, yaw, pitch, game_mode, health, food, saturation, inventory,
 		   experience, experience_level, experience_total, spawn_x, spawn_y, spawn_z, has_spawn_point,
-		   ender_chest, effects, exhaustion, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, now())
+		   ender_chest, effects, exhaustion, player_advancements, player_recipes, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, now())
 		 ON CONFLICT (uuid)
 		 DO UPDATE SET name=EXCLUDED.name, dimension=EXCLUDED.dimension,
 		   x=EXCLUDED.x, y=EXCLUDED.y, z=EXCLUDED.z,
@@ -166,12 +186,14 @@ func (s *PGStore) SavePlayer(ctx context.Context, state *store.PlayerState) erro
 		   has_spawn_point=EXCLUDED.has_spawn_point,
 		   ender_chest=EXCLUDED.ender_chest, effects=EXCLUDED.effects,
 		   exhaustion=EXCLUDED.exhaustion,
+		   player_advancements=EXCLUDED.player_advancements, player_recipes=EXCLUDED.player_recipes,
 		   updated_at=EXCLUDED.updated_at`,
 		state.UUID, state.Name, state.Dimension, state.X, state.Y, state.Z,
 		state.Yaw, state.Pitch, state.GameMode, state.Health, state.Food, state.Saturation, invJSON,
 		state.Experience, state.ExperienceLevel, state.ExperienceTotal,
 		state.SpawnX, state.SpawnY, state.SpawnZ, state.HasSpawnPoint,
 		enderJSON, effectsJSON, state.Exhaustion,
+		advJSON, recipesJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("pgstore: save player %s: %w", state.Name, err)

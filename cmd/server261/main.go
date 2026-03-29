@@ -514,7 +514,7 @@ func main() {
 			}
 			players.ForEach(func(p *game.Player) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := playerStore.SavePlayer(ctx, buildPlayerState(p)); err != nil {
+				if err := playerStore.SavePlayer(ctx, buildPlayerState(p, advancementMgr)); err != nil {
 					logger.Printf("Auto-save failed for %s: %v", p.Name, err)
 				}
 				cancel()
@@ -536,7 +536,7 @@ func main() {
 		if playerStore != nil {
 			players.ForEach(func(p *game.Player) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := playerStore.SavePlayer(ctx, buildPlayerState(p)); err != nil {
+				if err := playerStore.SavePlayer(ctx, buildPlayerState(p, advancementMgr)); err != nil {
 					logger.Printf("Shutdown save failed for %s: %v", p.Name, err)
 				}
 				cancel()
@@ -864,6 +864,10 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 					}
 				}
 			}
+			// Restore advancements
+			g.advancementMgr.ImportGranted(name, ps.Advancements)
+			// Restore unlocked recipes
+			player.UnlockedRecipes = ps.UnlockedRecipes
 			g.logf("Loaded saved state for %s: pos=(%.1f, %.1f, %.1f) gm=%d", name, spawnX, spawnYVal, spawnZ, ps.GameMode)
 		}
 	}
@@ -912,7 +916,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		// Save player state on disconnect
 		if g.playerStore != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := g.playerStore.SavePlayer(ctx, buildPlayerState(player))
+			err := g.playerStore.SavePlayer(ctx, buildPlayerState(player, g.advancementMgr))
 			cancel()
 			if err != nil {
 				g.logf("Warning: failed to save player %s state: %v", name, err)
@@ -1597,7 +1601,7 @@ func itemStackToSlot(s game.ItemStack) store.ItemSlot {
 }
 
 // buildPlayerState creates a store.PlayerState from a live player.
-func buildPlayerState(player *game.Player) *store.PlayerState {
+func buildPlayerState(player *game.Player, advMgr *handler.AdvancementManager) *store.PlayerState {
 	px, py, pz := player.Position()
 	pyaw, ppitch := player.Rotation()
 
@@ -1656,5 +1660,7 @@ func buildPlayerState(player *game.Player) *store.PlayerState {
 		SpawnY:          player.SpawnY,
 		SpawnZ:          player.SpawnZ,
 		HasSpawnPoint:   player.HasSpawnPoint,
+		Advancements:    advMgr.ExportGranted(player.Name),
+		UnlockedRecipes: player.UnlockedRecipes,
 	}
 }

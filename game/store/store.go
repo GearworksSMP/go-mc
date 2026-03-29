@@ -65,6 +65,8 @@ type PlayerState struct {
 	SpawnY          float64
 	SpawnZ          float64
 	HasSpawnPoint   bool
+	Advancements    []string `json:"advancements,omitempty"`
+	UnlockedRecipes []string `json:"unlocked_recipes,omitempty"`
 }
 
 // BlockEntityData holds a serialized block entity and its position.
