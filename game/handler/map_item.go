@@ -118,20 +118,7 @@ func (mm *MapManager) SendMapData(player *game.Player, mapID int32) {
 		}
 	}
 
-	// Build cursor fields
-	cursorFields := make([]pk.FieldEncoder, 0, len(cursors)+1)
-	cursorFields = append(cursorFields, pk.VarInt(len(cursors)))
-	for _, c := range cursors {
-		cursorFields = append(cursorFields, c)
-	}
-
-	fields := make([]pk.FieldEncoder, 0, 9+len(cursors))
-	fields = append(fields,
-		pk.VarInt(mapID),
-		pk.Byte(int8(scale)),
-		pk.Boolean(locked),
-	)
-	fields = append(fields, cursorFields...)
+	fields := buildMapPacketFields(mapID, scale, locked, cursors)
 	fields = append(fields,
 		pk.UnsignedByte(128), // columns (0 = no update, >0 = update)
 		pk.UnsignedByte(128), // rows
@@ -157,22 +144,26 @@ func (mm *MapManager) sendMapCursorsOnly(player *game.Player, mapID int32) {
 	copy(cursors, md.Cursors)
 	mm.mu.Unlock()
 
-	cursorFields := make([]pk.FieldEncoder, 0, len(cursors)+1)
-	cursorFields = append(cursorFields, pk.VarInt(len(cursors)))
-	for _, c := range cursors {
-		cursorFields = append(cursorFields, c)
-	}
+	fields := buildMapPacketFields(mapID, scale, locked, cursors)
+	fields = append(fields, pk.UnsignedByte(0)) // columns=0 means no pixel update
 
+	player.WritePacket(pk.Marshal(packetid.ClientboundMapItemData, fields...))
+}
+
+// buildMapPacketFields returns the common header fields for a map data packet:
+// mapID, scale, locked, and the cursor array.
+func buildMapPacketFields(mapID int32, scale byte, locked bool, cursors []MapCursor) []pk.FieldEncoder {
 	fields := make([]pk.FieldEncoder, 0, 4+len(cursors))
 	fields = append(fields,
 		pk.VarInt(mapID),
 		pk.Byte(int8(scale)),
 		pk.Boolean(locked),
+		pk.VarInt(len(cursors)),
 	)
-	fields = append(fields, cursorFields...)
-	fields = append(fields, pk.UnsignedByte(0)) // columns=0 means no pixel update
-
-	player.WritePacket(pk.Marshal(packetid.ClientboundMapItemData, fields...))
+	for _, c := range cursors {
+		fields = append(fields, c)
+	}
+	return fields
 }
 
 // Tick updates maps for players holding them (called each server tick).
@@ -236,8 +227,8 @@ func (mm *MapManager) updatePlayerCursors(mapID int32) {
 		}
 
 		// Convert world position to map coordinates (-128 to 127)
-		mapX := int8(clampInt(dx*128/mapRadius, -128, 127))
-		mapZ := int8(clampInt(dz*128/mapRadius, -128, 127))
+		mapX := int8(clampI(dx*128/mapRadius, -128, 127))
+		mapZ := int8(clampI(dz*128/mapRadius, -128, 127))
 
 		// Convert yaw to rotation (0-15)
 		yaw := p.Yaw
@@ -287,8 +278,8 @@ func (mm *MapManager) AddStructureCursor(mapID int32, cursorType int32, worldX, 
 	dx := worldX - md.CenterX
 	dz := worldZ - md.CenterZ
 
-	mapX := int8(clampInt(dx*128/mapRadius, -128, 127))
-	mapZ := int8(clampInt(dz*128/mapRadius, -128, 127))
+	mapX := int8(clampI(dx*128/mapRadius, -128, 127))
+	mapZ := int8(clampI(dz*128/mapRadius, -128, 127))
 
 	md.Cursors = append(md.Cursors, MapCursor{
 		Type: cursorType,
@@ -309,17 +300,6 @@ func isPlayerHoldingMap(p *game.Player) bool {
 		return false
 	}
 	return ItemNameByID(held.ID) == "filled_map"
-}
-
-// clampInt clamps v to the range [lo, hi].
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // renderMap generates pixel data from the world blocks.
