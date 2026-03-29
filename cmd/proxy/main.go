@@ -14,6 +14,7 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/cluster"
 	"github.com/Tnze/go-mc/nbt"
+	mcnet "github.com/Tnze/go-mc/net"
 	"github.com/Tnze/go-mc/registry"
 	"github.com/Tnze/go-mc/server"
 	"github.com/Tnze/go-mc/server/vanilla"
@@ -86,10 +87,31 @@ func main() {
 		listenAddr = ":25565"
 	}
 
-	logger.Printf("Proxy listening on %s", listenAddr)
-	if err := srv.Listen(listenAddr); err != nil {
-		logger.Fatalf("Server error: %v", err)
+	listener, err := mcnet.ListenMC(listenAddr)
+	if err != nil {
+		logger.Fatalf("Listen error: %v", err)
 	}
+
+	// Shutdown goroutine: close the listener, disconnect all sessions, wait for drain.
+	go func() {
+		<-ctx.Done()
+		logger.Println("Shutting down proxy...")
+		listener.Close()
+		gameplay.DisconnectAll("Server shutting down")
+		logger.Println("Proxy shutdown complete")
+	}()
+
+	logger.Printf("Proxy listening on %s", listenAddr)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			// Expected when listener is closed during shutdown.
+			break
+		}
+		go srv.AcceptConn(&conn)
+	}
+	// Wait for all active sessions to finish.
+	gameplay.Wait()
 }
 
 // proxyPingHandler implements server.ListPingHandler for the proxy.

@@ -350,7 +350,7 @@ func main() {
 
 	// Subscribe to Redis channels if available
 	if rdb != nil {
-		go subscribeChatChannel(rdb, players, logger)
+		go subscribeChatChannel(rdb, serverID, players, logger)
 
 		ghostMgr = newGhostEntityManager(players, logger)
 		go subscribeBorderChannel(rdb, serverID, ghostMgr, logger)
@@ -363,16 +363,42 @@ func main() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		logger.Printf("Shutting down...")
+		logger.Printf("Shutting down region server %s...", serverID)
+		logger.Println("Shutdown: saving mobs...")
 		mobMgr.SaveAllMobs("overworld")
+
+		if playerStore != nil {
+			logger.Println("Shutdown: saving player states...")
+			players.ForEach(func(p *game.Player) {
+				sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := playerStore.SavePlayer(sctx, buildPlayerState(p))
+				scancel()
+				if err != nil {
+					logger.Printf("Shutdown: failed to save player %s: %v", p.Name, err)
+				} else {
+					logger.Printf("Shutdown: saved player %s", p.Name)
+				}
+			})
+		}
+
 		if dbw != nil {
+			logger.Println("Shutdown: flushing dirty chunks...")
 			n, err := dbw.FlushDirty(context.Background())
 			if err != nil {
-				logger.Printf("Shutdown flush error: %v", err)
+				logger.Printf("Shutdown: flush error: %v", err)
 			} else if n > 0 {
 				logger.Printf("Shutdown: flushed %d dirty chunks", n)
 			}
 		}
+
+		if rdb != nil {
+			logger.Println("Shutdown: cleaning Redis routing keys...")
+			players.ForEach(func(p *game.Player) {
+				rdb.Del(context.Background(), cluster.PlayerKey(p.UUID))
+			})
+		}
+
+		logger.Printf("Shutdown complete for %s", serverID)
 		cancel()
 		os.Exit(0)
 	}()
@@ -460,6 +486,51 @@ type regionGamePlay struct {
 
 func (g *regionGamePlay) logf(format string, args ...any) {
 	g.logger.Printf(format, args...)
+}
+
+// buildPlayerState creates a store.PlayerState snapshot for saving to the database.
+func buildPlayerState(p *game.Player) *store.PlayerState {
+	px, py, pz := p.Position()
+	pyaw, ppitch := p.Rotation()
+
+	invSlots := make([]store.ItemSlot, len(p.Inventory))
+	for i, s := range p.Inventory {
+		invSlots[i] = store.ItemSlot{
+			ID: s.ID, Count: s.Count,
+			Durability: s.Durability, MaxDurability: s.MaxDurability,
+			Enchantments: s.Enchantments, DisplayName: s.DisplayName,
+			PotionType: s.PotionType,
+		}
+	}
+	enderSlots := make([]store.ItemSlot, len(p.EnderItems))
+	for i, s := range p.EnderItems {
+		enderSlots[i] = store.ItemSlot{
+			ID: s.ID, Count: s.Count,
+			Durability: s.Durability, MaxDurability: s.MaxDurability,
+			Enchantments: s.Enchantments, DisplayName: s.DisplayName,
+			PotionType: s.PotionType,
+		}
+	}
+	var effects []store.EffectData
+	for _, e := range p.Effects {
+		if e != nil {
+			effects = append(effects, store.EffectData{
+				ID: e.ID, Level: e.Level, Duration: e.Duration, Ambient: e.Ambient,
+			})
+		}
+	}
+
+	return &store.PlayerState{
+		UUID: p.UUID, Name: p.Name, Dimension: p.Dimension,
+		X: px, Y: py, Z: pz, Yaw: pyaw, Pitch: ppitch,
+		GameMode: int(p.GameMode), Health: p.Health,
+		Food: p.Food, Saturation: p.Saturation, Exhaustion: p.Exhaustion,
+		Inventory: invSlots, EnderChest: enderSlots, Effects: effects,
+		Experience: p.Experience, ExperienceLevel: p.ExperienceLevel,
+		ExperienceTotal: p.ExperienceTotal,
+		SpawnX: p.SpawnX, SpawnY: p.SpawnY, SpawnZ: p.SpawnZ,
+		HasSpawnPoint: p.HasSpawnPoint,
+	}
 }
 
 func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
@@ -557,69 +628,8 @@ func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 		handler.BroadcastPlayerLeave(g.players, player)
 
 		if g.playerStore != nil {
-			px, py, pz := player.Position()
-			pyaw, ppitch := player.Rotation()
-			invSlots := make([]store.ItemSlot, len(player.Inventory))
-			for i, s := range player.Inventory {
-				invSlots[i] = store.ItemSlot{
-					ID:            s.ID,
-					Count:         s.Count,
-					Durability:    s.Durability,
-					MaxDurability: s.MaxDurability,
-					Enchantments:  s.Enchantments,
-					DisplayName:   s.DisplayName,
-					PotionType:    s.PotionType,
-				}
-			}
-			enderSlots := make([]store.ItemSlot, len(player.EnderItems))
-			for i, s := range player.EnderItems {
-				enderSlots[i] = store.ItemSlot{
-					ID:            s.ID,
-					Count:         s.Count,
-					Durability:    s.Durability,
-					MaxDurability: s.MaxDurability,
-					Enchantments:  s.Enchantments,
-					DisplayName:   s.DisplayName,
-					PotionType:    s.PotionType,
-				}
-			}
-			var effects []store.EffectData
-			for _, e := range player.Effects {
-				if e != nil {
-					effects = append(effects, store.EffectData{
-						ID:       e.ID,
-						Level:    e.Level,
-						Duration: e.Duration,
-						Ambient:  e.Ambient,
-					})
-				}
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
-				UUID:            id,
-				Name:            name,
-				Dimension:       player.Dimension,
-				X:               px,
-				Y:               py,
-				Z:               pz,
-				Yaw:             pyaw,
-				Pitch:           ppitch,
-				GameMode:        int(player.GameMode),
-				Health:          player.Health,
-				Food:            player.Food,
-				Saturation:      player.Saturation,
-				Exhaustion:      player.Exhaustion,
-				Inventory:       invSlots,
-				EnderChest:      enderSlots,
-				Effects:         effects,
-				Experience:      player.Experience,
-				ExperienceLevel: player.ExperienceLevel,
-				ExperienceTotal: player.ExperienceTotal,
-				SpawnX:          player.SpawnX,
-				SpawnY:          player.SpawnY,
-				SpawnZ:          player.SpawnZ,
-				HasSpawnPoint:   player.HasSpawnPoint,
-			})
+			err := g.playerStore.SavePlayer(ctx, buildPlayerState(player))
 			cancel()
 			if err != nil {
 				g.logf("Warning: failed to save player %s state: %v", name, err)
@@ -847,8 +857,9 @@ func (g *regionGamePlay) packetLoop(player *game.Player) {
 	// Wire Redis chat broadcast if available
 	if g.redis != nil {
 		chatHandler.Broadcaster = &redisChatBroadcaster{
-			manager: g.players,
-			rdb:     g.redis,
+			serverID: g.serverID,
+			manager:  g.players,
+			rdb:      g.redis,
 		}
 	}
 
@@ -970,7 +981,7 @@ func (g *regionGamePlay) packetLoop(player *game.Player) {
 // Redis Chat
 // ---------------------------------------------------------------------------
 
-func subscribeChatChannel(rdb *redis.Client, players *game.PlayerManager, logger *log.Logger) {
+func subscribeChatChannel(rdb *redis.Client, ownServerID string, players *game.PlayerManager, logger *log.Logger) {
 	ctx := context.Background()
 	sub := rdb.Subscribe(ctx, cluster.ChatChannel)
 	defer sub.Close()
@@ -978,10 +989,15 @@ func subscribeChatChannel(rdb *redis.Client, players *game.PlayerManager, logger
 	ch := sub.Channel()
 	for msg := range ch {
 		var data struct {
-			Name    string `json:"name"`
-			Message string `json:"message"`
+			ServerID string `json:"server_id"`
+			Name     string `json:"name"`
+			Message  string `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(msg.Payload), &data); err != nil {
+			continue
+		}
+		// Skip messages originating from this server to avoid self-echo.
+		if data.ServerID == ownServerID {
 			continue
 		}
 
@@ -1101,8 +1117,9 @@ func mustNBTRaw(v any) nbt.RawMessage {
 // redisChatBroadcaster implements handler.ChatBroadcaster by publishing to Redis
 // and also sending to local players.
 type redisChatBroadcaster struct {
-	manager *game.PlayerManager
-	rdb     *redis.Client
+	serverID string
+	manager  *game.PlayerManager
+	rdb      *redis.Client
 }
 
 func (b *redisChatBroadcaster) BroadcastChat(sender *game.Player, message string) {
@@ -1116,8 +1133,8 @@ func (b *redisChatBroadcaster) BroadcastChat(sender *game.Player, message string
 		p.WritePacket(pkt)
 	})
 
-	// Cross-server broadcast via Redis
-	msg, _ := json.Marshal(map[string]string{"name": sender.Name, "message": message})
+	// Cross-server broadcast via Redis (include server_id so receivers can skip self-echo)
+	msg, _ := json.Marshal(map[string]string{"server_id": b.serverID, "name": sender.Name, "message": message})
 	b.rdb.Publish(context.Background(), cluster.ChatChannel, string(msg))
 }
 

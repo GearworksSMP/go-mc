@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/cluster"
+	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/net"
+	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/yggdrasil/user"
 
 	"github.com/google/uuid"
@@ -20,6 +24,10 @@ type ProxyGamePlay struct {
 	Redis  *redis.Client
 	Logger *log.Logger
 	Health *HealthChecker
+
+	mu       sync.Mutex
+	sessions map[uuid.UUID]*PlayerSession
+	wg       sync.WaitGroup
 }
 
 func (gp *ProxyGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
@@ -63,5 +71,47 @@ func (gp *ProxyGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 		Logger:     gp.Logger,
 	}
 
+	gp.addSession(id, session)
+	defer gp.removeSession(id)
+
 	session.Run()
+}
+
+func (gp *ProxyGamePlay) addSession(id uuid.UUID, s *PlayerSession) {
+	gp.mu.Lock()
+	defer gp.mu.Unlock()
+	if gp.sessions == nil {
+		gp.sessions = make(map[uuid.UUID]*PlayerSession)
+	}
+	gp.sessions[id] = s
+	gp.wg.Add(1)
+}
+
+func (gp *ProxyGamePlay) removeSession(id uuid.UUID) {
+	gp.mu.Lock()
+	defer gp.mu.Unlock()
+	delete(gp.sessions, id)
+	gp.wg.Done()
+}
+
+// DisconnectAll sends a disconnect packet to every active session and closes connections.
+func (gp *ProxyGamePlay) DisconnectAll(reason string) {
+	gp.mu.Lock()
+	sessions := make([]*PlayerSession, 0, len(gp.sessions))
+	for _, s := range gp.sessions {
+		sessions = append(sessions, s)
+	}
+	gp.mu.Unlock()
+
+	msg := chat.Text(reason)
+	for _, s := range sessions {
+		s.Client.WritePacket(pk.Marshal(packetid.ClientboundDisconnect, msg))
+		s.Client.Close()
+		s.Backend.Close()
+	}
+}
+
+// Wait blocks until all active sessions have finished.
+func (gp *ProxyGamePlay) Wait() {
+	gp.wg.Wait()
 }
