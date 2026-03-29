@@ -34,14 +34,16 @@ type Arrow struct {
 	Damage               float32
 	LifeTick             int64
 	Stuck                bool
-	PunchLevel           int32 // Punch enchantment: extra knockback on hit
-	OnFire               bool  // Flame enchantment: sets target on fire
+	PunchLevel           int32  // Punch enchantment: extra knockback on hit
+	OnFire               bool   // Flame enchantment: sets target on fire
+	PotionType           string // Tipped arrow: potion effect to apply on hit
 }
 
 // ArrowManager manages arrow projectiles.
 type ArrowManager struct {
 	Manager      *game.PlayerManager
 	Survival     *SurvivalHandler
+	EffectMgr    *EffectManager
 	World        game.World
 	MobMgr       *MobManager
 	ItemEntities *ItemEntityManager
@@ -106,6 +108,54 @@ func (am *ArrowManager) SpawnArrow(shooterEID int32, sx, sy, sz, tx, ty, tz floa
 		pk.Angle(0),        // pitch
 		pk.Angle(0),        // yaw
 		pk.Angle(0),        // head yaw
+		pk.VarInt(data),
+	)
+	am.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
+}
+
+// SpawnTippedArrow creates and broadcasts a tipped arrow with a potion effect.
+func (am *ArrowManager) SpawnTippedArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool, potionType string) {
+	speed := 3.0
+	velX := dirX * speed
+	velY := dirY * speed
+	velZ := dirZ * speed
+
+	eid := am.Manager.NextEntityID()
+	arrow := &Arrow{
+		EID:        eid,
+		ShooterEID: shooterEID,
+		X:          x,
+		Y:          y,
+		Z:          z,
+		VelX:       velX,
+		VelY:       velY,
+		VelZ:       velZ,
+		Damage:     float32(damage),
+		PunchLevel: punchLevel,
+		OnFire:     onFire,
+		PotionType: potionType,
+	}
+
+	am.mu.Lock()
+	am.Arrows[eid] = arrow
+	am.mu.Unlock()
+
+	id := uuid.New()
+	data := shooterEID + 1
+	pkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(id),
+		pk.VarInt(arrowEntityType),
+		pk.Double(x),
+		pk.Double(y),
+		pk.Double(z),
+		pk.UnsignedByte(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.Angle(0),
 		pk.VarInt(data),
 	)
 	am.Manager.ForEach(func(p *game.Player) {
@@ -293,6 +343,21 @@ func (am *ArrowManager) Tick(tick int64) {
 				if arrow.OnFire && p.FireTicks <= 0 {
 					p.FireTicks = 80
 					broadcastFireMetadata(am.Manager, p.EID, true)
+				}
+
+				// Tipped arrow: apply potion effect with 1/8 normal duration
+				if arrow.PotionType != "" && am.EffectMgr != nil {
+					if pe, ok := potionTypeEffects[arrow.PotionType]; ok {
+						if pe.EffectID == EffectInstantHealth || pe.EffectID == EffectInstantDamage {
+							am.EffectMgr.ApplyEffect(p, pe.EffectID, pe.Level, 1, false)
+						} else {
+							dur := pe.Duration / 8
+							if dur < 20 {
+								dur = 20
+							}
+							am.EffectMgr.ApplyEffect(p, pe.EffectID, pe.Level, dur, false)
+						}
+					}
 				}
 
 				hitPlayer = true

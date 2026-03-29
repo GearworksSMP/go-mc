@@ -150,6 +150,10 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 		onFire = true
 	}
 
+	// Determine if the arrow is a tipped arrow
+	arrowItemName := ItemNameByID(player.Inventory[arrowSlot].ID)
+	arrowPotionType := player.Inventory[arrowSlot].PotionType
+
 	// Consume one arrow (unless infinity)
 	if !hasInfinity && player.GameMode == 0 {
 		player.Inventory[arrowSlot].Count--
@@ -169,7 +173,11 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 
 	// Spawn arrow at eye level
 	px, py, pz := player.Position()
-	bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire)
+	if arrowItemName == "tipped_arrow" && arrowPotionType != "" {
+		bm.ArrowMgr.SpawnTippedArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire, arrowPotionType)
+	} else {
+		bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire)
+	}
 
 	// Reduce bow durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {
@@ -198,14 +206,19 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 
 // findArrowSlot scans the player's inventory for an arrow item.
 // Returns the slot index (9-44 main + hotbar, or 45 offhand), or -1 if not found.
+// isArrowItem returns true if the item name is "arrow" or "tipped_arrow".
+func isArrowItem(name string) bool {
+	return name == "arrow" || name == "tipped_arrow"
+}
+
 func findArrowSlot(player *game.Player) int {
 	// Check offhand first
-	if ItemNameByID(player.Inventory[45].ID) == "arrow" && player.Inventory[45].Count > 0 {
+	if isArrowItem(ItemNameByID(player.Inventory[45].ID)) && player.Inventory[45].Count > 0 {
 		return 45
 	}
 	// Check main inventory and hotbar
 	for i := 9; i <= 44; i++ {
-		if ItemNameByID(player.Inventory[i].ID) == "arrow" && player.Inventory[i].Count > 0 {
+		if isArrowItem(ItemNameByID(player.Inventory[i].ID)) && player.Inventory[i].Count > 0 {
 			return i
 		}
 	}
