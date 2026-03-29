@@ -202,6 +202,11 @@ func main() {
 	hiveMgr := handler.NewHiveManager(mobMgr, players, itemEntities, survHandler, world, logger)
 	mobMgr.HiveMgr = hiveMgr
 
+	collisionMgr := &handler.CollisionManager{
+		Manager:    players,
+		MobManager: mobMgr,
+	}
+
 	bedMgr := &handler.BedManager{
 		Manager:    players,
 		MobManager: mobMgr,
@@ -300,7 +305,6 @@ func main() {
 		Logger:   logger,
 	}
 	mobMgr.EffectMgr = effectMgr
-	tabListMgr := &handler.TabListManager{Players: players, TPS: metrics}
 	sculkMgr := handler.NewSculkManager(players, world)
 	sculkMgr.MobMgr = mobMgr
 	sculkMgr.EffectMgr = effectMgr
@@ -487,6 +491,7 @@ func main() {
 	metrics.StartMetricsServer(MetricsAddr())
 	metrics.SetReady()
 	logger.Printf("Metrics server listening on %s", MetricsAddr())
+	tabListMgr := &handler.TabListManager{Players: players, TPS: metrics}
 
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
@@ -546,6 +551,7 @@ func main() {
 			villagerMgr.TickRestock(tick, timeMgr)
 			villageMgr.Tick(tick)
 			tabListMgr.Tick(tick)
+			collisionMgr.Tick()
 
 			metrics.RecordTick(time.Since(tickStart))
 		}),
