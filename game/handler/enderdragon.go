@@ -377,6 +377,9 @@ func (dm *EnderDragonManager) killDragon(killer *game.Player) {
 
 	// Place return portal at origin
 	dm.placeReturnPortal()
+
+	// Spawn end gateway portal on the ring ~75 blocks from origin
+	dm.placeEndGateway()
 }
 
 // placeReturnPortal creates the end return portal at the origin (0, 64, 0).
@@ -424,6 +427,42 @@ func (dm *EnderDragonManager) placeReturnPortal() {
 	}
 
 	dm.logf("Return portal placed at origin")
+}
+
+// placeEndGateway spawns an end gateway portal at a random position
+// on the ring ~75 blocks from the origin after the dragon is killed.
+func (dm *EnderDragonManager) placeEndGateway() {
+	angle := float64(rand.Intn(360)) * math.Pi / 180.0
+	radius := 75.0
+	gx := int(math.Round(math.Cos(angle) * radius))
+	gz := int(math.Round(math.Sin(angle) * radius))
+	gy := 75 // above the island surface
+
+	endGatewayID, ok := block.ToStateID[block.EndGateway{}]
+	if !ok {
+		return
+	}
+	bedrockID, _ := block.ToStateID[block.Bedrock{}]
+
+	// Place bedrock frame around the gateway (3x3x3 with gateway in center).
+	for dy := -1; dy <= 1; dy++ {
+		for dz := -1; dz <= 1; dz++ {
+			for dx := -1; dx <= 1; dx++ {
+				wx := gx + dx
+				wy := gy + dy
+				wz := gz + dz
+				if dx == 0 && dy == 0 && dz == 0 {
+					dm.World.SetBlock(wx, wy, wz, endGatewayID)
+					broadcastBlockUpdateStatic(dm.Manager, wx, wy, wz, int32(endGatewayID))
+				} else if abs(dx)+abs(dy)+abs(dz) == 1 {
+					dm.World.SetBlock(wx, wy, wz, bedrockID)
+					broadcastBlockUpdateStatic(dm.Manager, wx, wy, wz, int32(bedrockID))
+				}
+			}
+		}
+	}
+
+	dm.logf("End gateway placed at (%d, %d, %d)", gx, gy, gz)
 }
 
 // dealAreaDamage deals damage to all End players within the given radius.

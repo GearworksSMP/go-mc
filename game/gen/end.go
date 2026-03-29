@@ -10,20 +10,26 @@ import (
 )
 
 // EndGenerator creates End dimension terrain with a central end stone island,
-// obsidian pillars, and a void world everywhere else.
+// obsidian pillars, outer islands, and chorus plants.
 type EndGenerator struct {
 	Seed     int64
 	MinY     int // -64 (same as overworld)
 	Sections int // 24
 
-	shapeNoise *SimplexNoise
+	shapeNoise      *SimplexNoise
+	outerIslandNoise *SimplexNoise
 
 	// Block state IDs
-	endStoneID  level.BlocksState
-	obsidianID  level.BlocksState
-	bedrockID   level.BlocksState
-	torchID     level.BlocksState
-	hasTorch    bool
+	endStoneID     level.BlocksState
+	obsidianID     level.BlocksState
+	bedrockID      level.BlocksState
+	torchID        level.BlocksState
+	chorusPlantID  level.BlocksState
+	chorusFlowerID level.BlocksState
+	hasTorch       bool
+
+	// Structure placer
+	endCityPlacer *EndCityPlacer
 }
 
 // NewEndGenerator creates an End terrain generator with the given seed.
@@ -33,16 +39,21 @@ func NewEndGenerator(seed int64) *EndGenerator {
 		MinY:     -64,
 		Sections: 24,
 
-		shapeNoise: NewSimplexNoise(seed + 500),
+		shapeNoise:       NewSimplexNoise(seed + 500),
+		outerIslandNoise: NewSimplexNoise(seed + 501),
 	}
 
 	g.endStoneID, _ = block.ToStateID[block.EndStone{}]
 	g.obsidianID, _ = block.ToStateID[block.Obsidian{}]
 	g.bedrockID, _ = block.ToStateID[block.Bedrock{}]
+	g.chorusPlantID, _ = block.ToStateID[block.ChorusPlant{Up: true, Down: true}]
+	g.chorusFlowerID, _ = block.ToStateID[block.ChorusFlower{Age: 5}]
 
 	var ok bool
 	g.torchID, ok = block.ToStateID[block.Torch{}]
 	g.hasTorch = ok
+
+	g.endCityPlacer = NewEndCityPlacer(seed)
 
 	return g
 }
@@ -115,15 +126,119 @@ func (g *EndGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 		}
 	}
 
+	// Generate outer End islands (>1000 blocks from origin).
+	g.generateOuterIslands(chunk, pos)
+
 	// Place obsidian pillars
 	g.placePillars(chunk, pos)
 
 	// Place return portal base at origin (bedrock + end portal frame below)
 	g.placeReturnPortalBase(chunk, pos)
 
+	// Place chorus plants on outer islands.
+	g.placeChorusPlants(chunk, pos)
+
+	// Place end cities on outer islands.
+	g.endCityPlacer.PlaceEndCity(chunk, pos, g)
+
 	g.computeHeightmaps(chunk)
 
 	return chunk
+}
+
+// generateOuterIslands generates small end stone islands far from the origin.
+// These form the outer End islands where end cities and chorus plants spawn.
+func (g *EndGenerator) generateOuterIslands(chunk *level.Chunk, pos game.ChunkPos) {
+	baseY := 64
+
+	for z := 0; z < 16; z++ {
+		for x := 0; x < 16; x++ {
+			worldX := pos.X*16 + x
+			worldZ := pos.Z*16 + z
+
+			distSq := float64(worldX*worldX + worldZ*worldZ)
+
+			// Outer islands start at ~1000 blocks from origin.
+			if distSq < 1000*1000 {
+				continue
+			}
+
+			// Use noise to create scattered islands.
+			n1 := g.outerIslandNoise.Noise2D(float64(worldX)*0.01, float64(worldZ)*0.01)
+			n2 := g.outerIslandNoise.Noise2D(float64(worldX)*0.05, float64(worldZ)*0.05)
+			combined := n1*0.7 + n2*0.3
+
+			// Islands form where noise > 0.3 (roughly 20% of area).
+			if combined <= 0.3 {
+				continue
+			}
+
+			// Surface height varies slightly with noise.
+			edgeFactor := (combined - 0.3) / 0.7 // 0..1
+			surfaceHeight := baseY + int(n2*3*edgeFactor)
+			thickness := 2 + int(3*edgeFactor)
+
+			bottomY := surfaceHeight - thickness
+			for worldY := bottomY; worldY <= surfaceHeight; worldY++ {
+				g.setBlock(chunk, x, worldY, z, g.endStoneID)
+			}
+		}
+	}
+}
+
+// placeChorusPlants scatters chorus plant columns on outer End islands.
+// Places 3-5 per qualifying chunk, only on end_stone surfaces.
+func (g *EndGenerator) placeChorusPlants(chunk *level.Chunk, pos game.ChunkPos) {
+	centerX := pos.X*16 + 8
+	centerZ := pos.Z*16 + 8
+	distSq := float64(centerX*centerX + centerZ*centerZ)
+
+	if distSq < 1000*1000 {
+		return
+	}
+
+	// Determine how many chorus plants (3-5) using hash.
+	countHash := posHash(pos.X, pos.Z, 0, g.Seed+700)
+	count := 3 + int(countHash%3)
+
+	for i := 0; i < count; i++ {
+		// Deterministic position within chunk.
+		xHash := posHash(pos.X, pos.Z, i, g.Seed+701)
+		zHash := posHash(pos.X, pos.Z, i, g.Seed+702)
+		lx := int(xHash % 16)
+		lz := int(zHash % 16)
+
+		// Find end stone surface at this position.
+		surfaceY := g.findEndStoneSurface(chunk, lx, lz)
+		if surfaceY < 0 {
+			continue
+		}
+
+		// Chorus column height (2-5 blocks).
+		hHash := posHash(pos.X, pos.Z, i, g.Seed+703)
+		height := 2 + int(hHash%4)
+
+		// Place chorus_plant column.
+		for dy := 1; dy <= height; dy++ {
+			g.setBlock(chunk, lx, surfaceY+dy, lz, g.chorusPlantID)
+		}
+		// Top with chorus_flower.
+		g.setBlock(chunk, lx, surfaceY+height+1, lz, g.chorusFlowerID)
+	}
+}
+
+// findEndStoneSurface scans downward to find the highest end stone block at the given local position.
+func (g *EndGenerator) findEndStoneSurface(chunk *level.Chunk, x, z int) int {
+	for secIdx := g.Sections - 1; secIdx >= 0; secIdx-- {
+		for localY := 15; localY >= 0; localY-- {
+			idx := localY*16*16 + z*16 + x
+			state := chunk.Sections[secIdx].GetBlock(idx)
+			if state == g.endStoneID {
+				return secIdx*16 + localY + g.MinY
+			}
+		}
+	}
+	return -1
 }
 
 // placePillars places obsidian pillars that intersect this chunk.
