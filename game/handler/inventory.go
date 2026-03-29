@@ -10,6 +10,22 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
+// doubleClickScanOrder is the slot scan order for mode 6 (double-click collect):
+// main inventory (9-35), hotbar (36-44), crafting/armor (1-8), offhand (45).
+var doubleClickScanOrder = func() []int {
+	order := make([]int, 0, 45)
+	for i := 9; i <= 35; i++ {
+		order = append(order, i)
+	}
+	for i := 36; i <= 44; i++ {
+		order = append(order, i)
+	}
+	for i := 1; i <= 8; i++ {
+		order = append(order, i)
+	}
+	return append(order, 45)
+}()
+
 // InventoryHandler processes inventory interaction packets.
 type InventoryHandler struct {
 	Logger           *log.Logger
@@ -340,8 +356,12 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		h.handleNumberKey(player, slot, int(button))
 	case 4: // Drop
 		h.handleDrop(player, slot, int(button))
+	case 5: // Drag
+		h.handleDrag(player, slot, int(button))
+	case 6: // Double-click (collect matching items to cursor)
+		h.handleDoubleClick(player, slot)
 	default:
-		// Modes 3 (clone), 5 (drag), 6 (double-click) — just resync
+		// Mode 3 (clone) — just resync
 	}
 
 	updateCraftingResult(player)
@@ -589,6 +609,179 @@ func (h *InventoryHandler) handleDrop(player *game.Player, slot, button int) {
 	} else if button == 1 {
 		// Drop entire stack
 		*invItem = game.ItemStack{}
+	}
+}
+
+// handleDrag handles mode 5 (drag to distribute items across slots).
+// The drag protocol sends multiple ContainerClick packets:
+//   - Start: button 0/4/8, slot -999
+//   - Add slot: button 1/5/9, slot = target
+//   - End: button 2/6/10, slot -999
+func (h *InventoryHandler) handleDrag(player *game.Player, slot, button int) {
+	switch button {
+	case 0, 4, 8:
+		player.DragSlots = nil
+	case 1, 5, 9:
+		// Add slot to drag
+		if slot >= 0 && slot < 46 {
+			player.DragSlots = append(player.DragSlots, int16(slot))
+		}
+	case 2:
+		// End left drag — divide evenly
+		h.endLeftDrag(player)
+		player.DragSlots = nil
+	case 6:
+		// End right drag — place one each
+		h.endRightDrag(player)
+		player.DragSlots = nil
+	case 10:
+		// End middle drag — creative clone
+		h.endMiddleDrag(player)
+		player.DragSlots = nil
+	}
+}
+
+// endLeftDrag distributes the cursor item evenly across all drag slots.
+func (h *InventoryHandler) endLeftDrag(player *game.Player) {
+	if player.CursorItem.ID == 0 || player.CursorItem.Count <= 0 {
+		return
+	}
+	slots := player.DragSlots
+	if len(slots) == 0 {
+		return
+	}
+
+	// Filter to valid target slots (empty or same item type with room)
+	var targets []int16
+	for _, s := range slots {
+		if s < 0 || int(s) >= 46 {
+			continue
+		}
+		inv := &player.Inventory[s]
+		if inv.ID == 0 || (inv.ID == player.CursorItem.ID && inv.Count < 64) {
+			targets = append(targets, s)
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	perSlot := player.CursorItem.Count / int32(len(targets))
+	if perSlot <= 0 {
+		return
+	}
+
+	remaining := player.CursorItem.Count
+	for _, s := range targets {
+		inv := &player.Inventory[s]
+		give := perSlot
+		if inv.ID == player.CursorItem.ID {
+			// Stack — cap at 64
+			space := int32(64) - inv.Count
+			if give > space {
+				give = space
+			}
+			inv.Count += give
+		} else {
+			// Empty slot
+			if give > 64 {
+				give = 64
+			}
+			*inv = game.ItemStack{ID: player.CursorItem.ID, Count: give}
+		}
+		remaining -= give
+	}
+
+	if remaining > 0 {
+		player.CursorItem.Count = remaining
+	} else {
+		player.CursorItem = game.ItemStack{}
+	}
+}
+
+// endRightDrag places exactly 1 item from cursor into each drag slot.
+func (h *InventoryHandler) endRightDrag(player *game.Player) {
+	if player.CursorItem.ID == 0 || player.CursorItem.Count <= 0 {
+		return
+	}
+	slots := player.DragSlots
+	if len(slots) == 0 {
+		return
+	}
+
+	for _, s := range slots {
+		if player.CursorItem.Count <= 0 {
+			break
+		}
+		if s < 0 || int(s) >= 46 {
+			continue
+		}
+		inv := &player.Inventory[s]
+		if inv.ID == 0 {
+			*inv = game.ItemStack{ID: player.CursorItem.ID, Count: 1}
+			player.CursorItem.Count--
+		} else if inv.ID == player.CursorItem.ID && inv.Count < 64 {
+			inv.Count++
+			player.CursorItem.Count--
+		}
+	}
+
+	if player.CursorItem.Count <= 0 {
+		player.CursorItem = game.ItemStack{}
+	}
+}
+
+// endMiddleDrag clones the cursor stack into each drag slot (creative mode only).
+func (h *InventoryHandler) endMiddleDrag(player *game.Player) {
+	if player.GameMode != 1 {
+		return // middle drag is creative-only
+	}
+	if player.CursorItem.ID == 0 {
+		return
+	}
+	for _, s := range player.DragSlots {
+		if s < 0 || int(s) >= 46 {
+			continue
+		}
+		player.Inventory[s] = game.ItemStack{
+			ID:    player.CursorItem.ID,
+			Count: player.CursorItem.Count,
+		}
+	}
+}
+
+// handleDoubleClick handles mode 6 (double-click to collect matching items to cursor).
+// Scans all accessible slots and transfers items matching the cursor's item ID
+// until the cursor reaches max stack size (64).
+func (h *InventoryHandler) handleDoubleClick(player *game.Player, slot int) {
+	if player.CursorItem.ID == 0 || player.CursorItem.Count <= 0 {
+		return
+	}
+	if player.CursorItem.Count >= 64 {
+		return
+	}
+
+	targetID := player.CursorItem.ID
+
+	for _, i := range doubleClickScanOrder {
+		if player.CursorItem.Count >= 64 {
+			break
+		}
+		inv := &player.Inventory[i]
+		if inv.ID != targetID || inv.Count <= 0 {
+			continue
+		}
+		// Transfer as much as possible
+		space := int32(64) - player.CursorItem.Count
+		take := inv.Count
+		if take > space {
+			take = space
+		}
+		player.CursorItem.Count += take
+		inv.Count -= take
+		if inv.Count <= 0 {
+			*inv = game.ItemStack{}
+		}
 	}
 }
 

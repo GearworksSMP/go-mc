@@ -420,6 +420,9 @@ type Player struct {
 	Sleeping      bool
 	LastSleepTick int64
 
+	// Drag state (mode 5)
+	DragSlots []int16 // slots collected during a drag operation
+
 	// Container window state
 	OpenWindowID        int           // 0=none, 1=crafting table, 2=chest, 3=furnace, 7=brewing stand
 	CraftingGrid        [9]ItemStack  // temporary 3x3 crafting grid
