@@ -172,6 +172,7 @@ func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) int32 {
 	}
 	m.mu.Lock()
 	m.Mobs[eid] = mob
+	m.Spatial.Insert(eid, x, z)
 	m.mu.Unlock()
 	m.broadcastSpawn(mob)
 	return eid
@@ -322,6 +323,7 @@ type MobManager struct {
 	HiveMgr      *HiveManager
 	TurtleMgr    *TurtleManager
 	Logger       *log.Logger
+	Spatial      *MobSpatialIndex
 	mu           sync.Mutex
 	Mobs         map[int32]*Mob
 	currentTick  int64 // set at the start of each Tick() call
@@ -337,6 +339,7 @@ func NewMobManager(manager *game.PlayerManager, timeMgr *TimeManager, world game
 		Survival:     survival,
 		ItemEntities: itemEntities,
 		Mobs:         make(map[int32]*Mob),
+		Spatial:      NewMobSpatialIndex(),
 	}
 }
 
@@ -398,8 +401,34 @@ func (m *MobManager) Tick(tick int64) {
 		}
 	}
 
-	// AI tick for each mob
+	// Rebuild spatial index periodically
+	if tick%spatialRebuildInterval == 0 {
+		m.Spatial.Rebuild(m.Mobs)
+	}
+
+	// Collect player positions for entity culling
+	var playerPositions [][2]float64
+	m.Manager.ForEach(func(p *game.Player) {
+		px, _, pz := p.Position()
+		playerPositions = append(playerPositions, [2]float64{px, pz})
+	})
+
+	// AI tick for each mob, with entity culling
 	for _, mob := range m.Mobs {
+		// Skip full AI for mobs far from all players
+		if len(playerPositions) > 0 && !isNearAnyPlayer(mob.X, mob.Z, playerPositions, entityCullDistance) {
+			// Still decrement cooldowns so they don't stall
+			if mob.AttackCooldown > 0 {
+				mob.AttackCooldown--
+			}
+			if mob.ShootCooldown > 0 {
+				mob.ShootCooldown--
+			}
+			if mob.FireTicks > 0 {
+				mob.FireTicks--
+			}
+			continue
+		}
 		m.tickMob(mob, tick)
 	}
 
@@ -442,6 +471,7 @@ func (m *MobManager) sweepDeadMobs(tick int64) {
 				p.WritePacket(removePkt)
 			})
 		}
+		m.Spatial.Remove(eid)
 		delete(m.Mobs, eid)
 	}
 }
@@ -1327,6 +1357,7 @@ func (m *MobManager) creeperExplode(mob *Mob) {
 
 	// Kill creeper (no XP)
 	m.removeMobEntity(mob)
+	m.Spatial.Remove(mob.EID)
 	delete(m.Mobs, mob.EID)
 
 	// Explosion sound
@@ -2522,6 +2553,7 @@ func (m *MobManager) despawnFarMobs() {
 	}
 	for _, eid := range toRemove {
 		m.removeMobEntity(m.Mobs[eid])
+		m.Spatial.Remove(eid)
 		delete(m.Mobs, eid)
 	}
 }

@@ -225,8 +225,8 @@ func (m *MobManager) tickIronGolem(mob *Mob, tick int64) {
 	// Iron golems attack hostile mobs targeting players
 	var targetMob *Mob
 	targetDist := 16.0
-	for _, other := range m.Mobs {
-		if other.EID == mob.EID || other.Health <= 0 || !other.Hostile {
+	for _, other := range m.mobsInRange(mob.X, mob.Z, 16.0) {
+		if other.EID == mob.EID || !other.Hostile {
 			continue
 		}
 		dx := other.X - mob.X
@@ -1857,4 +1857,34 @@ func (m *MobManager) broadcastEntityEvent(mob *Mob, event byte) {
 	m.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pkt)
 	})
+}
+
+// mobsInRange returns all living mobs within radius blocks of (x, z),
+// using the spatial index for efficient lookup.
+func (m *MobManager) mobsInRange(x, z, radius float64) []*Mob {
+	return m.Spatial.MobsInRange(x, z, radius, m.Mobs)
+}
+
+// nearestPlayerPos finds the closest player to (x, z) within maxDist blocks.
+// Returns the player and distance, or (nil, 0) if none found.
+func (m *MobManager) nearestPlayerPos(x, z, maxDist float64) (*game.Player, float64) {
+	var best *game.Player
+	bestDist := maxDist + 1
+	m.Manager.ForEachNearby(x, z, maxDist, func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, _, pz := p.Position()
+		dx := px - x
+		dz := pz - z
+		d := math.Sqrt(dx*dx + dz*dz)
+		if d < bestDist {
+			bestDist = d
+			best = p
+		}
+	})
+	if best == nil {
+		return nil, 0
+	}
+	return best, bestDist
 }
