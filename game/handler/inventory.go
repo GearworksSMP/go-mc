@@ -46,6 +46,7 @@ type InventoryHandler struct {
 	SmithingMgr      *SmithingTableManager
 	BeaconMgr        *BeaconManager
 	LoomMgr          *LoomManager
+	CrafterMgr       *CrafterManager
 	OnContainerClose func(containerType string, pos [3]int) // called when chest/furnace closed
 }
 
@@ -281,6 +282,24 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 				h.handleDispenserDrop(player, ds, slot, int(button))
 			}
 			SendDispenserWindowContent(player, ds)
+		}
+		return
+	}
+
+	if int(windowID) == CrafterWindowID && player.OpenWindowID == CrafterWindowID && h.CrafterMgr != nil {
+		cs := h.CrafterMgr.Get(player.OpenCrafterPos[0], player.OpenCrafterPos[1], player.OpenCrafterPos[2])
+		if cs != nil {
+			switch mode {
+			case 0:
+				h.CrafterMgr.HandleCrafterClick(player, cs, slot, int(button))
+			case 1:
+				h.CrafterMgr.HandleCrafterShiftClick(player, cs, slot)
+			case 2:
+				h.CrafterMgr.HandleCrafterNumberKey(player, cs, slot, int(button))
+			case 4:
+				h.CrafterMgr.HandleCrafterDrop(player, cs, slot, int(button))
+			}
+			SendCrafterWindowContent(player, cs)
 		}
 		return
 	}
@@ -837,6 +856,11 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		// Closing dispenser/dropper — notify persistence layer
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("dispenser", player.OpenDispenserPos)
+		}
+	case CrafterWindowID:
+		// Closing crafter — notify persistence layer
+		if h.OnContainerClose != nil {
+			h.OnContainerClose("crafter", player.OpenCrafterPos)
 		}
 	case 12:
 		// Closing barrel

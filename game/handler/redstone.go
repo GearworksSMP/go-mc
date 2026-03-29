@@ -60,6 +60,7 @@ type RedstoneManager struct {
 	WireMgr      *WireManager
 	PistonMgr    *PistonManager
 	DispenserMgr *DispenserManager
+	CrafterMgr   *CrafterManager
 	TNTMgr       *TNTManager
 	mu           sync.Mutex
 	sources      map[[3]int]*PowerSource
@@ -377,6 +378,10 @@ func (r *RedstoneManager) updatePoweredBlock(x, y, z int) {
 	case block.Dropper:
 		if powered && r.DispenserMgr != nil {
 			r.DispenserMgr.Activate(x, y, z)
+		}
+	case block.Crafter:
+		if powered && r.CrafterMgr != nil {
+			r.CrafterMgr.Activate(x, y, z)
 		}
 	case block.NoteBlock:
 		if powered {

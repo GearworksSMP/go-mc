@@ -27,9 +27,10 @@ type HopperManager struct {
 	mu       sync.RWMutex
 	Manager  *game.PlayerManager
 	World    game.World
-	Chests   *ChestManager
-	Furnaces *FurnaceManager
-	WireMgr  *WireManager // for comparator notifications on item transfers
+	Chests     *ChestManager
+	Furnaces   *FurnaceManager
+	CrafterMgr *CrafterManager
+	WireMgr    *WireManager // for comparator notifications on item transfers
 }
 
 // NewHopperManager creates a new HopperManager.
@@ -257,6 +258,25 @@ func (hm *HopperManager) tryPullFrom(hs *HopperState, x, y, z int) bool {
 				}
 			}
 		}
+	case "crafter":
+		if hm.CrafterMgr == nil {
+			return false
+		}
+		cs := hm.CrafterMgr.Get(x, y, z)
+		if cs == nil {
+			return false
+		}
+		for i := 0; i < 9; i++ {
+			if cs.Slots[i].ID > 0 && cs.Slots[i].Count > 0 {
+				if hm.addToHopper(hs, cs.Slots[i].ID, 1) {
+					cs.Slots[i].Count--
+					if cs.Slots[i].Count <= 0 {
+						cs.Slots[i] = game.ItemStack{}
+					}
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -339,6 +359,18 @@ func (hm *HopperManager) tryPushTo(hs *HopperState, x, y, z int) bool {
 			hm.Hoppers[[3]int{x, y, z}] = other
 		}
 		if hm.addToHopper(other, itemID, 1) {
+			hs.Slots[srcSlot].Count--
+			if hs.Slots[srcSlot].Count <= 0 {
+				hs.Slots[srcSlot] = game.ItemStack{}
+			}
+			return true
+		}
+	case "crafter":
+		if hm.CrafterMgr == nil {
+			return false
+		}
+		cs := hm.CrafterMgr.GetOrCreate(x, y, z)
+		if hm.CrafterMgr.AddItemToSlot(cs, itemID, 1) {
 			hs.Slots[srcSlot].Count--
 			if hs.Slots[srcSlot].Count <= 0 {
 				hs.Slots[srcSlot] = game.ItemStack{}

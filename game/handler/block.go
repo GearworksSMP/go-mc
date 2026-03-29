@@ -80,6 +80,7 @@ type BlockHandler struct {
 	CampfireMgr      *CampfireManager                   // optional; handles campfire cooking
 	NoteBlockMgr     *NoteBlockManager                  // optional; handles note block tuning/playback
 	LoomMgr          *LoomManager                      // optional; handles loom interactions
+	CrafterMgr       *CrafterManager                   // optional; handles crafter block interactions
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -314,6 +315,12 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			case "dropper":
 				if h.DispenserMgr != nil {
 					h.DispenserMgr.OpenDispenser(player, pos.X, pos.Y, pos.Z, true)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "crafter":
+				if h.CrafterMgr != nil {
+					h.CrafterMgr.OpenCrafter(player, pos.X, pos.Y, pos.Z)
 					h.sendAck(player, int32(sequence))
 					return
 				}

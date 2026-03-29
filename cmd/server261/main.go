@@ -255,15 +255,18 @@ func main() {
 	pistonMgr := handler.NewPistonManager(players, world)
 	hopperMgr := handler.NewHopperManager(players, world)
 	dispenserMgr := handler.NewDispenserManager(players, world, itemEntities)
+	crafterMgr := handler.NewCrafterManager(players, world, itemEntities)
 
 	// Wire redstone sub-managers
 	redstoneMgr.WireMgr = wireMgr
 	redstoneMgr.PistonMgr = pistonMgr
 	redstoneMgr.DispenserMgr = dispenserMgr
+	redstoneMgr.CrafterMgr = crafterMgr
 	redstoneMgr.TNTMgr = tntMgr
 	redstoneMgr.TimeMgr = timeMgr
 	hopperMgr.Chests = chestMgr
 	hopperMgr.Furnaces = furnaceMgr
+	hopperMgr.CrafterMgr = crafterMgr
 	dispenserMgr.ArrowMgr = arrowMgr
 	hopperMgr.WireMgr = wireMgr
 	wireMgr.ChestMgr = chestMgr
@@ -366,6 +369,7 @@ func main() {
 		pistonMgr:       pistonMgr,
 		hopperMgr:       hopperMgr,
 		dispenserMgr:    dispenserMgr,
+		crafterMgr:      crafterMgr,
 		barrelMgr:       barrelMgr,
 		grindstoneMgr:   grindstoneMgr,
 		stonecutterMgr:  stonecutterMgr,
@@ -729,6 +733,7 @@ type gamePlay struct {
 	pistonMgr       *handler.PistonManager
 	hopperMgr       *handler.HopperManager
 	dispenserMgr    *handler.DispenserManager
+	crafterMgr      *handler.CrafterManager
 	dimensionMgr    *handler.DimensionManager
 	endPortalMgr    *handler.EndPortalManager
 	dragonMgr       *handler.EnderDragonManager
@@ -1303,6 +1308,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		PistonMgr:    g.pistonMgr,
 		HopperMgr:    g.hopperMgr,
 		DispenserMgr: g.dispenserMgr,
+		CrafterMgr:   g.crafterMgr,
 		DimensionMgr:    g.dimensionMgr,
 		EndPortalMgr:    g.endPortalMgr,
 		BarrelMgr:       g.barrelMgr,
@@ -1333,7 +1339,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
-			if blockName == "chest" || blockName == "furnace" || blockName == "brewing_stand" || blockName == "hopper" || blockName == "dispenser" || blockName == "dropper" {
+			if blockName == "chest" || blockName == "furnace" || blockName == "brewing_stand" || blockName == "hopper" || blockName == "dispenser" || blockName == "dropper" || blockName == "crafter" {
 				go g.pgStore.DeleteBlockEntity(context.Background(), "overworld", x, y, z)
 			}
 		}
@@ -1357,6 +1363,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		SmithingMgr:     g.smithingMgr,
 		BeaconMgr:       g.beaconMgr,
 		LoomMgr:         g.loomMgr,
+		CrafterMgr:      g.crafterMgr,
 	}
 	if g.pgStore != nil {
 		invHandler.OnContainerClose = func(containerType string, pos [3]int) {
