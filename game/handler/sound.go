@@ -107,6 +107,11 @@ const (
 	SoundHorseDeath   int32 = 470
 	SoundHorseHurt    int32 = 473
 
+	// Llama sounds
+	SoundLlamaAmbient int32 = 543
+	SoundLlamaDeath   int32 = 545
+	SoundLlamaHurt    int32 = 547
+
 	// Parrot sounds
 	SoundParrotAmbient int32 = 742
 	SoundParrotDeath   int32 = 743
@@ -434,6 +439,8 @@ func MobHurtSound(typeID int32) int32 {
 		return SoundWardenHurt
 	case MobTypeTurtle:
 		return SoundTurtleHurt
+	case MobTypeLlama, MobTypeTraderLlama:
+		return SoundLlamaHurt
 	}
 	return SoundPlayerHurt
 }
@@ -531,6 +538,8 @@ func MobDeathSound(typeID int32) int32 {
 		return SoundWardenDeath
 	case MobTypeTurtle:
 		return SoundTurtleDeath
+	case MobTypeLlama, MobTypeTraderLlama:
+		return SoundLlamaDeath
 	}
 	return SoundPlayerDeath
 }
@@ -543,7 +552,7 @@ func MobSoundCategory(typeID int32) int32 {
 	case MobTypeWolf, MobTypeCat, MobTypeHorse, MobTypeParrot,
 		MobTypeFox, MobTypeRabbit, MobTypeBat, MobTypeBee,
 		MobTypeIronGolem, MobTypeSnowGolem, MobTypeStrider,
-		MobTypeTurtle:
+		MobTypeTurtle, MobTypeLlama, MobTypeTraderLlama:
 		return SoundCategoryNeutral
 	case MobTypeEnderman:
 		// Enderman is neutral until provoked, but uses hostile sound category
@@ -588,6 +597,8 @@ func MobAmbientSound(typeID int32) int32 {
 		return SoundParrotAmbient
 	case MobTypeTurtle:
 		return SoundTurtleAmbient
+	case MobTypeLlama, MobTypeTraderLlama:
+		return SoundLlamaAmbient
 	}
 	return -1
 }

@@ -89,6 +89,7 @@ var mobNameToType = map[string]int32{
 	"warden": MobTypeWarden, "frog": MobTypeFrog, "axolotl": MobTypeAxolotl,
 	"allay": MobTypeAllay, "sniffer": MobTypeSniffer,
 	"turtle": MobTypeTurtle,
+	"llama": MobTypeLlama, "trader_llama": MobTypeTraderLlama,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -142,6 +143,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 14, 0, 0.09, false
 	case MobTypeTurtle:
 		return 30, 0, 0.1, false
+	case MobTypeLlama, MobTypeTraderLlama:
+		return 22, 1, 0.1, false
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -169,6 +172,12 @@ func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) int32 {
 	}
 	if typeID == MobTypeSheep {
 		mob.WoolColor = 0 // default white for summoned sheep
+	}
+	if isLlamaType(typeID) {
+		mob.TameData = &TameableMobData{
+			CarpetColor:   -1,
+			LlamaStrength: 1 + rand.Int31n(5),
+		}
 	}
 	m.mu.Lock()
 	m.Mobs[eid] = mob
@@ -870,6 +879,12 @@ func (m *MobManager) spawnPassiveMobAt(x, y, z float64) {
 			HorseJump:    0.4 + rand.Float64()*0.3,
 			HorseVariant: rand.Int31n(7)*256 + rand.Int31n(5),
 		}
+	case roll < 0.98:
+		typeID, health = MobTypeLlama, 22
+		tdata = &TameableMobData{
+			CarpetColor:   -1,
+			LlamaStrength: 1 + rand.Int31n(5),
+		}
 	default:
 		typeID, health = MobTypeParrot, 6
 	}
@@ -1080,6 +1095,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		return
 	case mob.TypeID == MobTypeParrot:
 		m.tickParrot(mob, tick)
+		return
+	case isLlamaType(mob.TypeID):
+		m.tickLlama(mob, tick)
 		return
 	case mob.TypeID == MobTypeCaveSpider:
 		m.tickCaveSpider(mob, tick)
@@ -1885,6 +1903,15 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 		return false
 	}
 
+	// Apply horse armor damage reduction
+	if mob.TypeID == MobTypeHorse {
+		reduction := horseArmorDamageReduction(mob)
+		damage -= reduction
+		if damage < 0 {
+			damage = 0
+		}
+	}
+
 	mob.Health -= damage
 	if mob.Health < 0 {
 		mob.Health = 0
@@ -2461,6 +2488,29 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		}
 	case MobTypeHorse:
 		drops = []drop{{"leather", 0, 2}}
+		if mob.TameData != nil {
+			if mob.TameData.ArmorItemID > 0 {
+				if armorName := ItemNameByID(mob.TameData.ArmorItemID); armorName != "" {
+					drops = append(drops, drop{armorName, 1, 1})
+				}
+			}
+			if mob.TameData.HasSaddle {
+				drops = append(drops, drop{"saddle", 1, 1})
+			}
+		}
+	case MobTypeLlama, MobTypeTraderLlama:
+		drops = []drop{{"leather", 0, 2}}
+		// Drop chest contents
+		if mob.TameData != nil && mob.TameData.HasChest {
+			for _, item := range mob.TameData.ChestInventory {
+				if item.ID > 0 {
+					itemName := ItemNameByID(item.ID)
+					if itemName != "" {
+						drops = append(drops, drop{itemName, item.Count, item.Count})
+					}
+				}
+			}
+		}
 	case MobTypeParrot:
 		drops = []drop{{"feather", 1, 2}}
 	case MobTypeBee:
@@ -2656,6 +2706,14 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 	// Send tameable metadata
 	if mob.TameData != nil && mob.TameData.Tamed {
 		m.broadcastTameableMetadata(mob)
+		// Send horse armor equipment
+		if mob.TypeID == MobTypeHorse && mob.TameData.ArmorItemID > 0 {
+			m.broadcastHorseEquipment(mob)
+		}
+		// Send llama metadata (chest, carpet)
+		if isLlamaType(mob.TypeID) {
+			m.broadcastLlamaMetadata(mob)
+		}
 	}
 
 	// Send custom name metadata

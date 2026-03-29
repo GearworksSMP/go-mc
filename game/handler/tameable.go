@@ -12,10 +12,12 @@ import (
 
 // Tameable mob type IDs.
 const (
-	MobTypeWolf   int32 = 148
-	MobTypeCat    int32 = 21
-	MobTypeHorse  int32 = 66
-	MobTypeParrot int32 = 98
+	MobTypeWolf         int32 = 148
+	MobTypeCat          int32 = 21
+	MobTypeHorse        int32 = 66
+	MobTypeParrot       int32 = 98
+	MobTypeLlama        int32 = 76
+	MobTypeTraderLlama  int32 = 130
 )
 
 // TameableMobData holds taming and ownership state for a mob.
@@ -34,15 +36,28 @@ type TameableMobData struct {
 	HasSaddle    bool
 	HorseSpeed   float64
 	HorseJump    float64
+	ArmorItemID  int32 // horse armor item ID (0 = none)
 
 	// Parrot fields
 	ParrotVariant int32 // 0-4 for parrot colors
+
+	// Llama fields
+	HasChest       bool            // llama has attached chest
+	CarpetColor    int32           // llama carpet dye color (-1 = none)
+	LlamaStrength  int32           // 1-5, determines chest capacity (strength*3 slots)
+	ChestInventory []game.ItemStack // llama chest contents
 }
 
 // isTameableType returns true if the mob type can be tamed.
 func isTameableType(typeID int32) bool {
 	return typeID == MobTypeWolf || typeID == MobTypeCat ||
-		typeID == MobTypeHorse || typeID == MobTypeParrot
+		typeID == MobTypeHorse || typeID == MobTypeParrot ||
+		typeID == MobTypeLlama || typeID == MobTypeTraderLlama
+}
+
+// isLlamaType returns true if the mob type is a llama or trader llama.
+func isLlamaType(typeID int32) bool {
+	return typeID == MobTypeLlama || typeID == MobTypeTraderLlama
 }
 
 // isTamingItem returns true if the item can be used to tame the given mob type.
@@ -92,11 +107,14 @@ func (m *MobManager) TryTame(player *game.Player, targetEID int32) bool {
 		return false
 	}
 
-	// Already tamed — handle sit toggle or horse mounting
+	// Already tamed — handle sit toggle or horse/llama mounting
 	if mob.TameData != nil && mob.TameData.Tamed {
 		if mob.TameData.OwnerUUID == player.UUID {
 			if mob.TypeID == MobTypeHorse {
 				return m.handleHorseInteract(player, mob)
+			}
+			if isLlamaType(mob.TypeID) {
+				return m.handleLlamaInteract(player, mob)
 			}
 			// Toggle sitting for wolf/cat/parrot
 			mob.TameData.Sitting = !mob.TameData.Sitting
@@ -109,14 +127,40 @@ func (m *MobManager) TryTame(player *game.Player, targetEID int32) bool {
 	heldSlot := int(player.HeldSlot) + 36
 	heldItem := &player.Inventory[heldSlot]
 	if heldItem.ID <= 0 {
-		// Horse: mount attempt even without items
+		// Horse/llama: mount attempt even without items
 		if mob.TypeID == MobTypeHorse {
 			return m.handleHorseMountAttempt(player, mob)
+		}
+		if isLlamaType(mob.TypeID) {
+			return m.handleLlamaMountAttempt(player, mob)
 		}
 		return false
 	}
 
 	heldName := ItemNameByID(heldItem.ID)
+
+	// Llama: feed hay bale to increase temper
+	if isLlamaType(mob.TypeID) {
+		if heldName == "hay_block" {
+			if mob.TameData == nil {
+				mob.TameData = &TameableMobData{
+					CarpetColor:   -1,
+					LlamaStrength: 1 + rand.Int31n(5),
+				}
+			}
+			mob.TameData.Temper += 10
+			if player.GameMode == 0 {
+				consumeOneItem(player, heldSlot)
+			}
+			if mob.TameData.Temper >= 100 {
+				mob.TameData.Tamed = true
+				mob.TameData.OwnerUUID = player.UUID
+				m.broadcastTameEvent(mob, true)
+			}
+			return true
+		}
+		return m.handleLlamaMountAttempt(player, mob)
+	}
 
 	// Horse: feed to increase temper
 	if mob.TypeID == MobTypeHorse {
@@ -214,7 +258,28 @@ func (m *MobManager) handleHorseMountAttempt(player *game.Player, mob *Mob) bool
 	return true
 }
 
-// handleHorseInteract handles right-clicking a tamed horse (mount if saddled, add saddle).
+// isHorseArmor returns true if the item name is a horse armor type.
+func isHorseArmor(name string) bool {
+	return name == "iron_horse_armor" || name == "golden_horse_armor" ||
+		name == "diamond_horse_armor" || name == "leather_horse_armor"
+}
+
+// horseArmorProtection returns the damage reduction for a horse armor item name.
+func horseArmorProtection(name string) float32 {
+	switch name {
+	case "leather_horse_armor":
+		return 3
+	case "iron_horse_armor":
+		return 5
+	case "golden_horse_armor":
+		return 7
+	case "diamond_horse_armor":
+		return 11
+	}
+	return 0
+}
+
+// handleHorseInteract handles right-clicking a tamed horse (mount if saddled, add saddle/armor).
 func (m *MobManager) handleHorseInteract(player *game.Player, mob *Mob) bool {
 	heldSlot := int(player.HeldSlot) + 36
 	heldItem := &player.Inventory[heldSlot]
@@ -231,6 +296,14 @@ func (m *MobManager) handleHorseInteract(player *game.Player, mob *Mob) bool {
 			}
 			return true
 		}
+		if isHorseArmor(heldName) && mob.TameData.ArmorItemID == 0 {
+			mob.TameData.ArmorItemID = heldItem.ID
+			if player.GameMode == 0 {
+				consumeOneItem(player, heldSlot)
+			}
+			m.broadcastHorseEquipment(mob)
+			return true
+		}
 	}
 	// Mount if saddled
 	if mob.TameData.HasSaddle {
@@ -238,6 +311,205 @@ func (m *MobManager) handleHorseInteract(player *game.Player, mob *Mob) bool {
 		m.broadcastMount(player, mob)
 	}
 	return true
+}
+
+// broadcastHorseEquipment sends horse body armor as equipment slot 6 (body).
+func (m *MobManager) broadcastHorseEquipment(mob *Mob) {
+	item := game.ItemStack{}
+	if mob.TameData != nil && mob.TameData.ArmorItemID > 0 {
+		item = game.ItemStack{ID: mob.TameData.ArmorItemID, Count: 1}
+	}
+	// Equipment slot 6 is the body slot for horses
+	var buf []byte
+	slotByte := byte(6) // body slot, last entry so no MSB
+	buf = append(buf, slotByte)
+	s := item.ToSlot()
+	buf = append(buf, encodeSlot261(s)...)
+
+	pkt := pk.Marshal(
+		packetid.ClientboundSetEquipment,
+		pk.VarInt(mob.EID),
+		pk.PluginMessageData(buf),
+	)
+	m.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
+}
+
+// handleLlamaInteract handles right-clicking a tamed llama (chest, carpet, ride).
+func (m *MobManager) handleLlamaInteract(player *game.Player, mob *Mob) bool {
+	heldSlot := int(player.HeldSlot) + 36
+	heldItem := &player.Inventory[heldSlot]
+
+	// TODO: open llama chest UI when shift+right-clicking
+	if player.Sneaking && mob.TameData.HasChest {
+		return true
+	}
+
+	if heldItem.ID > 0 {
+		heldName := ItemNameByID(heldItem.ID)
+
+		if heldName == "chest" && !mob.TameData.HasChest {
+			mob.TameData.HasChest = true
+			capacity := int(mob.TameData.LlamaStrength * 3)
+			if capacity < 3 {
+				capacity = 3
+			}
+			if capacity > 15 {
+				capacity = 15
+			}
+			mob.TameData.ChestInventory = make([]game.ItemStack, capacity)
+			if player.GameMode == 0 {
+				consumeOneItem(player, heldSlot)
+			}
+			m.broadcastLlamaMetadata(mob)
+			return true
+		}
+
+		carpetColor := carpetNameToColor(heldName)
+		if carpetColor >= 0 {
+			mob.TameData.CarpetColor = carpetColor
+			if player.GameMode == 0 {
+				consumeOneItem(player, heldSlot)
+			}
+			m.broadcastLlamaMetadata(mob)
+			return true
+		}
+	}
+
+	// Llamas can be mounted but not steered by the player
+	player.RidingEntityEID = mob.EID
+	m.broadcastMount(player, mob)
+	return true
+}
+
+// handleLlamaMountAttempt handles mounting an untamed llama.
+func (m *MobManager) handleLlamaMountAttempt(player *game.Player, mob *Mob) bool {
+	if mob.TameData == nil {
+		mob.TameData = &TameableMobData{
+			CarpetColor:   -1,
+			LlamaStrength: 1 + rand.Int31n(5),
+		}
+	}
+	mob.TameData.Temper += 5
+	if mob.TameData.Temper >= 100 {
+		mob.TameData.Tamed = true
+		mob.TameData.OwnerUUID = player.UUID
+		m.broadcastTameEvent(mob, true)
+	} else {
+		m.broadcastTameEvent(mob, false)
+	}
+	return true
+}
+
+// carpetNameToColor returns the dye color index for a carpet item name, or -1 if not a carpet.
+func carpetNameToColor(name string) int32 {
+	switch name {
+	case "white_carpet":
+		return 0
+	case "orange_carpet":
+		return 1
+	case "magenta_carpet":
+		return 2
+	case "light_blue_carpet":
+		return 3
+	case "yellow_carpet":
+		return 4
+	case "lime_carpet":
+		return 5
+	case "pink_carpet":
+		return 6
+	case "gray_carpet":
+		return 7
+	case "light_gray_carpet":
+		return 8
+	case "cyan_carpet":
+		return 9
+	case "purple_carpet":
+		return 10
+	case "blue_carpet":
+		return 11
+	case "brown_carpet":
+		return 12
+	case "green_carpet":
+		return 13
+	case "red_carpet":
+		return 14
+	case "black_carpet":
+		return 15
+	}
+	return -1
+}
+
+// broadcastLlamaMetadata sends llama-specific metadata (chest and carpet).
+func (m *MobManager) broadcastLlamaMetadata(mob *Mob) {
+	if mob.TameData == nil {
+		return
+	}
+	var w MetadataWriter
+	// Llama entity data: index 19 = has chest (Boolean), index 20 = strength (Int)
+	w.WriteBoolean(19, mob.TameData.HasChest)
+	// Carpet color: index 21 (Int, -1 for none)
+	w.writeIndex(21, metaSerializerInt)
+	writeVarIntBuf(&w.buf, mob.TameData.CarpetColor)
+	data := w.Bytes()
+	m.Manager.ForEach(func(p *game.Player) {
+		SendEntityMetadata(p, mob.EID, data)
+	})
+}
+
+// tickLlama runs llama AI: follow owner or wander.
+func (m *MobManager) tickLlama(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	if mob.TameData == nil || !mob.TameData.Tamed {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	var owner *game.Player
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.UUID == mob.TameData.OwnerUUID {
+			owner = p
+		}
+	})
+
+	if owner == nil || owner.Dead {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	ox, _, oz := owner.Position()
+	dx := ox - mob.X
+	dz := oz - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+
+	if dist > 40 {
+		mob.X = ox + (rand.Float64()-0.5)*2
+		mob.Z = oz + (rand.Float64()-0.5)*2
+		mob.Y = float64(m.findSurfaceY(int(mob.X), int(mob.Z)))
+		m.broadcastMobTeleport(mob)
+		return
+	}
+
+	if dist > 4.0 {
+		nx := dx / dist * mob.Speed * 1.2
+		nz := dz / dist * mob.Speed * 1.2
+		m.tryMove(mob, nx, nz)
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		m.broadcastMobMove(mob)
+	} else {
+		m.tickWander(mob, tick)
+	}
+}
+
+// horseArmorDamageReduction returns the damage to subtract for a horse with armor.
+func horseArmorDamageReduction(mob *Mob) float32 {
+	if mob.TameData == nil || mob.TameData.ArmorItemID == 0 {
+		return 0
+	}
+	name := ItemNameByID(mob.TameData.ArmorItemID)
+	return horseArmorProtection(name)
 }
 
 // broadcastTameEvent broadcasts tame success/fail particles.
