@@ -53,6 +53,20 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			return true
 		}
 		onGround := (int32(flags) & 0x01) != 0
+
+		// Spectators: update position and broadcast, skip all survival mechanics
+		if IsSpectator(player) {
+			oldX, oldY, oldZ := player.Position()
+			oldChunk := player.ChunkPos()
+			player.SetPosition(float64(x), float64(y), float64(z))
+			newChunk := player.ChunkPos()
+			if oldChunk != newChunk {
+				h.onChunkChange(player, oldChunk, newChunk)
+			}
+			h.broadcastPos(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z))
+			return true
+		}
+
 		wasOnGround := player.OnGround
 		player.OnGround = onGround
 		if !h.validateMovement(player, float64(x), float64(y), float64(z)) {
@@ -100,6 +114,21 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			return true
 		}
 		onGround := (int32(flags) & 0x01) != 0
+
+		// Spectators: update position/rotation and broadcast, skip survival mechanics
+		if IsSpectator(player) {
+			oldX, oldY, oldZ := player.Position()
+			oldChunk := player.ChunkPos()
+			player.SetPosition(float64(x), float64(y), float64(z))
+			player.SetRotation(float32(yaw), float32(pitch))
+			newChunk := player.ChunkPos()
+			if oldChunk != newChunk {
+				h.onChunkChange(player, oldChunk, newChunk)
+			}
+			h.broadcastPosRot(player, oldX, oldY, oldZ, float64(x), float64(y), float64(z), float32(yaw), float32(pitch))
+			return true
+		}
+
 		wasOnGround := player.OnGround
 		player.OnGround = onGround
 		if !h.validateMovement(player, float64(x), float64(y), float64(z)) {
@@ -296,6 +325,7 @@ func (cs *ChunkSender) UpdateChunks(player *game.Player) {
 }
 
 // broadcastPos broadcasts a position-only movement to nearby players.
+// Spectator positions are only sent to other spectators.
 func (h *MovementHandler) broadcastPos(player *game.Player, oldX, oldY, oldZ, newX, newY, newZ float64) {
 	dx := pk.Short((newX - oldX) * 4096)
 	dy := pk.Short((newY - oldY) * 4096)
@@ -307,14 +337,20 @@ func (h *MovementHandler) broadcastPos(player *game.Player, oldX, oldY, oldZ, ne
 		dx, dy, dz,
 		pk.Boolean(player.OnGround),
 	)
+	isSpec := IsSpectator(player)
 	h.Manager.ForEachNearby(newX, newZ, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
+			// Don't send spectator movement to non-spectators
+			if isSpec && !IsSpectator(p) {
+				return
+			}
 			p.WritePacket(pkt)
 		}
 	})
 }
 
 // broadcastPosRot broadcasts position+rotation movement to nearby players.
+// Spectator movements are only sent to other spectators.
 func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ, newX, newY, newZ float64, yaw, pitch float32) {
 	dx := pk.Short((newX - oldX) * 4096)
 	dy := pk.Short((newY - oldY) * 4096)
@@ -334,8 +370,12 @@ func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ,
 		pk.VarInt(player.EID),
 		aYaw,
 	)
+	isSpec := IsSpectator(player)
 	h.Manager.ForEachNearby(newX, newZ, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
+			if isSpec && !IsSpectator(p) {
+				return
+			}
 			p.WritePacket(movPkt)
 			p.WritePacket(headPkt)
 		}
@@ -343,6 +383,7 @@ func (h *MovementHandler) broadcastPosRot(player *game.Player, oldX, oldY, oldZ,
 }
 
 // broadcastRot broadcasts rotation-only movement to nearby players.
+// Spectator rotations are only sent to other spectators.
 func (h *MovementHandler) broadcastRot(player *game.Player, yaw, pitch float32) {
 	px, _, pz := player.Position()
 	aYaw := pk.Angle(degToAngle(yaw))
@@ -359,8 +400,12 @@ func (h *MovementHandler) broadcastRot(player *game.Player, yaw, pitch float32) 
 		pk.VarInt(player.EID),
 		aYaw,
 	)
+	isSpec := IsSpectator(player)
 	h.Manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {
+			if isSpec && !IsSpectator(p) {
+				return
+			}
 			p.WritePacket(rotPkt)
 			p.WritePacket(headPkt)
 		}

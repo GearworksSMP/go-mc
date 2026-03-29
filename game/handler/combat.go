@@ -57,6 +57,11 @@ func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 		return
 	}
 
+	// Spectators cannot interact with entities
+	if IsSpectator(player) {
+		return
+	}
+
 	// Check for boat interaction (right-click to mount)
 	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
 		h.BoatMgr.MountBoat(player, targetEID)
@@ -175,6 +180,11 @@ func isArthropodMob(typeID int32) bool {
 
 func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	if attacker.Dead {
+		return
+	}
+
+	// Spectators cannot attack
+	if IsSpectator(attacker) {
 		return
 	}
 
