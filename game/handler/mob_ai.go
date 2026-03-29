@@ -984,21 +984,46 @@ func (m *MobManager) tickHusk(mob *Mob, tick int64) {
 	}
 }
 
-// tickBee runs bee AI: passive unless provoked, flies around flowers.
+// tickBee runs bee AI: pollination, honey production, and defensive stinging.
 func (m *MobManager) tickBee(mob *Mob, tick int64) {
-	// Bees fly
+	// If the bee is inside a hive, check if it should exit
+	if mob.InsideHive {
+		if tick >= mob.HiveExitTick {
+			mob.InsideHive = false
+			if mob.BeeHivePos != nil && m.HiveMgr != nil {
+				m.HiveMgr.ReleaseBee(mob.BeeHivePos[0], mob.BeeHivePos[1], mob.BeeHivePos[2])
+			}
+			// Teleport bee to just above the hive
+			if mob.BeeHivePos != nil {
+				mob.X = float64(mob.BeeHivePos[0]) + 0.5
+				mob.Y = float64(mob.BeeHivePos[1]) + 1.0
+				mob.Z = float64(mob.BeeHivePos[2]) + 0.5
+			}
+			m.broadcastMobMove(mob)
+		}
+		return // skip all AI while inside hive
+	}
+
+	// Bees fly — gentle vertical bobbing
 	if mob.Y < mob.FlyTargetY {
 		mob.Y += 0.05
 	} else if mob.Y > mob.FlyTargetY+0.5 {
 		mob.Y -= 0.03
 	}
-
 	if tick%80 == 0 {
 		mob.FlyTargetY = mob.Y + (rand.Float64()*4 - 2)
 	}
 
+	// Decrement angry ticks
+	if mob.BeeAngryTicks > 0 {
+		mob.BeeAngryTicks--
+		if mob.BeeAngryTicks <= 0 {
+			mob.Hostile = false
+		}
+	}
+
 	if mob.Hostile {
-		// Bee was provoked — sting attack
+		// Angry bee — chase nearest player and sting
 		var nearest *game.Player
 		nearestDist := 16.0
 		m.Manager.ForEach(func(p *game.Player) {
@@ -1006,7 +1031,7 @@ func (m *MobManager) tickBee(mob *Mob, tick int64) {
 				return
 			}
 			ppx, ppy, ppz := p.Position()
-		d := math.Sqrt(sqDist3(ppx-mob.X, ppy-mob.Y, ppz-mob.Z))
+			d := math.Sqrt(sqDist3(ppx-mob.X, ppy-mob.Y, ppz-mob.Z))
 			if d < nearestDist {
 				nearestDist = d
 				nearest = p
@@ -1029,20 +1054,149 @@ func (m *MobManager) tickBee(mob *Mob, tick int64) {
 
 			if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 				mob.AttackCooldown = 20
-				m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
-				// Bee dies after stinging (like real bee)
+				m.Survival.ApplyDamage(m.Manager, nearest, 1, m.Survival.MobDamageTypeID)
+				// Apply poison effect (ID 19, level 0, 200 ticks = 10 seconds)
+				if m.Survival.EffectMgr != nil {
+					m.Survival.EffectMgr.ApplyEffect(nearest, 19, 0, 200, false)
+				}
+				// Bee dies after stinging
 				mob.Health = 0
 				m.killMob(mob, nil)
 				return
 			}
 		}
 	} else {
-		// Passive flying
-		mob.X += (rand.Float64() - 0.5) * 0.15
-		mob.Z += (rand.Float64() - 0.5) * 0.15
+		// Peaceful bee behavior: find flowers, pollinate, return to hive
+		m.tickBeePollination(mob, tick)
 	}
 
 	m.broadcastMobMove(mob)
+}
+
+// tickBeePollination handles the bee's flower-finding, pollination, and hive return cycle.
+func (m *MobManager) tickBeePollination(mob *Mob, tick int64) {
+	// If pollinated and has a hive, fly toward it
+	if mob.BeePollinated && mob.BeeHivePos != nil {
+		hx := float64(mob.BeeHivePos[0]) + 0.5
+		hy := float64(mob.BeeHivePos[1]) + 0.5
+		hz := float64(mob.BeeHivePos[2]) + 0.5
+		dx := hx - mob.X
+		dy := hy - mob.Y
+		dz := hz - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist <= 2 {
+			// Arrived at hive — deposit pollen
+			if m.HiveMgr != nil {
+				m.HiveMgr.IncrementHoney(mob.BeeHivePos[0], mob.BeeHivePos[1], mob.BeeHivePos[2])
+			}
+			mob.BeePollinated = false
+			mob.BeeFlowerPos = nil
+			mob.BeePollTimer = 0
+		} else if dist > 0 {
+			speed := mob.Speed * 1.5
+			mob.X += dx / dist * speed
+			mob.Y += dy / dist * speed
+			mob.Z += dz / dist * speed
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+		return
+	}
+
+	// If has a flower target and not yet pollinated, fly toward it
+	if mob.BeeFlowerPos != nil && !mob.BeePollinated {
+		fx := float64(mob.BeeFlowerPos[0]) + 0.5
+		fy := float64(mob.BeeFlowerPos[1]) + 0.5
+		fz := float64(mob.BeeFlowerPos[2]) + 0.5
+		dx := fx - mob.X
+		dy := fy - mob.Y
+		dz := fz - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist <= 1 {
+			// At flower — pollinate over time
+			mob.BeePollTimer++
+			if mob.BeePollTimer >= 30 {
+				mob.BeePollinated = true
+				mob.BeeFlowerPos = nil
+				mob.BeePollTimer = 0
+			}
+		} else if dist > 0 {
+			speed := mob.Speed * 1.5
+			mob.X += dx / dist * speed
+			mob.Y += dy / dist * speed
+			mob.Z += dz / dist * speed
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		}
+		return
+	}
+
+	// No flower target — search for one every 60 ticks
+	if tick%60 == 0 && mob.BeeFlowerPos == nil {
+		m.beeSearchFlower(mob)
+	}
+
+	// No hive — try to find one every 100 ticks
+	if tick%100 == 0 && mob.BeeHivePos == nil && m.HiveMgr != nil {
+		m.beeSearchHive(mob)
+	}
+
+	// Wander randomly while idle
+	mob.X += (rand.Float64() - 0.5) * 0.15
+	mob.Z += (rand.Float64() - 0.5) * 0.15
+}
+
+// beeSearchFlower scans nearby blocks for flowers and picks a random one.
+func (m *MobManager) beeSearchFlower(mob *Mob) {
+	const radius = 8
+	bx := int(math.Floor(mob.X))
+	by := int(math.Floor(mob.Y))
+	bz := int(math.Floor(mob.Z))
+
+	var candidates [][3]int
+	for dx := -radius; dx <= radius; dx++ {
+		for dy := -4; dy <= 4; dy++ {
+			for dz := -radius; dz <= radius; dz++ {
+				wx, wy, wz := bx+dx, by+dy, bz+dz
+				state, err := m.World.GetBlock(wx, wy, wz)
+				if err != nil {
+					continue
+				}
+				name := BlockNameFromState(int(state))
+				if flowerBlocks[name] {
+					candidates = append(candidates, [3]int{wx, wy, wz})
+				}
+			}
+		}
+	}
+	if len(candidates) > 0 {
+		chosen := candidates[rand.Intn(len(candidates))]
+		mob.BeeFlowerPos = &chosen
+	}
+}
+
+// beeSearchHive scans for nearby hives tracked by the HiveManager.
+func (m *MobManager) beeSearchHive(mob *Mob) {
+	if m.HiveMgr == nil {
+		return
+	}
+	m.HiveMgr.mu.Lock()
+	defer m.HiveMgr.mu.Unlock()
+
+	bestDist := 32.0
+	var bestPos *[3]int
+	for pos := range m.HiveMgr.hives {
+		dx := float64(pos[0]) + 0.5 - mob.X
+		dy := float64(pos[1]) + 0.5 - mob.Y
+		dz := float64(pos[2]) + 0.5 - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if dist < bestDist {
+			bestDist = dist
+			p := pos // copy loop variable
+			bestPos = &p
+		}
+	}
+	if bestPos != nil {
+		mob.BeeHivePos = bestPos
+	}
 }
 
 // sqDist3 returns the squared distance given dx,dy,dz (utility to avoid repeating).

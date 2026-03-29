@@ -197,6 +197,9 @@ func main() {
 	mobMgr.WeatherMgr = weatherMgr
 	mobMgr.Rules = gameRules
 
+	hiveMgr := handler.NewHiveManager(mobMgr, players, itemEntities, survHandler, world, logger)
+	mobMgr.HiveMgr = hiveMgr
+
 	bedMgr := &handler.BedManager{
 		Manager:    players,
 		MobManager: mobMgr,
@@ -355,6 +358,7 @@ func main() {
 		paintingMgr:     paintingMgr,
 		leashMgr:         leashMgr,
 		respawnAnchorMgr: respawnAnchorMgr,
+		hiveMgr:          hiveMgr,
 		advancementMgr:   advancementMgr,
 		permMgr:         permMgr,
 		gameRules:       gameRules,
@@ -654,6 +658,7 @@ type gamePlay struct {
 	paintingMgr     *handler.PaintingManager
 	leashMgr         *handler.LeashManager
 	respawnAnchorMgr *handler.RespawnAnchorManager
+	hiveMgr          *handler.HiveManager
 	gameRules        *handler.GameRules
 	advancementMgr  *handler.AdvancementManager
 	permMgr         *handler.PermissionManager
@@ -1184,6 +1189,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		LecternMgr:      g.lecternMgr,
 		BannerMgr:        g.bannerMgr,
 		RespawnAnchorMgr: g.respawnAnchorMgr,
+		HiveMgr:          g.hiveMgr,
 		CopperMgr: &handler.CopperManager{
 			Manager: g.players,
 			World:   g.world,
