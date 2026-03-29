@@ -29,6 +29,7 @@ type HopperManager struct {
 	World    game.World
 	Chests   *ChestManager
 	Furnaces *FurnaceManager
+	WireMgr  *WireManager // for comparator notifications on item transfers
 }
 
 // NewHopperManager creates a new HopperManager.
@@ -185,6 +186,9 @@ func (hm *HopperManager) Tick(tick int64) {
 
 		if transferred {
 			hs.Cooldown = 8
+			if hm.WireMgr != nil {
+				hm.WireMgr.notifyNeighborComponents(hs.Pos[0], hs.Pos[1], hs.Pos[2])
+			}
 		}
 	}
 }
