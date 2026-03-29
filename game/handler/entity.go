@@ -13,12 +13,13 @@ import (
 // SendPlayerInfo sends ClientboundPlayerInfoUpdate (add_player + initialize_chat + gamemode + listed)
 // for 'about' to 'target'.
 func SendPlayerInfo(target, about *game.Player) {
-	// Actions bitset: bit 0 = add_player, bit 1 = init_chat, bit 2 = gamemode, bit 3 = listed
+	// Actions bitset: bit 0 = add_player, bit 1 = init_chat, bit 2 = gamemode, bit 3 = listed, bit 4 = update_latency
 	actions := pk.NewFixedBitSet(6)
 	actions.Set(0, true) // add player
 	actions.Set(1, true) // initialize chat
 	actions.Set(2, true) // update gamemode
 	actions.Set(3, true) // update listed
+	actions.Set(4, true) // update latency
 
 	props := make([]user.Property, len(about.Properties))
 	copy(props, about.Properties)
@@ -47,6 +48,9 @@ func SendPlayerInfo(target, about *game.Player) {
 
 	// Action 3: update listed
 	pk.Boolean(true).WriteTo(&buf)
+
+	// Action 4: update latency (milliseconds)
+	pk.VarInt(50).WriteTo(&buf) // default 50ms
 
 	target.WritePacket(pk.Packet{
 		ID:   int32(packetid.ClientboundPlayerInfoUpdate),

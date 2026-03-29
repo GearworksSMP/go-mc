@@ -300,6 +300,7 @@ func main() {
 		Logger:   logger,
 	}
 	mobMgr.EffectMgr = effectMgr
+	tabListMgr := &handler.TabListManager{Players: players, TPS: metrics}
 	sculkMgr := handler.NewSculkManager(players, world)
 	sculkMgr.MobMgr = mobMgr
 	sculkMgr.EffectMgr = effectMgr
@@ -544,6 +545,7 @@ func main() {
 			worldBorderMgr.Tick(tick)
 			villagerMgr.TickRestock(tick, timeMgr)
 			villageMgr.Tick(tick)
+			tabListMgr.Tick(tick)
 
 			metrics.RecordTick(time.Since(tickStart))
 		}),
@@ -1185,7 +1187,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	handler.SendScoreboard(g.players, player)
 
 	// Tab list header/footer
-	tabHeader := chat.Message{Text: "Gearworks", Color: "gold", Bold: true}
+	tabHeader := handler.GearworksHeader()
 	tabFooter := chat.Message{Text: fmt.Sprintf("\n%d player(s) online", g.players.Count()), Color: "gray"}
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundTabList,
