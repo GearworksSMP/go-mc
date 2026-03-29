@@ -263,6 +263,12 @@ func main() {
 	hopperMgr.Chests = chestMgr
 	hopperMgr.Furnaces = furnaceMgr
 	dispenserMgr.ArrowMgr = arrowMgr
+	hopperMgr.WireMgr = wireMgr
+	wireMgr.ChestMgr = chestMgr
+	wireMgr.FurnaceMgr = furnaceMgr
+	wireMgr.HopperMgr = hopperMgr
+	wireMgr.BarrelMgr = barrelMgr
+	wireMgr.BrewingMgr = brewingMgr
 
 	minecartMgr := handler.NewMinecartManager(players, world, redstoneMgr, itemEntities, logger)
 

@@ -1310,3 +1310,95 @@ func (r *RedstoneManager) tickDaylightDetectors() {
 		}
 	}
 }
+
+// getContainerFillLevel returns the comparator signal strength (0-15) for a container
+// block at (x,y,z), or -1 if the block is not a container. Uses the vanilla formula:
+// if empty return 0, else floor(1 + (sum of count/maxStack for each slot) / totalSlots * 14).
+func (w *WireManager) getContainerFillLevel(x, y, z int) int {
+	stateID, err := w.World.GetBlock(x, y, z)
+	if err != nil {
+		return -1
+	}
+	name := BlockNameFromState(int(stateID))
+
+	switch name {
+	case "chest", "trapped_chest":
+		if w.ChestMgr == nil {
+			return 0
+		}
+		cs := w.ChestMgr.Get(x, y, z)
+		if cs == nil {
+			return 0
+		}
+		return calcFillLevel(cs.Items[:], 64)
+
+	case "furnace", "smoker", "blast_furnace":
+		if w.FurnaceMgr == nil {
+			return 0
+		}
+		fs := w.FurnaceMgr.Get(x, y, z)
+		if fs == nil {
+			return 0
+		}
+		slots := []game.ItemStack{fs.Input, fs.Fuel, fs.Output}
+		return calcFillLevel(slots, 64)
+
+	case "hopper":
+		if w.HopperMgr == nil {
+			return 0
+		}
+		hs := w.HopperMgr.Get(x, y, z)
+		if hs == nil {
+			return 0
+		}
+		return calcFillLevel(hs.Slots[:], 64)
+
+	case "barrel":
+		if w.BarrelMgr == nil {
+			return 0
+		}
+		bs := w.BarrelMgr.Get(x, y, z)
+		if bs == nil {
+			return 0
+		}
+		return calcFillLevel(bs.Items[:], 64)
+
+	case "brewing_stand":
+		if w.BrewingMgr == nil {
+			return 0
+		}
+		bs := w.BrewingMgr.Get(x, y, z)
+		if bs == nil {
+			return 0
+		}
+		slots := []game.ItemStack{bs.Bottles[0], bs.Bottles[1], bs.Bottles[2], bs.Ingredient, bs.Fuel}
+		return calcFillLevel(slots, 64)
+	}
+
+	return -1 // not a container block
+}
+
+// calcFillLevel computes the vanilla comparator signal strength for an inventory.
+// maxStack is the max stack size per slot (typically 64).
+func calcFillLevel(slots []game.ItemStack, maxStack int) int {
+	if len(slots) == 0 {
+		return 0
+	}
+	totalSlots := len(slots)
+	sum := 0.0
+	nonEmpty := false
+	for _, s := range slots {
+		if s.ID > 0 && s.Count > 0 {
+			nonEmpty = true
+			sum += float64(s.Count) / float64(maxStack)
+		}
+	}
+	if !nonEmpty {
+		return 0
+	}
+	level := int(1 + sum/float64(totalSlots)*14)
+	if level > 15 {
+		level = 15
+	}
+	return level
+}

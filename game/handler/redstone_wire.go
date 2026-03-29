@@ -17,6 +17,11 @@ type WireManager struct {
 	wirePower map[[3]int]int
 	// scheduledRepeaters tracks repeaters waiting to toggle
 	scheduledRepeaters []RepeaterSchedule
+	ChestMgr   *ChestManager
+	FurnaceMgr *FurnaceManager
+	HopperMgr  *HopperManager
+	BarrelMgr  *BarrelManager
+	BrewingMgr *BrewingStandManager
 }
 
 // NewWireManager creates a new wire propagation manager.
@@ -422,9 +427,15 @@ func (w *WireManager) UpdateComparator(x, y, z int) {
 		return
 	}
 
-	// Get rear input power
+	// Get rear input power; use container fill level if the block behind is a container.
 	bx, bz := behindOffset(comp.Facing)
-	rearPower := w.getPowerAt(x+bx, y, z+bz)
+	bpx, bpz := x+bx, z+bz
+	var rearPower int
+	if cl := w.getContainerFillLevel(bpx, y, bpz); cl >= 0 {
+		rearPower = cl
+	} else {
+		rearPower = w.getPowerAt(bpx, y, bpz)
+	}
 
 	// Get side input power (max of both sides)
 	lx, lz := leftOffset(comp.Facing)
