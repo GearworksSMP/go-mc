@@ -1207,6 +1207,63 @@ func sqDist3(dx, dy, dz float64) float64 {
 	return dx*dx + dy*dy + dz*dz
 }
 
+// tickCaveSpider runs cave spider AI: chase player, melee attack with poison.
+// Smaller than regular spiders (0.7 blocks tall) with shorter attack range (1.0 vs 1.5).
+func (m *MobManager) tickCaveSpider(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	var nearest *game.Player
+	nearestDist := 32.0
+	mobEyeY := mob.Y + 0.35
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - mob.X
+		dy := py - mob.Y
+		dz := pz - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < nearestDist && m.hasLineOfSight(mob.X, mobEyeY, mob.Z, px, py+1.62, pz) {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest == nil {
+		mob.Target = nil
+		mob.Path = nil
+		m.tickWander(mob, tick)
+		return
+	}
+
+	mob.Target = nearest
+	px, _, pz := nearest.Position()
+	dx := px - mob.X
+	dz := pz - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+
+	if dist > 1.0 {
+		m.moveWithPathfinding(mob, nearest, tick)
+	}
+
+	if nearestDist <= 1.0 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
+		mob.AttackCooldown = 30
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
+		// Poison duration scales with difficulty: 7s Normal, 15s Hard
+		if m.Survival.EffectMgr != nil {
+			duration := int32(140)
+			if m.Rules != nil && m.Rules.GetDifficulty() >= 3 {
+				duration = 300
+			}
+			m.Survival.EffectMgr.ApplyEffect(nearest, 19, 0, duration, false)
+		}
+	}
+
+	m.broadcastMobMove(mob)
+}
+
 // Sound constants for new mob types (only those not already in sound.go).
 const (
 	SoundIronGolemAttack = 551

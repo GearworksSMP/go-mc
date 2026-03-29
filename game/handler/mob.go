@@ -119,6 +119,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 10, 6, 0.05, true
 	case MobTypeWitherSkeleton:
 		return 20, 8, 0.1, true
+	case MobTypeCaveSpider:
+		return 12, 2, 0.15, true
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -184,7 +186,9 @@ type Mob struct {
 	FuseDuration int64 // ticks until explosion (30 = 1.5s)
 
 	// Skeleton ranged attack
-	ShootCooldown int64
+	ShootCooldown    int64
+	StrafeDirection  int8  // -1 = left, 0 = none, 1 = right
+	StrafeChangeTick int64 // tick when strafe direction was last changed
 
 	// Passive mob AI
 	FleeX, FleeZ float64 // flee target position
@@ -986,6 +990,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case mob.TypeID == MobTypeParrot:
 		m.tickParrot(mob, tick)
 		return
+	case mob.TypeID == MobTypeCaveSpider:
+		m.tickCaveSpider(mob, tick)
+		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
 		return
@@ -1346,15 +1353,28 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 	dist := math.Sqrt(dx*dx + dz*dz)
 	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
 
-	// Maintain 5-10 block distance
+	// Positioning: back up if too close, approach if too far, strafe at ideal range
 	if dist < 5.0 {
 		// Back up — direct movement (no pathfinding needed for retreating)
 		nx := -dx / dist * mob.Speed
 		nz := -dz / dist * mob.Speed
 		m.tryMove(mob, nx, nz)
-	} else if dist > 10.0 {
-		// Move closer using pathfinding
+	} else if dist > 15.0 {
+		// Too far — move closer using pathfinding
 		m.moveWithPathfinding(mob, nearest, tick)
+	} else {
+		// Ideal shooting range (5-15 blocks) — strafe laterally
+		if mob.StrafeDirection == 0 || tick >= mob.StrafeChangeTick {
+			if rand.Intn(2) == 0 {
+				mob.StrafeDirection = 1
+			} else {
+				mob.StrafeDirection = -1
+			}
+			mob.StrafeChangeTick = tick + 40 + int64(rand.Intn(21))
+		}
+		perpX := -dz / dist * mob.Speed * 0.6 * float64(mob.StrafeDirection)
+		perpZ := dx / dist * mob.Speed * 0.6 * float64(mob.StrafeDirection)
+		m.tryMove(mob, perpX, perpZ)
 	}
 	m.broadcastMobMove(mob)
 
