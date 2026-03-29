@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -133,6 +135,67 @@ func BrewingSlot(player *game.Player, bs *BrewingState, windowSlot int) *game.It
 		return &player.Inventory[windowSlot-32+36]
 	}
 	return nil
+}
+
+// persistedBrewingState is the JSON format for brewing stand persistence.
+type persistedBrewingState struct {
+	Bottles    []persistedItem `json:"bottles"`
+	Ingredient persistedItem   `json:"ingredient"`
+	Fuel       persistedItem   `json:"fuel"`
+	BrewTime   int32           `json:"brew_time"`
+	FuelCharge int32           `json:"fuel_charges"`
+}
+
+// SaveAll serializes all brewing stand states for persistence.
+func (bm *BrewingStandManager) SaveAll(dim string) []store.BlockEntityData {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, bs := range bm.Stands {
+		pbs := persistedBrewingState{
+			Bottles:    containerItemSlots(bs.Bottles[:]),
+			BrewTime:   bs.BrewTime,
+			FuelCharge: bs.FuelCharges,
+		}
+		if bs.Ingredient.ID > 0 {
+			pbs.Ingredient = persistedItem{ID: bs.Ingredient.ID, Count: bs.Ingredient.Count}
+		}
+		if bs.Fuel.ID > 0 {
+			pbs.Fuel = persistedItem{ID: bs.Fuel.ID, Count: bs.Fuel.Count}
+		}
+		data, err := json.Marshal(pbs)
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "brewing_stand", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores brewing stand states from persisted data.
+func (bm *BrewingStandManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "brewing_stand" {
+			continue
+		}
+		var pbs persistedBrewingState
+		if err := json.Unmarshal(e.Data, &pbs); err != nil {
+			continue
+		}
+		bs := bm.GetOrCreate(e.X, e.Y, e.Z)
+		loadItemSlots(bs.Bottles[:], pbs.Bottles)
+		if pbs.Ingredient.ID > 0 {
+			bs.Ingredient = game.ItemStack{ID: pbs.Ingredient.ID, Count: pbs.Ingredient.Count}
+		}
+		if pbs.Fuel.ID > 0 {
+			bs.Fuel = game.ItemStack{ID: pbs.Fuel.ID, Count: pbs.Fuel.Count}
+		}
+		bs.BrewTime = pbs.BrewTime
+		bs.FuelCharges = pbs.FuelCharge
+	}
 }
 
 // Tick processes brewing logic for all active brewing stands.

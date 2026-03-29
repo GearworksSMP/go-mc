@@ -543,6 +543,9 @@ func main() {
 			logger.Printf("Shutdown: saved all online players")
 		}
 
+		// Save all block entities
+		gp.saveAllBlockEntities()
+
 		// Save mobs for all dimensions
 		mobMgr.SaveAllMobs("overworld")
 
@@ -717,7 +720,7 @@ func (g *gamePlay) saveBlockEntity(containerType string, pos [3]int) {
 	}
 }
 
-// loadBlockEntities loads all block entities from DB and populates chest/furnace managers.
+// loadBlockEntities loads all block entities from DB and populates managers.
 func (g *gamePlay) loadBlockEntities() {
 	if g.pgStore == nil {
 		return
@@ -727,39 +730,50 @@ func (g *gamePlay) loadBlockEntities() {
 		g.logf("Failed to load block entities: %v", err)
 		return
 	}
-	for _, e := range entities {
-		switch e.Type {
-		case "chest":
-			var items [27]game.ItemStack
-			if err := json.Unmarshal(e.Data, &items); err != nil {
-				g.logf("Failed to unmarshal chest at (%d,%d,%d): %v", e.X, e.Y, e.Z, err)
-				continue
-			}
-			cs := g.chests.GetOrCreate(e.X, e.Y, e.Z)
-			cs.Items = items
-		case "furnace":
-			var fdata struct {
-				Input    game.ItemStack `json:"input"`
-				Fuel     game.ItemStack `json:"fuel"`
-				Output   game.ItemStack `json:"output"`
-				BurnTime int32          `json:"burn_time"`
-				MaxBurn  int32          `json:"max_burn"`
-				CookTime int32          `json:"cook_time"`
-			}
-			if err := json.Unmarshal(e.Data, &fdata); err != nil {
-				g.logf("Failed to unmarshal furnace at (%d,%d,%d): %v", e.X, e.Y, e.Z, err)
-				continue
-			}
-			fs := g.furnaces.GetOrCreate(e.X, e.Y, e.Z)
-			fs.Input = fdata.Input
-			fs.Fuel = fdata.Fuel
-			fs.Output = fdata.Output
-			fs.BurnTime = fdata.BurnTime
-			fs.MaxBurnTime = fdata.MaxBurn
-			fs.CookTime = fdata.CookTime
-		}
-	}
+	g.chests.LoadAll(entities)
+	g.furnaces.LoadAll(entities)
+	g.barrelMgr.LoadAll(entities)
+	g.shulkerBoxMgr.LoadAll(entities)
+	g.hopperMgr.LoadAll(entities)
+	g.brewingMgr.LoadAll(entities)
+	g.smokerMgr.LoadAll(entities)
+	g.blastFurnaceMgr.LoadAll(entities)
+	g.signMgr.LoadAll(entities)
+	g.bannerMgr.LoadAll(entities)
+	g.hiveMgr.LoadAll(entities)
+	g.decoratedPotMgr.LoadAll(entities)
 	g.logf("Loaded %d block entities from database", len(entities))
+}
+
+// saveAllBlockEntities collects all block entity state and batch-saves to PostgreSQL.
+func (g *gamePlay) saveAllBlockEntities() {
+	if g.pgStore == nil {
+		return
+	}
+	dim := "overworld"
+	var all []store.BlockEntityData
+	all = append(all, g.chests.SaveAll(dim)...)
+	all = append(all, g.furnaces.SaveAll(dim)...)
+	all = append(all, g.barrelMgr.SaveAll(dim)...)
+	all = append(all, g.shulkerBoxMgr.SaveAll(dim)...)
+	all = append(all, g.hopperMgr.SaveAll(dim)...)
+	all = append(all, g.brewingMgr.SaveAll(dim)...)
+	all = append(all, g.smokerMgr.SaveAll(dim)...)
+	all = append(all, g.blastFurnaceMgr.SaveAll(dim)...)
+	all = append(all, g.signMgr.SaveAll(dim)...)
+	all = append(all, g.bannerMgr.SaveAll(dim)...)
+	all = append(all, g.hiveMgr.SaveAll(dim)...)
+	all = append(all, g.decoratedPotMgr.SaveAll(dim)...)
+	if len(all) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := g.pgStore.SaveBlockEntities(ctx, all); err != nil {
+		g.logf("Failed to save block entities: %v", err)
+	} else {
+		g.logf("Shutdown: saved %d block entities", len(all))
+	}
 }
 
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {

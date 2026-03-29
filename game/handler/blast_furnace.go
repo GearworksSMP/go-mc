@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -129,6 +131,62 @@ func BlastFurnaceSlot(player *game.Player, bfs *BlastFurnaceState, windowSlot in
 		return &player.Inventory[windowSlot-30+36]
 	}
 	return nil
+}
+
+// SaveAll serializes all blast furnace states for persistence.
+func (bfm *BlastFurnaceManager) SaveAll(dim string) []store.BlockEntityData {
+	bfm.mu.RLock()
+	defer bfm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, bfs := range bfm.BlastFurnaces {
+		pfs := persistedFurnaceState{
+			BurnTime: bfs.BurnTime,
+			CookTime: bfs.CookTime,
+		}
+		if bfs.Input.ID > 0 {
+			pfs.Input = persistedItem{ID: bfs.Input.ID, Count: bfs.Input.Count}
+		}
+		if bfs.Fuel.ID > 0 {
+			pfs.Fuel = persistedItem{ID: bfs.Fuel.ID, Count: bfs.Fuel.Count}
+		}
+		if bfs.Output.ID > 0 {
+			pfs.Output = persistedItem{ID: bfs.Output.ID, Count: bfs.Output.Count}
+		}
+		data, err := json.Marshal(pfs)
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "blast_furnace", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores blast furnace states from persisted data.
+func (bfm *BlastFurnaceManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "blast_furnace" {
+			continue
+		}
+		var pfs persistedFurnaceState
+		if err := json.Unmarshal(e.Data, &pfs); err != nil {
+			continue
+		}
+		bfs := bfm.GetOrCreate(e.X, e.Y, e.Z)
+		if pfs.Input.ID > 0 {
+			bfs.Input = game.ItemStack{ID: pfs.Input.ID, Count: pfs.Input.Count}
+		}
+		if pfs.Fuel.ID > 0 {
+			bfs.Fuel = game.ItemStack{ID: pfs.Fuel.ID, Count: pfs.Fuel.Count}
+		}
+		if pfs.Output.ID > 0 {
+			bfs.Output = game.ItemStack{ID: pfs.Output.ID, Count: pfs.Output.Count}
+		}
+		bfs.BurnTime = pfs.BurnTime
+		bfs.CookTime = pfs.CookTime
+	}
 }
 
 // blastFurnaceSmeltable returns the output item name for a given input.

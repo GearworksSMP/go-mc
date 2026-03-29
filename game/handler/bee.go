@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"log"
 	"math"
 	"sync"
 
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	"github.com/Tnze/go-mc/level/block"
 )
 
@@ -213,6 +215,49 @@ func (h *HiveManager) angerNearbyBees(x, y, z int) {
 		if math.Sqrt(dx*dx+dy*dy+dz*dz) <= 16 {
 			mob.BeeAngryTicks = 400
 			mob.Hostile = true
+		}
+	}
+}
+
+// SaveAll serializes all hive states for persistence.
+func (h *HiveManager) SaveAll(dim string) []store.BlockEntityData {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var result []store.BlockEntityData
+	for pos, hd := range h.hives {
+		data, err := json.Marshal(map[string]interface{}{
+			"bee_count":   hd.BeeCount,
+			"honey_level": hd.HoneyLevel,
+		})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "beehive", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores hive states from persisted data.
+func (h *HiveManager) LoadAll(entities []store.BlockEntityData) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range entities {
+		if e.Type != "beehive" {
+			continue
+		}
+		var raw struct {
+			BeeCount   int `json:"bee_count"`
+			HoneyLevel int `json:"honey_level"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		h.hives[[3]int{e.X, e.Y, e.Z}] = &HiveData{
+			BeeCount:   raw.BeeCount,
+			HoneyLevel: raw.HoneyLevel,
 		}
 	}
 }

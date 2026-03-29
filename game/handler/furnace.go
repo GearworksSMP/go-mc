@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -140,6 +142,71 @@ func FurnaceSlot(player *game.Player, fs *FurnaceState, windowSlot int) *game.It
 		return &player.Inventory[windowSlot-30+36]
 	}
 	return nil
+}
+
+// persistedFurnaceState is the JSON format for furnace persistence.
+type persistedFurnaceState struct {
+	Input    persistedItem `json:"input"`
+	Fuel     persistedItem `json:"fuel"`
+	Output   persistedItem `json:"output"`
+	BurnTime int32         `json:"burn_time"`
+	CookTime int32         `json:"cook_time"`
+}
+
+// SaveAll serializes all furnace states for persistence.
+func (fm *FurnaceManager) SaveAll(dim string) []store.BlockEntityData {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, fs := range fm.Furnaces {
+		pfs := persistedFurnaceState{
+			BurnTime: fs.BurnTime,
+			CookTime: fs.CookTime,
+		}
+		if fs.Input.ID > 0 {
+			pfs.Input = persistedItem{ID: fs.Input.ID, Count: fs.Input.Count}
+		}
+		if fs.Fuel.ID > 0 {
+			pfs.Fuel = persistedItem{ID: fs.Fuel.ID, Count: fs.Fuel.Count}
+		}
+		if fs.Output.ID > 0 {
+			pfs.Output = persistedItem{ID: fs.Output.ID, Count: fs.Output.Count}
+		}
+		data, err := json.Marshal(pfs)
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "furnace", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores furnace states from persisted data.
+func (fm *FurnaceManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "furnace" {
+			continue
+		}
+		var pfs persistedFurnaceState
+		if err := json.Unmarshal(e.Data, &pfs); err != nil {
+			continue
+		}
+		fs := fm.GetOrCreate(e.X, e.Y, e.Z)
+		if pfs.Input.ID > 0 {
+			fs.Input = game.ItemStack{ID: pfs.Input.ID, Count: pfs.Input.Count}
+		}
+		if pfs.Fuel.ID > 0 {
+			fs.Fuel = game.ItemStack{ID: pfs.Fuel.ID, Count: pfs.Fuel.Count}
+		}
+		if pfs.Output.ID > 0 {
+			fs.Output = game.ItemStack{ID: pfs.Output.ID, Count: pfs.Output.Count}
+		}
+		fs.BurnTime = pfs.BurnTime
+		fs.CookTime = pfs.CookTime
+	}
 }
 
 // Tick processes smelting logic for all active furnaces.

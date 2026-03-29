@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -238,6 +240,42 @@ func (cm *ChestManager) TryLinkDouble(x, y, z int, world game.World, manager *ga
 		cs.Partner = neighbor
 		neighbor.Partner = cs
 		return
+	}
+}
+
+// SaveAll serializes all chest states for persistence.
+func (cm *ChestManager) SaveAll(dim string) []store.BlockEntityData {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, cs := range cm.Chests {
+		items := containerItemSlots(cs.Items[:])
+		data, err := json.Marshal(map[string]interface{}{"items": items})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "chest", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores chest states from persisted data.
+func (cm *ChestManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "chest" {
+			continue
+		}
+		var raw struct {
+			Items []persistedItem `json:"items"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		cs := cm.GetOrCreate(e.X, e.Y, e.Z)
+		loadItemSlots(cs.Items[:], raw.Items)
 	}
 }
 

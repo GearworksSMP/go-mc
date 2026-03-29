@@ -2,10 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	"github.com/Tnze/go-mc/nbt"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
@@ -100,6 +102,64 @@ func (bm *BannerManager) SendAllBannersInChunk(player *game.Player, chunkX, chun
 			pk.VarInt(20),
 			pk.PluginMessageData(nbtData),
 		))
+	}
+}
+
+// persistedBannerPattern is the JSON format for a banner pattern.
+type persistedBannerPattern struct {
+	Pattern string `json:"pattern"`
+	Color   string `json:"color"`
+}
+
+// SaveAll serializes all banner states for persistence.
+func (bm *BannerManager) SaveAll(dim string) []store.BlockEntityData {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	var result []store.BlockEntityData
+	for pos, banner := range bm.banners {
+		patterns := make([]persistedBannerPattern, len(banner.Patterns))
+		for i, p := range banner.Patterns {
+			patterns[i] = persistedBannerPattern{Pattern: p.Pattern, Color: p.Color}
+		}
+		data, err := json.Marshal(map[string]interface{}{
+			"base_color": banner.BaseColor,
+			"patterns":   patterns,
+		})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "banner", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores banner states from persisted data.
+func (bm *BannerManager) LoadAll(entities []store.BlockEntityData) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	for _, e := range entities {
+		if e.Type != "banner" {
+			continue
+		}
+		var raw struct {
+			BaseColor int32                    `json:"base_color"`
+			Patterns  []persistedBannerPattern `json:"patterns"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		patterns := make([]BannerPattern, len(raw.Patterns))
+		for i, p := range raw.Patterns {
+			patterns[i] = BannerPattern{Pattern: p.Pattern, Color: p.Color}
+		}
+		bm.banners[[3]int{e.X, e.Y, e.Z}] = &BannerData{
+			X: e.X, Y: e.Y, Z: e.Z,
+			BaseColor: raw.BaseColor,
+			Patterns:  patterns,
+		}
 	}
 }
 

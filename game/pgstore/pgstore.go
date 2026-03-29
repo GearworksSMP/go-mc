@@ -215,6 +215,37 @@ func (s *PGStore) LoadBlockEntities(ctx context.Context, dimension string) ([]st
 	return entities, rows.Err()
 }
 
+// SaveBlockEntities batch-upserts multiple block entities in a single transaction.
+func (s *PGStore) SaveBlockEntities(ctx context.Context, entities []store.BlockEntityData) error {
+	if len(entities) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pgstore: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, e := range entities {
+		data := e.Data
+		if len(data) == 0 {
+			data = []byte("{}")
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO block_entities (dimension, x, y, z, type, data)
+			 VALUES ($1, $2, $3, $4, $5, $6)
+			 ON CONFLICT (dimension, x, y, z)
+			 DO UPDATE SET type=EXCLUDED.type, data=EXCLUDED.data`,
+			e.Dimension, e.X, e.Y, e.Z, e.Type, data,
+		)
+		if err != nil {
+			return fmt.Errorf("pgstore: save block entity at (%d,%d,%d): %w", e.X, e.Y, e.Z, err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 // DeleteBlockEntity removes a block entity at the given position.
 func (s *PGStore) DeleteBlockEntity(ctx context.Context, dimension string, x, y, z int) error {
 	_, err := s.pool.Exec(ctx,

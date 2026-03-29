@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -105,6 +107,42 @@ func BarrelSlot(player *game.Player, bs *BarrelState, windowSlot int) *game.Item
 		return &player.Inventory[windowSlot-54+36]
 	}
 	return nil
+}
+
+// SaveAll serializes all barrel states for persistence.
+func (bm *BarrelManager) SaveAll(dim string) []store.BlockEntityData {
+	bm.mu.RLock()
+	defer bm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, bs := range bm.Barrels {
+		items := containerItemSlots(bs.Items[:])
+		data, err := json.Marshal(map[string]interface{}{"items": items})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "barrel", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores barrel states from persisted data.
+func (bm *BarrelManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "barrel" {
+			continue
+		}
+		var raw struct {
+			Items []persistedItem `json:"items"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		bs := bm.GetOrCreate(e.X, e.Y, e.Z)
+		loadItemSlots(bs.Items[:], raw.Items)
+	}
 }
 
 // Remove removes a barrel at the given position.

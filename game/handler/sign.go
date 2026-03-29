@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"math"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	"github.com/Tnze/go-mc/level/block"
 	"github.com/Tnze/go-mc/nbt"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -130,6 +132,47 @@ func (sm *SignManager) SendAllSignsInChunk(player *game.Player, chunkX, chunkZ i
 			pk.VarInt(7),
 			pk.PluginMessageData(nbtData),
 		))
+	}
+}
+
+// SaveAll serializes all sign states for persistence.
+func (sm *SignManager) SaveAll(dim string) []store.BlockEntityData {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	var result []store.BlockEntityData
+	for pos, sign := range sm.signs {
+		data, err := json.Marshal(map[string]interface{}{
+			"lines": sign.Lines,
+		})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "sign", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores sign states from persisted data.
+func (sm *SignManager) LoadAll(entities []store.BlockEntityData) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for _, e := range entities {
+		if e.Type != "sign" {
+			continue
+		}
+		var raw struct {
+			Lines [4]string `json:"lines"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		sm.signs[[3]int{e.X, e.Y, e.Z}] = &SignData{
+			Lines: raw.Lines,
+			X:     e.X, Y: e.Y, Z: e.Z,
+		}
 	}
 }
 

@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -108,6 +110,42 @@ func ShulkerBoxSlot(player *game.Player, sbs *ShulkerBoxState, windowSlot int) *
 		return &player.Inventory[windowSlot-54+36]
 	}
 	return nil
+}
+
+// SaveAll serializes all shulker box states for persistence.
+func (sbm *ShulkerBoxManager) SaveAll(dim string) []store.BlockEntityData {
+	sbm.mu.RLock()
+	defer sbm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, sbs := range sbm.ShulkerBoxes {
+		items := containerItemSlots(sbs.Items[:])
+		data, err := json.Marshal(map[string]interface{}{"items": items})
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "shulker_box", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores shulker box states from persisted data.
+func (sbm *ShulkerBoxManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "shulker_box" {
+			continue
+		}
+		var raw struct {
+			Items []persistedItem `json:"items"`
+		}
+		if err := json.Unmarshal(e.Data, &raw); err != nil {
+			continue
+		}
+		sbs := sbm.GetOrCreate(e.X, e.Y, e.Z)
+		loadItemSlots(sbs.Items[:], raw.Items)
+	}
 }
 
 // Remove removes a shulker box at the given position.

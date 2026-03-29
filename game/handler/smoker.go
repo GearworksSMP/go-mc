@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/store"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -129,6 +131,62 @@ func SmokerSlot(player *game.Player, ss *SmokerState, windowSlot int) *game.Item
 		return &player.Inventory[windowSlot-30+36]
 	}
 	return nil
+}
+
+// SaveAll serializes all smoker states for persistence.
+func (sm *SmokerManager) SaveAll(dim string) []store.BlockEntityData {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	var result []store.BlockEntityData
+	for pos, ss := range sm.Smokers {
+		pfs := persistedFurnaceState{
+			BurnTime: ss.BurnTime,
+			CookTime: ss.CookTime,
+		}
+		if ss.Input.ID > 0 {
+			pfs.Input = persistedItem{ID: ss.Input.ID, Count: ss.Input.Count}
+		}
+		if ss.Fuel.ID > 0 {
+			pfs.Fuel = persistedItem{ID: ss.Fuel.ID, Count: ss.Fuel.Count}
+		}
+		if ss.Output.ID > 0 {
+			pfs.Output = persistedItem{ID: ss.Output.ID, Count: ss.Output.Count}
+		}
+		data, err := json.Marshal(pfs)
+		if err != nil {
+			continue
+		}
+		result = append(result, store.BlockEntityData{
+			Dimension: dim, X: pos[0], Y: pos[1], Z: pos[2],
+			Type: "smoker", Data: data,
+		})
+	}
+	return result
+}
+
+// LoadAll restores smoker states from persisted data.
+func (sm *SmokerManager) LoadAll(entities []store.BlockEntityData) {
+	for _, e := range entities {
+		if e.Type != "smoker" {
+			continue
+		}
+		var pfs persistedFurnaceState
+		if err := json.Unmarshal(e.Data, &pfs); err != nil {
+			continue
+		}
+		ss := sm.GetOrCreate(e.X, e.Y, e.Z)
+		if pfs.Input.ID > 0 {
+			ss.Input = game.ItemStack{ID: pfs.Input.ID, Count: pfs.Input.Count}
+		}
+		if pfs.Fuel.ID > 0 {
+			ss.Fuel = game.ItemStack{ID: pfs.Fuel.ID, Count: pfs.Fuel.Count}
+		}
+		if pfs.Output.ID > 0 {
+			ss.Output = game.ItemStack{ID: pfs.Output.ID, Count: pfs.Output.Count}
+		}
+		ss.BurnTime = pfs.BurnTime
+		ss.CookTime = pfs.CookTime
+	}
 }
 
 // smokerSmeltable returns the output item name for a given input in the smoker.
