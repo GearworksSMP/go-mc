@@ -220,6 +220,35 @@ const (
 	// Fence gate sounds
 	SoundFenceGateOpen  int32 = 355 // block.fence_gate.open
 	SoundFenceGateClose int32 = 354 // block.fence_gate.close
+
+	// Barrel sounds
+	SoundBarrelOpen  int32 = 63 // block.barrel.open
+	SoundBarrelClose int32 = 62 // block.barrel.close
+
+	// Shulker box sounds
+	SoundShulkerBoxOpen  int32 = 907 // block.shulker_box.open
+	SoundShulkerBoxClose int32 = 906 // block.shulker_box.close
+
+	// Mob ambient sounds
+	SoundCowAmbient      int32 = 228  // entity.cow.ambient
+	SoundPigAmbient      int32 = 762  // entity.pig.ambient
+	SoundSheepAmbient    int32 = 891  // entity.sheep.ambient
+	SoundChickenAmbient  int32 = 196  // entity.chicken.ambient
+	SoundZombieAmbient   int32 = 1173 // entity.zombie.ambient
+	SoundSkeletonAmbient int32 = 923  // entity.skeleton.ambient
+	SoundSpiderAmbient   int32 = 993  // entity.spider.ambient
+
+	// Armor equip sounds
+	SoundArmorEquipLeather   int32 = 46  // item.armor.equip_leather
+	SoundArmorEquipChain     int32 = 47  // item.armor.equip_chain
+	SoundArmorEquipIron      int32 = 49  // item.armor.equip_iron
+	SoundArmorEquipGold      int32 = 48  // item.armor.equip_gold
+	SoundArmorEquipDiamond   int32 = 50  // item.armor.equip_diamond
+	SoundArmorEquipNetherite int32 = 51  // item.armor.equip_netherite
+	SoundArmorEquipGeneric   int32 = 52  // item.armor.equip_generic
+
+	// UI sounds
+	SoundUIButtonClick int32 = 1055 // ui.button.click
 )
 
 // BroadcastSound sends a ClientboundSound packet to all players.
@@ -458,6 +487,63 @@ func MobSoundCategory(typeID int32) int32 {
 		return SoundCategoryHostile
 	default:
 		return SoundCategoryHostile
+	}
+}
+
+// MobAmbientSound returns the ambient sound ID for a mob type, or -1 if the mob has none.
+func MobAmbientSound(typeID int32) int32 {
+	switch typeID {
+	case MobTypeCow:
+		return SoundCowAmbient
+	case MobTypePig:
+		return SoundPigAmbient
+	case MobTypeSheep:
+		return SoundSheepAmbient
+	case MobTypeChicken:
+		return SoundChickenAmbient
+	case MobTypeZombie:
+		return SoundZombieAmbient
+	case MobTypeSkeleton:
+		return SoundSkeletonAmbient
+	case MobTypeSpider:
+		return SoundSpiderAmbient
+	case MobTypeEnderman:
+		return SoundEndermanAmbient
+	case MobTypeVillager:
+		return SoundVillagerAmbient
+	case MobTypeWitch:
+		return SoundWitchAmbient
+	case MobTypePhantom:
+		return SoundPhantomAmbient
+	case MobTypeWolf:
+		return SoundWolfAmbient
+	case MobTypeCat:
+		return SoundCatAmbient
+	case MobTypeHorse:
+		return SoundHorseAmbient
+	case MobTypeParrot:
+		return SoundParrotAmbient
+	}
+	return -1
+}
+
+// ArmorEquipSound returns the equip sound ID for an armor material.
+func ArmorEquipSound(material string) int32 {
+	switch material {
+	case "leather":
+		return SoundArmorEquipLeather
+	case "chainmail":
+		return SoundArmorEquipChain
+	case "iron":
+		return SoundArmorEquipIron
+	case "gold":
+		return SoundArmorEquipGold
+	case "diamond":
+		return SoundArmorEquipDiamond
+	case "netherite":
+		return SoundArmorEquipNetherite
+	default:
+		return SoundArmorEquipGeneric
 	}
 }
 

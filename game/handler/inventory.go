@@ -406,6 +406,7 @@ func (h *InventoryHandler) handleNormalClick(player *game.Player, slot, button i
 	}
 
 	// Armor slot restrictions: only allow correct armor type in slots 5-8
+	var equipArmorMaterial string
 	if slot >= 5 && slot <= 8 && player.CursorItem.ID > 0 {
 		cursorName := ItemNameByID(player.CursorItem.ID)
 		armorInfo := GetArmorInfo(cursorName)
@@ -416,6 +417,7 @@ func (h *InventoryHandler) handleNormalClick(player *game.Player, slot, button i
 			}
 			return
 		}
+		equipArmorMaterial = armorInfo.Material
 	}
 
 	if button == 0 { // Left click
@@ -473,6 +475,11 @@ func (h *InventoryHandler) handleNormalClick(player *game.Player, slot, button i
 			player.CursorItem, *invItem = *invItem, player.CursorItem
 		}
 	}
+
+	// Play equip sound if armor was placed into an armor slot
+	if equipArmorMaterial != "" {
+		h.playPlayerSound(player, ArmorEquipSound(equipArmorMaterial))
+	}
 }
 
 // handleShiftClick handles mode 1 (shift-click).
@@ -506,6 +513,7 @@ func (h *InventoryHandler) handleShiftClick(player *game.Player, slot int) {
 				// Swap with existing armor
 				*src, *dst = *dst, *src
 			}
+			h.playPlayerSound(player, ArmorEquipSound(armorInfo.Material))
 			return
 		}
 	}
@@ -804,12 +812,8 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 			}
 		}
 	case 2:
-		// Closing chest — play close sound + notify persistence layer
-		if h.Chests != nil && h.Chests.Manager != nil {
-			pos := player.OpenChestPos
-			BroadcastSound(h.Chests.Manager, SoundChestClose, SoundCategoryBlock,
-				float64(pos[0])+0.5, float64(pos[1])+0.5, float64(pos[2])+0.5, 1.0, 1.0)
-		}
+		// Closing chest
+		h.playBlockSound(SoundChestClose, player.OpenChestPos)
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("chest", player.OpenChestPos)
 		}
@@ -835,6 +839,7 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		}
 	case 12:
 		// Closing barrel
+		h.playBlockSound(SoundBarrelClose, player.OpenChestPos)
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("barrel", player.OpenChestPos)
 		}
@@ -854,6 +859,7 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		}
 	case ShulkerBoxWindowID:
 		// Closing shulker box
+		h.playBlockSound(SoundShulkerBoxClose, player.OpenChestPos)
 		if h.OnContainerClose != nil {
 			h.OnContainerClose("shulker_box", player.OpenChestPos)
 		}
@@ -894,6 +900,24 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 
 	player.OpenWindowID = 0
 	SendFullInventory(player)
+}
+
+// playBlockSound broadcasts a sound at the center of a block position.
+func (h *InventoryHandler) playBlockSound(soundID int32, pos [3]int) {
+	if h.Chests == nil || h.Chests.Manager == nil {
+		return
+	}
+	BroadcastSound(h.Chests.Manager, soundID, SoundCategoryBlock,
+		float64(pos[0])+0.5, float64(pos[1])+0.5, float64(pos[2])+0.5, 1.0, 1.0)
+}
+
+// playPlayerSound broadcasts a sound at the player's position.
+func (h *InventoryHandler) playPlayerSound(player *game.Player, soundID int32) {
+	if h.Chests == nil || h.Chests.Manager == nil {
+		return
+	}
+	px, py, pz := player.Position()
+	BroadcastSound(h.Chests.Manager, soundID, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
 }
 
 // updateCraftingResult checks the 2x2 crafting grid (slots 1-4) and sets the
@@ -937,6 +961,9 @@ func (h *InventoryHandler) handleCraftingResultClick(player *game.Player) {
 	// Consume one of each non-empty ingredient (slots 1-4)
 	consumeCraftingIngredients(player)
 
+	// Play crafting click sound
+	h.playPlayerSound(player, SoundUIButtonClick)
+
 	// Recompute result
 	updateCraftingResult(player)
 }
@@ -957,6 +984,9 @@ func (h *InventoryHandler) handleCraftingResultShiftClick(player *game.Player) {
 
 	// Consume ingredients
 	consumeCraftingIngredients(player)
+
+	// Play crafting click sound
+	h.playPlayerSound(player, SoundUIButtonClick)
 
 	// Recompute result
 	updateCraftingResult(player)
@@ -1093,6 +1123,7 @@ func (h *InventoryHandler) handleCraftingTableShiftClick(player *game.Player, sl
 			if dst.ID == 0 || dst.Count <= 0 {
 				*dst = *src
 				*src = game.ItemStack{}
+				h.playPlayerSound(player, ArmorEquipSound(armorInfo.Material))
 				return
 			}
 		}
@@ -1208,6 +1239,9 @@ func (h *InventoryHandler) handleCraftingTableResultClick(player *game.Player) {
 			}
 		}
 	}
+
+	// Play crafting click sound
+	h.playPlayerSound(player, SoundUIButtonClick)
 }
 
 func (h *InventoryHandler) handleCraftingTableResultShiftClick(player *game.Player) {
@@ -1230,6 +1264,9 @@ func (h *InventoryHandler) handleCraftingTableResultShiftClick(player *game.Play
 			}
 		}
 	}
+
+	// Play crafting click sound
+	h.playPlayerSound(player, SoundUIButtonClick)
 }
 
 // craftingTableResult computes the crafting result for the 3x3 grid.

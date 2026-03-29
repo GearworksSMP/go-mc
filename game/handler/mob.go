@@ -243,6 +243,9 @@ type Mob struct {
 
 	// Death animation: tick when killed (0 = alive). Entity is removed after 20 ticks.
 	DeathTick int64
+
+	// Ambient sound cooldown: ticks until next ambient sound (0 = play now).
+	AmbientSoundCooldown int64
 }
 
 // MobManager handles mob spawning, AI, and lifecycle.
@@ -877,6 +880,21 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 
 	if mob.AttackCooldown > 0 {
 		mob.AttackCooldown--
+	}
+
+	// Ambient sound tick
+	if mob.AmbientSoundCooldown <= 0 {
+		// First tick or cooldown expired — set a random cooldown
+		mob.AmbientSoundCooldown = 80 + int64(rand.Intn(121))
+	} else {
+		mob.AmbientSoundCooldown--
+		if mob.AmbientSoundCooldown == 0 {
+			if soundID := MobAmbientSound(mob.TypeID); soundID >= 0 {
+				cat := MobSoundCategory(mob.TypeID)
+				BroadcastSound(m.Manager, soundID, cat, mob.X, mob.Y, mob.Z, 1.0, 0.8+rand.Float32()*0.4)
+			}
+			mob.AmbientSoundCooldown = 80 + int64(rand.Intn(121))
+		}
 	}
 
 	// Dispatch to specialized AI
