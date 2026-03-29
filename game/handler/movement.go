@@ -400,6 +400,13 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		fallDist := player.FallStartY - newY
 		player.FallStartY = -999
 		if fallDist > 3 {
+			// Slow Falling negates all fall damage
+			if player.Effects != nil {
+				if _, ok := player.Effects[EffectSlowFalling]; ok {
+					return
+				}
+			}
+
 			damage := float32(fallDist - 3)
 
 			// Feather Falling enchantment: check boots (slot 8) for reduction.
