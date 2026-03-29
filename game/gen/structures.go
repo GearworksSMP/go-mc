@@ -25,13 +25,17 @@ type StructurePlacer struct {
 	hasTorch   bool
 
 	// Sub-placers for additional structure types.
-	templePlacer         *TemplePlacer
-	strongholdPlacer     *StrongholdPlacer
-	mineshaftPlacer      *MineshaftPlacer
-	villagePlacer        *VillagePlacer
-	oceanMonumentPlacer  *OceanMonumentPlacer
-	witchHutPlacer       *WitchHutPlacer
+	templePlacer          *TemplePlacer
+	strongholdPlacer      *StrongholdPlacer
+	mineshaftPlacer       *MineshaftPlacer
+	villagePlacer         *VillagePlacer
+	oceanMonumentPlacer   *OceanMonumentPlacer
+	witchHutPlacer        *WitchHutPlacer
 	pillagerOutpostPlacer *PillagerOutpostPlacer
+	shipwreckPlacer       *ShipwreckPlacer
+	buriedTreasurePlacer  *BuriedTreasurePlacer
+	ruinedPortalPlacer    *RuinedPortalPlacer
+	woodlandMansionPlacer *WoodlandMansionPlacer
 }
 
 // NewStructurePlacer creates a StructurePlacer with resolved block state IDs.
@@ -62,6 +66,10 @@ func NewStructurePlacer(seed int64, waterID level.BlocksState) *StructurePlacer 
 	sp.oceanMonumentPlacer = NewOceanMonumentPlacer(seed, waterID)
 	sp.witchHutPlacer = NewWitchHutPlacer(seed)
 	sp.pillagerOutpostPlacer = NewPillagerOutpostPlacer(seed)
+	sp.shipwreckPlacer = NewShipwreckPlacer(seed)
+	sp.buriedTreasurePlacer = NewBuriedTreasurePlacer(seed)
+	sp.ruinedPortalPlacer = NewRuinedPortalPlacer(seed)
+	sp.woodlandMansionPlacer = NewWoodlandMansionPlacer(seed)
 
 	return sp
 }
@@ -201,6 +209,54 @@ func (sp *StructurePlacer) PlaceStructures(chunk *level.Chunk, chunkX, chunkZ in
 		surfaceY := heights[lz*16+lx]
 		if surfaceY >= gen.SeaLevel {
 			sp.pillagerOutpostPlacer.PlaceOutpost(chunk, lx, surfaceY, lz, gen)
+		}
+	}
+
+	// Try shipwreck placement (2% chance in ocean biome).
+	swHash := structureHash(chunkX, chunkZ, sp.Seed, 0x5B10)
+	if abs64(swHash)%50 < 1 && centerBiome == BiomeOcean {
+		lx := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x5B11))%4)
+		lz := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x5B12))%4)
+		// Place on the ocean floor.
+		floorY := gen.SeaLevel - 5 - int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x5B13))%8)
+		sp.shipwreckPlacer.PlaceShipwreck(chunk, lx, floorY, lz, gen)
+	}
+
+	// Try buried treasure placement (3% chance at chunks bordering ocean).
+	btHash := structureHash(chunkX, chunkZ, sp.Seed, 0xB710)
+	if abs64(btHash)%100 < 3 {
+		// Check if any edge biome is ocean (beach-adjacent).
+		hasOceanEdge := biomes[0] == BiomeOcean || biomes[15] == BiomeOcean ||
+			biomes[15*16] == BiomeOcean || biomes[15*16+15] == BiomeOcean
+		if hasOceanEdge && centerBiome != BiomeOcean {
+			lx := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xB711))%8)
+			lz := 4 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xB712))%8)
+			surfaceY := heights[lz*16+lx]
+			if surfaceY >= gen.SeaLevel {
+				sp.buriedTreasurePlacer.PlaceBuriedTreasure(chunk, lx, surfaceY, lz, gen)
+			}
+		}
+	}
+
+	// Try ruined portal placement (1% chance, any biome).
+	rpHash := structureHash(chunkX, chunkZ, sp.Seed, 0xD0A0)
+	if abs64(rpHash)%100 < 1 {
+		lx := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD0A1))%8)
+		lz := 2 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD0A2))%8)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.ruinedPortalPlacer.PlaceRuinedPortal(chunk, lx, surfaceY, lz, gen)
+		}
+	}
+
+	// Try woodland mansion placement (0.5% chance in dark forest biome).
+	wmHash := structureHash(chunkX, chunkZ, sp.Seed, 0xAD00)
+	if abs64(wmHash)%200 < 1 && centerBiome == BiomeDarkForest {
+		lx := int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xAD01)) % 2)
+		lz := int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xAD02)) % 2)
+		surfaceY := heights[lz*16+lx]
+		if surfaceY >= gen.SeaLevel {
+			sp.woodlandMansionPlacer.PlaceWoodlandMansion(chunk, lx, surfaceY, lz, gen)
 		}
 	}
 }
