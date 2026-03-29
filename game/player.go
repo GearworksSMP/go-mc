@@ -232,6 +232,10 @@ type ItemStack struct {
 	Lodestone     *LodestoneTarget `json:"lodestone,omitempty"`    // lodestone compass target
 	CanDestroy    []string         `json:"can_destroy,omitempty"`  // adventure mode: blocks this item can break
 	CanPlaceOn    []string         `json:"can_place_on,omitempty"` // adventure mode: blocks this item can be placed on
+	BookPages     []string         `json:"book_pages,omitempty"`   // book page content (writable_book / written_book)
+	BookAuthor    string           `json:"book_author,omitempty"`  // author of a written_book
+	BookTitle     string           `json:"book_title,omitempty"`   // title of a written_book
+	BookGeneration int32           `json:"book_generation,omitempty"` // 0=original, 1=copy, 2=copy-of-copy, 3=tattered
 }
 
 // ToSlot converts an ItemStack to a Slot261 for wire encoding.

@@ -277,6 +277,7 @@ func main() {
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
 	jukeboxMgr := handler.NewJukeboxManager(players, world, itemEntities)
 	lecternMgr := handler.NewLecternManager(players, world, itemEntities)
+	bookMgr := handler.NewBookManager()
 	bannerMgr := handler.NewBannerManager(players, world)
 	mapMgr := handler.NewMapManager(players, world)
 	composterMgr := handler.NewComposterManager(players, world, logger)
@@ -373,6 +374,7 @@ func main() {
 		smithingMgr:     smithingMgr,
 		jukeboxMgr:      jukeboxMgr,
 		lecternMgr:      lecternMgr,
+		bookMgr:         bookMgr,
 		bannerMgr:       bannerMgr,
 		mapMgr:          mapMgr,
 		composterMgr:    composterMgr,
@@ -737,6 +739,7 @@ type gamePlay struct {
 	smithingMgr     *handler.SmithingTableManager
 	jukeboxMgr      *handler.JukeboxManager
 	lecternMgr      *handler.LecternManager
+	bookMgr         *handler.BookManager
 	bannerMgr       *handler.BannerManager
 	mapMgr          *handler.MapManager
 	composterMgr    *handler.ComposterManager
@@ -1448,7 +1451,14 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		if g.tridentMgr.HandlePlayerAction(player, p) {
 			continue
 		}
+		if g.bookMgr.HandlePacket(player, p) {
+			continue
+		}
 		if blockHandler.HandlePacket(player, p) {
+			continue
+		}
+		// Book opening (UseItem with writable/written_book) must be checked before other UseItem handlers
+		if g.bookMgr.HandleUseItem(player, p) {
 			continue
 		}
 		// Elytra firework boost (UseItem with firework_rocket while gliding) must be checked first
