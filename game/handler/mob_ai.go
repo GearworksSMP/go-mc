@@ -1281,3 +1281,240 @@ func (m *MobManager) broadcastEntityEvent(mob *Mob, event byte) {
 		p.WritePacket(pkt)
 	})
 }
+
+// tickFrog runs frog AI: jump-based movement, tongue attack on slimes/magma cubes.
+func (m *MobManager) tickFrog(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	// Jump-based movement: every 40-80 ticks, jump toward a random nearby position.
+	if tick >= mob.FrogJumpTick {
+		mob.FrogJumpTick = tick + 40 + int64(rand.Intn(41))
+		mob.WanderYaw += (rand.Float32() - 0.5) * 120
+		rad := float64(mob.WanderYaw) * math.Pi / 180
+		jumpDist := 0.3 + rand.Float64()*0.3
+		mob.X += math.Cos(rad) * jumpDist
+		mob.Z += math.Sin(rad) * jumpDist
+		mob.VelY = 0.4 // small hop
+		mob.Yaw = mob.WanderYaw
+	}
+
+	// Tongue attack: instant-kill small slimes and magma cubes within 4 blocks.
+	var prey *Mob
+	preyDist := 4.0
+	for _, other := range m.Mobs {
+		if other.EID == mob.EID || other.Health <= 0 || other.DeathTick > 0 {
+			continue
+		}
+		if other.TypeID != MobTypeSlime && other.TypeID != MobTypeMagmaCube {
+			continue
+		}
+		if other.SlimeSize > 1 {
+			continue // frogs only eat small slimes
+		}
+		dx := other.X - mob.X
+		dy := other.Y - mob.Y
+		dz := other.Z - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < preyDist {
+			preyDist = d
+			prey = other
+		}
+	}
+
+	if prey != nil && mob.AttackCooldown <= 0 {
+		mob.AttackCooldown = 40
+		// Face prey
+		dx := prey.X - mob.X
+		dz := prey.Z - mob.Z
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+		// Instant kill
+		m.killMob(prey, nil)
+
+		// Drop froglight based on variant
+		if m.ItemEntities != nil {
+			var froglightName string
+			switch mob.FrogVariant {
+			case 0: // temperate
+				froglightName = "ochre_froglight"
+			case 1: // warm
+				froglightName = "pearlescent_froglight"
+			case 2: // cold
+				froglightName = "verdant_froglight"
+			}
+			if itemID := itemIDByName(froglightName); itemID > 0 {
+				m.ItemEntities.SpawnItem(m.Manager, prey.X, prey.Y+0.5, prey.Z, itemID, 1, 10)
+			}
+		}
+	}
+
+	m.broadcastMobMove(mob)
+}
+
+// tickAxolotl runs axolotl AI: aquatic hunter with play-dead mechanic.
+func (m *MobManager) tickAxolotl(mob *Mob, tick int64) {
+	// Play dead: become invulnerable, regenerate, wait 200 ticks.
+	if mob.AxolotlPlayingDead {
+		if tick-mob.AxolotlPlayDeadTick >= 200 {
+			mob.AxolotlPlayingDead = false
+			mob.Health += 4
+			if mob.Health > mob.MaxHealth {
+				mob.Health = mob.MaxHealth
+			}
+		}
+		return // don't move while playing dead
+	}
+
+	// Swim randomly (no normal gravity for aquatic mobs).
+	mob.X += (rand.Float64() - 0.5) * 0.1
+	mob.Z += (rand.Float64() - 0.5) * 0.1
+	mob.Y += (rand.Float64() - 0.5) * 0.05
+
+	// Hunt hostile aquatic mobs: guardian, elder_guardian, drowned within 8 blocks.
+	var prey *Mob
+	preyDist := 8.0
+	for _, other := range m.Mobs {
+		if other.EID == mob.EID || other.Health <= 0 || other.DeathTick > 0 {
+			continue
+		}
+		if other.TypeID != MobTypeGuardian && other.TypeID != MobTypeElderGuardian && other.TypeID != MobTypeDrowned {
+			continue
+		}
+		dx := other.X - mob.X
+		dy := other.Y - mob.Y
+		dz := other.Z - mob.Z
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < preyDist {
+			preyDist = d
+			prey = other
+		}
+	}
+
+	if prey != nil {
+		dx := prey.X - mob.X
+		dy := prey.Y - mob.Y
+		dz := prey.Z - mob.Z
+		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+		if dist > 1.5 {
+			mob.X += dx / dist * mob.Speed * 1.5
+			mob.Y += dy / dist * mob.Speed
+			mob.Z += dz / dist * mob.Speed * 1.5
+		}
+
+		if dist <= 1.5 && mob.AttackCooldown <= 0 {
+			mob.AttackCooldown = 20
+			prey.Health -= mob.Damage
+			if prey.Health <= 0 {
+				prey.Health = 0
+				m.killMob(prey, nil)
+
+				// Grant regeneration to nearby players.
+				m.Manager.ForEach(func(p *game.Player) {
+					if p.Dead || p.GameMode != 0 {
+						return
+					}
+					px, py, pz := p.Position()
+					d := math.Sqrt(sqDist3(px-mob.X, py-mob.Y, pz-mob.Z))
+					if d <= 16 && m.Survival != nil && m.Survival.EffectMgr != nil {
+						m.Survival.EffectMgr.ApplyEffect(p, EffectRegeneration, 0, 100, false) // 5 seconds
+					}
+				})
+			}
+			m.broadcastArmSwing(mob)
+		}
+	}
+
+	m.broadcastMobMove(mob)
+}
+
+// tickAllay runs allay AI: follows nearest player, bobs gently, flees from damage.
+func (m *MobManager) tickAllay(mob *Mob, tick int64) {
+	// Allays fly — no gravity. Follow nearest player.
+	var nearest *game.Player
+	nearestDist := 32.0
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode == 3 { // ignore spectators
+			return
+		}
+		px, py, pz := p.Position()
+		d := math.Sqrt(sqDist3(px-mob.X, py-mob.Y, pz-mob.Z))
+		if d < nearestDist {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest == nil {
+		// No player nearby — hover in place with gentle bobbing.
+		mob.Y += math.Sin(float64(tick)*0.1) * 0.01
+		m.broadcastMobMove(mob)
+		return
+	}
+
+	px, py, pz := nearest.Position()
+
+	// If carrying items and close to owner, drop them.
+	if mob.AllayHeldItem != 0 && nearestDist <= 4 && m.ItemEntities != nil {
+		m.ItemEntities.SpawnItem(m.Manager, mob.X, mob.Y, mob.Z, mob.AllayHeldItem, 1, 10)
+		mob.AllayHeldItem = 0
+	}
+
+	targetY := py + 2.0
+	dx := px - mob.X
+	dz := pz - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+
+	if dist > 4 {
+		mob.X += dx / dist * mob.Speed * 2
+		mob.Z += dz / dist * mob.Speed * 2
+	}
+	if mob.Y < targetY-0.5 {
+		mob.Y += 0.08
+	} else if mob.Y > targetY+0.5 {
+		mob.Y -= 0.08
+	}
+	mob.Y += math.Sin(float64(tick)*0.15) * 0.005 // gentle bobbing
+
+	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+	m.broadcastMobMove(mob)
+}
+
+// tickSniffer runs sniffer AI: wanders, digs for seeds.
+func (m *MobManager) tickSniffer(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	if mob.SnifferDigging {
+		if tick-mob.SnifferDigTick >= 60 {
+			mob.SnifferDigging = false
+			mob.SnifferCooldown = tick + 400
+
+			// Drop torchflower seeds or pitcher pod (50/50).
+			if m.ItemEntities != nil {
+				var dropName string
+				if rand.Intn(2) == 0 {
+					dropName = "torchflower_seeds"
+				} else {
+					dropName = "pitcher_pod"
+				}
+				if itemID := itemIDByName(dropName); itemID > 0 {
+					m.ItemEntities.SpawnItem(m.Manager, mob.X, mob.Y+0.5, mob.Z, itemID, 1, 10)
+				}
+			}
+		}
+		m.broadcastMobMove(mob)
+		return
+	}
+
+	m.tickWander(mob, tick)
+
+	// Start digging after cooldown expires.
+	if mob.SnifferCooldown == 0 {
+		mob.SnifferCooldown = tick + 200 + int64(rand.Intn(201))
+	}
+	if tick >= mob.SnifferCooldown {
+		mob.SnifferDigging = true
+		mob.SnifferDigTick = tick
+	}
+}

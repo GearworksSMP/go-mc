@@ -60,6 +60,11 @@ const (
 	MobTypeFox              int32 = 54
 	MobTypeRabbit           int32 = 108
 	MobTypeBat              int32 = 10
+
+	MobTypeAllay   int32 = 2
+	MobTypeAxolotl int32 = 5
+	MobTypeFrog    int32 = 55
+	MobTypeSniffer int32 = 119
 )
 
 // mobNameToType maps entity names to type IDs for /summon.
@@ -80,6 +85,7 @@ var mobNameToType = map[string]int32{
 	"vindicator": MobTypeVindicator, "evoker": MobTypeEvoker,
 	"vex": MobTypeVex, "ravager": MobTypeRavager,
 	"bee": MobTypeBee, "fox": MobTypeFox, "rabbit": MobTypeRabbit, "bat": MobTypeBat,
+	"allay": MobTypeAllay, "axolotl": MobTypeAxolotl, "frog": MobTypeFrog, "sniffer": MobTypeSniffer,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -121,6 +127,14 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 20, 8, 0.1, true
 	case MobTypeCaveSpider:
 		return 12, 2, 0.15, true
+	case MobTypeFrog:
+		return 10, 0, 0.1, false
+	case MobTypeAxolotl:
+		return 14, 2, 0.1, false
+	case MobTypeAllay:
+		return 20, 0, 0.1, false
+	case MobTypeSniffer:
+		return 14, 0, 0.08, false
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -250,6 +264,22 @@ type Mob struct {
 
 	// Ambient sound cooldown: ticks until next ambient sound (0 = play now).
 	AmbientSoundCooldown int64
+
+	// Frog
+	FrogVariant int8 // 0=temperate, 1=warm, 2=cold
+	FrogJumpTick int64 // tick when next jump should occur
+
+	// Axolotl
+	AxolotlPlayingDead  bool
+	AxolotlPlayDeadTick int64
+
+	// Allay
+	AllayHeldItem int32 // item ID the allay is looking for (0 = none)
+
+	// Sniffer
+	SnifferDigTick int64 // tick when current dig started (0 = not digging)
+	SnifferDigging bool
+	SnifferCooldown int64 // ticks until next dig attempt
 }
 
 // MobManager handles mob spawning, AI, and lifecycle.
@@ -992,6 +1022,18 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		return
 	case mob.TypeID == MobTypeCaveSpider:
 		m.tickCaveSpider(mob, tick)
+		return
+	case mob.TypeID == MobTypeFrog:
+		m.tickFrog(mob, tick)
+		return
+	case mob.TypeID == MobTypeAxolotl:
+		m.tickAxolotl(mob, tick)
+		return
+	case mob.TypeID == MobTypeAllay:
+		m.tickAllay(mob, tick)
+		return
+	case mob.TypeID == MobTypeSniffer:
+		m.tickSniffer(mob, tick)
 		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
@@ -1812,6 +1854,12 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 		mob.Hostile = true
 		mob.Target = attacker
 		m.AggroZombifiedPiglins(attacker, mob.X, mob.Y, mob.Z)
+	}
+
+	// Axolotl play-dead: when health drops below 30%, play dead for 200 ticks.
+	if mob.TypeID == MobTypeAxolotl && mob.Health > 0 && mob.Health < mob.MaxHealth*0.3 && !mob.AxolotlPlayingDead {
+		mob.AxolotlPlayingDead = true
+		mob.AxolotlPlayDeadTick = m.currentTick
 	}
 
 	// Passive mobs flee when hit
