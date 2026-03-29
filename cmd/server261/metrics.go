@@ -21,21 +21,42 @@ type MetricsServer struct {
 
 	ready atomic.Bool
 
-	// tpsMu protects tickDurations and tpsIdx.
+	// tpsMu protects tickDurations, tpsIdx, and lag-spike counters.
 	tpsMu         sync.Mutex
 	tickDurations [20]time.Duration
 	tpsIdx        int
+
+	// Lag spike tracking (reset every 60 seconds).
+	overrunCount int           // ticks >50ms in current window
+	worstTick    time.Duration // longest tick in current window
+	windowStart  time.Time     // start of the current 60-second window
 }
 
 // SetReady marks the server as ready. The /ready endpoint will return 200
 // once this has been called.
 func (m *MetricsServer) SetReady() { m.ready.Store(true) }
 
-// RecordTick records the duration of a single game tick for TPS calculation.
+// RecordTick records the duration of a single game tick for TPS calculation
+// and updates lag spike counters.
 func (m *MetricsServer) RecordTick(d time.Duration) {
 	m.tpsMu.Lock()
 	m.tickDurations[m.tpsIdx%20] = d
 	m.tpsIdx++
+
+	// Reset the 60-second window if needed.
+	now := time.Now()
+	if m.windowStart.IsZero() || now.Sub(m.windowStart) >= 60*time.Second {
+		m.overrunCount = 0
+		m.worstTick = 0
+		m.windowStart = now
+	}
+
+	if d > 50*time.Millisecond {
+		m.overrunCount++
+	}
+	if d > m.worstTick {
+		m.worstTick = d
+	}
 	m.tpsMu.Unlock()
 }
 
@@ -70,6 +91,25 @@ func (m *MetricsServer) tickStats() (int, time.Duration) {
 		total += m.tickDurations[i]
 	}
 	return n, total
+}
+
+// GetMSPT returns the average milliseconds per tick from the ring buffer.
+func (m *MetricsServer) GetMSPT() float64 {
+	n, total := m.tickStats()
+	if n == 0 {
+		return 0
+	}
+	return float64(total.Nanoseconds()) / float64(n) / 1e6
+}
+
+// GetLagStats returns lag spike statistics for the current window.
+func (m *MetricsServer) GetLagStats() handler.TPSLagStats {
+	m.tpsMu.Lock()
+	defer m.tpsMu.Unlock()
+	return handler.TPSLagStats{
+		OverrunCount: m.overrunCount,
+		WorstTick:    m.worstTick,
+	}
 }
 
 // StartMetricsServer launches the HTTP server in a background goroutine.

@@ -192,6 +192,10 @@ func main() {
 	villageMgr := handler.NewVillageManager(mobMgr, players, world, logger)
 	fluidMgr := handler.NewFluidManager(world, players)
 	fallingMgr := handler.NewFallingBlockManager(world, players)
+	blockUpdateMgr := handler.NewBlockUpdateManager(world, players)
+	blockUpdateMgr.FallingMgr = fallingMgr
+	blockUpdateMgr.FluidMgr = fluidMgr
+	blockUpdateMgr.ItemEntities = itemEntities
 	treeMgr := handler.NewTreeGrowthManager(world, players)
 	cropMgr := handler.NewCropManager(world, players)
 	weatherMgr := handler.NewWeatherManager(players)
@@ -353,6 +357,7 @@ func main() {
 		xpOrbMgr:        xpOrbMgr,
 		fluidMgr:        fluidMgr,
 		fallingMgr:      fallingMgr,
+		blockUpdateMgr:  blockUpdateMgr,
 		treeMgr:         treeMgr,
 		cropMgr:         cropMgr,
 		weatherMgr:      weatherMgr,
@@ -493,6 +498,14 @@ func main() {
 	logger.Printf("Metrics server listening on %s", MetricsAddr())
 	tabListMgr := &handler.TabListManager{Players: players, TPS: metrics}
 
+	tpsMgr := &handler.TPSManager{
+		Manager: players,
+		Metrics: metrics,
+		Logger:  logger,
+		PermMgr: permMgr,
+	}
+	gp.tpsMgr = tpsMgr
+
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -553,7 +566,9 @@ func main() {
 			tabListMgr.Tick(tick)
 			collisionMgr.Tick()
 
-			metrics.RecordTick(time.Since(tickStart))
+			tickDur := time.Since(tickStart)
+			metrics.RecordTick(tickDur)
+			tpsMgr.Tick(tickDur)
 		}),
 	)
 
@@ -721,6 +736,7 @@ type gamePlay struct {
 	xpOrbMgr        *handler.XPOrbManager
 	fluidMgr        *handler.FluidManager
 	fallingMgr      *handler.FallingBlockManager
+	blockUpdateMgr  *handler.BlockUpdateManager
 	treeMgr         *handler.TreeGrowthManager
 	cropMgr         *handler.CropManager
 	weatherMgr      *handler.WeatherManager
@@ -779,6 +795,7 @@ type gamePlay struct {
 	banMgr          *handler.BanManager
 	scoreboardMgr   *handler.ScoreboardManager
 	worldBorderMgr  *handler.WorldBorderManager
+	tpsMgr          *handler.TPSManager
 	tracer          trace.Tracer
 }
 
@@ -1321,7 +1338,8 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		PistonMgr:    g.pistonMgr,
 		HopperMgr:    g.hopperMgr,
 		DispenserMgr: g.dispenserMgr,
-		CrafterMgr:   g.crafterMgr,
+		CrafterMgr:      g.crafterMgr,
+		BlockUpdateMgr:  g.blockUpdateMgr,
 		DimensionMgr:    g.dimensionMgr,
 		EndPortalMgr:    g.endPortalMgr,
 		BarrelMgr:       g.barrelMgr,
@@ -1397,6 +1415,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BanMgr:          g.banMgr,
 		ScoreboardMgr:   g.scoreboardMgr,
 		WorldBorderMgr:  g.worldBorderMgr,
+		TPSHandler:      g.tpsMgr,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:     g.players,

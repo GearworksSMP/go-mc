@@ -81,6 +81,7 @@ type BlockHandler struct {
 	NoteBlockMgr     *NoteBlockManager                  // optional; handles note block tuning/playback
 	LoomMgr          *LoomManager                      // optional; handles loom interactions
 	CrafterMgr       *CrafterManager                   // optional; handles crafter block interactions
+	BlockUpdateMgr   *BlockUpdateManager               // optional; handles block update propagation
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -977,6 +978,11 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 		}
 	}
 
+	// Notify neighbors for support-dependent blocks, multi-block structures, connections
+	if h.BlockUpdateMgr != nil {
+		h.BlockUpdateMgr.NotifyNeighbors(x, y, z)
+	}
+
 	h.logf("Player %s broke block at (%d, %d, %d)", player.Name, x, y, z)
 }
 
@@ -1513,6 +1519,11 @@ func (h *BlockHandler) placeBlock(player *game.Player, x, y, z int, state level.
 		if placedName == "wither_skeleton_skull" || placedName == "wither_skeleton_wall_skull" {
 			h.WitherMgr.CheckWitherSummon(x, y, z)
 		}
+	}
+
+	// Notify neighbors for connection updates and support checks
+	if h.BlockUpdateMgr != nil {
+		h.BlockUpdateMgr.NotifyNeighbors(x, y, z)
 	}
 
 	h.logf("Player %s placed block at (%d, %d, %d) state=%d", player.Name, x, y, z, state)

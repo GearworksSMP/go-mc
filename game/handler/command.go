@@ -34,6 +34,7 @@ type CommandExecutor struct {
 	BanMgr          *BanManager
 	ScoreboardMgr   *ScoreboardManager
 	WorldBorderMgr  *WorldBorderManager
+	TPSHandler      *TPSManager
 }
 
 // Execute parses and dispatches a command line (without the leading /).
@@ -125,6 +126,10 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		c.cmdScoreboard(player, args)
 	case "worldborder":
 		c.cmdWorldBorder(player, args)
+	case "tps":
+		if c.TPSHandler != nil {
+			c.TPSHandler.HandleTPSCommand(player)
+		}
 	default:
 		c.sendSystemMsg(player, fmt.Sprintf("Unknown command: /%s. Type /help for a list of commands.", cmd), "red")
 	}
@@ -633,6 +638,7 @@ func (c *CommandExecutor) cmdHelp(player *game.Player) {
 		"  /scoreboard objectives <add|remove|setdisplay> — Manage objectives",
 		"  /scoreboard players <set|add|remove|reset> — Manage scores",
 		"  /worldborder <center|set|add|get|damage|warning> — Manage world border",
+		"  /tps — Show server TPS, MSPT, and memory usage",
 		"  /help — Show this help message",
 	}
 	for _, line := range lines {
@@ -1744,6 +1750,9 @@ func BuildCommandGraph() *command.Graph {
 			).
 			Unhandle(),
 	)
+
+	// /tps
+	g.AppendLiteral(g.Literal("tps").HandleFunc(noop))
 
 	return g
 }
