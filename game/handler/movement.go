@@ -85,6 +85,11 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		// Sweet berry bush damage
 		h.checkSweetBerryBush(player, float64(x), float64(y), float64(z))
+		// Movement enchantment effects (every ~4 ticks)
+		player.EnchantMoveTick++
+		if player.EnchantMoveTick%4 == 0 {
+			h.checkMovementEnchantments(player, float64(x), float64(y), float64(z))
+		}
 		return true
 
 	case packetid.ServerboundMovePlayerPosRot:
@@ -128,6 +133,11 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		}
 		// Sweet berry bush damage
 		h.checkSweetBerryBush(player, float64(x), float64(y), float64(z))
+		// Movement enchantment effects (every ~4 ticks)
+		player.EnchantMoveTick++
+		if player.EnchantMoveTick%4 == 0 {
+			h.checkMovementEnchantments(player, float64(x), float64(y), float64(z))
+		}
 		return true
 
 	case packetid.ServerboundMovePlayerRot:

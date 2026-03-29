@@ -35,6 +35,10 @@ const (
 	LuckOfTheSea         = "luck_of_the_sea"
 	Respiration          = "respiration"
 	AquaAffinity         = "aqua_affinity"
+	DepthStrider         = "depth_strider"
+	FrostWalker          = "frost_walker"
+	SoulSpeed            = "soul_speed"
+	SwiftSneak           = "swift_sneak"
 	CurseOfBinding  = "binding_curse"
 	CurseOfVanishing = "vanishing_curse"
 	Sweeping             = "sweeping" // alias for sweeping_edge
@@ -83,6 +87,10 @@ func init() {
 		LuckOfTheSea:         {Name: LuckOfTheSea, MaxLevel: 3},
 		Respiration:          {Name: Respiration, MaxLevel: 3},
 		AquaAffinity:         {Name: AquaAffinity, MaxLevel: 1},
+		DepthStrider:         {Name: DepthStrider, MaxLevel: 3, Incompatible: []string{FrostWalker}},
+		FrostWalker:          {Name: FrostWalker, MaxLevel: 2, Incompatible: []string{DepthStrider}},
+		SoulSpeed:            {Name: SoulSpeed, MaxLevel: 3},
+		SwiftSneak:           {Name: SwiftSneak, MaxLevel: 3},
 		CurseOfBinding:  {Name: CurseOfBinding, MaxLevel: 1},
 		CurseOfVanishing: {Name: CurseOfVanishing, MaxLevel: 1},
 	}
