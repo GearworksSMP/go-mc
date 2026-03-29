@@ -89,6 +89,11 @@ var migrations = []string{
 	ALTER TABLE players ADD COLUMN IF NOT EXISTS effects JSONB;
 	ALTER TABLE players ADD COLUMN IF NOT EXISTS exhaustion REAL NOT NULL DEFAULT 0;
 	UPDATE schema_version SET version = 7;`,
+
+	// Version 7 → 8: add advancements and unlocked recipes columns
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS player_advancements JSONB DEFAULT '[]';
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS player_recipes JSONB DEFAULT '[]';
+	UPDATE schema_version SET version = 8;`,
 }
 
 // Migrate runs all pending schema migrations.

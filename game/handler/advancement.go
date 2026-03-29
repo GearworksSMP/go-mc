@@ -163,6 +163,37 @@ func (am *AdvancementManager) Grant(player *game.Player, id AdvancementID) {
 	am.sendAdvancementUpdate(player, id)
 }
 
+// ExportGranted returns a slice of advancement IDs that the player has been granted.
+func (am *AdvancementManager) ExportGranted(playerName string) []string {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	g := am.granted[playerName]
+	if len(g) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(g))
+	for id := range g {
+		out = append(out, string(id))
+	}
+	return out
+}
+
+// ImportGranted marks the given advancements as granted for the player without
+// sending toast notifications. This is used to restore persisted state on login.
+func (am *AdvancementManager) ImportGranted(playerName string, advancements []string) {
+	if len(advancements) == 0 {
+		return
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	if am.granted[playerName] == nil {
+		am.granted[playerName] = make(map[AdvancementID]bool)
+	}
+	for _, id := range advancements {
+		am.granted[playerName][AdvancementID(id)] = true
+	}
+}
+
 // HasAdvancement checks if a player has a specific advancement.
 func (am *AdvancementManager) HasAdvancement(playerName string, id AdvancementID) bool {
 	am.mu.Lock()
