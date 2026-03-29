@@ -43,6 +43,7 @@ var foodTable = map[string]FoodInfo{
 	"cod":             {2, 0.4},
 	"salmon":          {2, 0.4},
 	"tropical_fish":   {1, 0.2},
+	"pufferfish":      {1, 0.2},
 
 	// Meat (cooked)
 	"cooked_beef":     {8, 12.8},

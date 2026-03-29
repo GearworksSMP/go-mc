@@ -30,10 +30,16 @@ const (
 	EffectWeakness       int32 = 18
 	EffectPoison         int32 = 19
 	EffectWither         int32 = 20
+	EffectHealthBoost    int32 = 21
 	EffectAbsorption     int32 = 22
+	EffectSaturation     int32 = 23
 	EffectGlowing        int32 = 24
 	EffectLevitation     int32 = 25
+	EffectLuck             int32 = 26
+	EffectUnluck           int32 = 27
 	EffectSlowFalling      int32 = 28
+	EffectConduitPower     int32 = 29
+	EffectDolphinsGrace    int32 = 30
 	EffectBadOmen          int32 = 31
 	EffectHeroOfTheVillage int32 = 32
 	EffectDarkness         int32 = 33
@@ -50,8 +56,11 @@ var effectNameToID = map[string]int32{
 	"invisibility": EffectInvisibility, "blindness": EffectBlindness,
 	"night_vision": EffectNightVision, "hunger": EffectHunger,
 	"weakness": EffectWeakness, "poison": EffectPoison, "wither": EffectWither,
-	"absorption": EffectAbsorption, "glowing": EffectGlowing,
-	"levitation": EffectLevitation, "slow_falling": EffectSlowFalling,
+	"health_boost": EffectHealthBoost, "absorption": EffectAbsorption,
+	"saturation": EffectSaturation, "glowing": EffectGlowing,
+	"levitation": EffectLevitation, "luck": EffectLuck, "unluck": EffectUnluck,
+	"slow_falling": EffectSlowFalling, "conduit_power": EffectConduitPower,
+	"dolphins_grace": EffectDolphinsGrace,
 }
 
 // EffectIDByName returns the effect ID for a name, or -1 if unknown.
@@ -379,10 +388,20 @@ func effectName(id int32) string {
 		return "Poison"
 	case EffectWither:
 		return "Wither"
+	case EffectHealthBoost:
+		return "Health Boost"
 	case EffectAbsorption:
 		return "Absorption"
+	case EffectSaturation:
+		return "Saturation"
 	case EffectSlowFalling:
 		return "Slow Falling"
+	case EffectNausea:
+		return "Nausea"
+	case EffectBlindness:
+		return "Blindness"
+	case EffectHunger:
+		return "Hunger"
 	default:
 		return "Unknown"
 	}
