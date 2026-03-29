@@ -1085,9 +1085,13 @@ func (m *MobManager) tickBeePollination(mob *Mob, tick int64) {
 		dz := hz - mob.Z
 		dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
 		if dist <= 2 {
-			// Arrived at hive — deposit pollen
+			// Arrived at hive — deposit pollen and enter hive
 			if m.HiveMgr != nil {
 				m.HiveMgr.IncrementHoney(mob.BeeHivePos[0], mob.BeeHivePos[1], mob.BeeHivePos[2])
+				if m.HiveMgr.AddBeeToHive(mob.BeeHivePos[0], mob.BeeHivePos[1], mob.BeeHivePos[2]) {
+					mob.InsideHive = true
+					mob.HiveExitTick = tick + 600 // stay inside ~30 seconds
+				}
 			}
 			mob.BeePollinated = false
 			mob.BeeFlowerPos = nil
@@ -1144,32 +1148,28 @@ func (m *MobManager) tickBeePollination(mob *Mob, tick int64) {
 	mob.Z += (rand.Float64() - 0.5) * 0.15
 }
 
-// beeSearchFlower scans nearby blocks for flowers and picks a random one.
+// beeSearchFlower samples random blocks within 16 blocks to find a flower.
 func (m *MobManager) beeSearchFlower(mob *Mob) {
-	const radius = 8
+	const radius = 16
 	bx := int(math.Floor(mob.X))
 	by := int(math.Floor(mob.Y))
 	bz := int(math.Floor(mob.Z))
 
-	var candidates [][3]int
-	for dx := -radius; dx <= radius; dx++ {
-		for dy := -4; dy <= 4; dy++ {
-			for dz := -radius; dz <= radius; dz++ {
-				wx, wy, wz := bx+dx, by+dy, bz+dz
-				state, err := m.World.GetBlock(wx, wy, wz)
-				if err != nil {
-					continue
-				}
-				name := BlockNameFromState(int(state))
-				if flowerBlocks[name] {
-					candidates = append(candidates, [3]int{wx, wy, wz})
-				}
-			}
+	// Sample 40 random positions to avoid scanning the full 33x9x33 cube
+	for i := 0; i < 40; i++ {
+		wx := bx + rand.Intn(radius*2+1) - radius
+		wy := by + rand.Intn(9) - 4
+		wz := bz + rand.Intn(radius*2+1) - radius
+		state, err := m.World.GetBlock(wx, wy, wz)
+		if err != nil {
+			continue
 		}
-	}
-	if len(candidates) > 0 {
-		chosen := candidates[rand.Intn(len(candidates))]
-		mob.BeeFlowerPos = &chosen
+		name := BlockNameFromState(int(state))
+		if flowerBlocks[name] {
+			pos := [3]int{wx, wy, wz}
+			mob.BeeFlowerPos = &pos
+			return
+		}
 	}
 }
 
@@ -1183,7 +1183,10 @@ func (m *MobManager) beeSearchHive(mob *Mob) {
 
 	bestDist := 32.0
 	var bestPos *[3]int
-	for pos := range m.HiveMgr.hives {
+	for pos, hd := range m.HiveMgr.hives {
+		if hd.BeeCount >= 3 {
+			continue // hive is full
+		}
 		dx := float64(pos[0]) + 0.5 - mob.X
 		dy := float64(pos[1]) + 0.5 - mob.Y
 		dz := float64(pos[2]) + 0.5 - mob.Z

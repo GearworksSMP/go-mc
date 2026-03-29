@@ -285,6 +285,8 @@ func main() {
 		Survival: survHandler,
 		Logger:   logger,
 	}
+	mobMgr.EffectMgr = effectMgr
+	raidMgr := handler.NewRaidManager(players, mobMgr, world, effectMgr, logger)
 
 	survHandler.ItemEntities = itemEntities
 	survHandler.Rules = gameRules
@@ -485,6 +487,7 @@ func main() {
 			beaconMgr.Tick(tick)
 			witherMgr.Tick(tick)
 			leashMgr.Tick(tick)
+			raidMgr.Tick(tick)
 		}),
 	)
 

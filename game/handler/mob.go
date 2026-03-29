@@ -124,8 +124,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 	}
 }
 
-// SpawnMobAt spawns a mob of the given type at the specified position.
-func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) {
+// SpawnMobAt spawns a mob of the given type at the specified position and returns its EID.
+func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) int32 {
 	health, damage, speed, hostile := mobDefaults(typeID)
 	eid := m.Manager.NextEntityID()
 	mob := &Mob{
@@ -151,6 +151,7 @@ func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) {
 	m.Mobs[eid] = mob
 	m.mu.Unlock()
 	m.broadcastSpawn(mob)
+	return eid
 }
 
 // isSlimeType returns true if the mob type uses index 16 for slime size (not baby flag).
@@ -225,6 +226,9 @@ type Mob struct {
 	InsideHive    bool    // true when bee is inside a hive (hidden from world)
 	HiveExitTick  int64   // tick when bee should leave the hive
 
+	// Patrol captain flag (pillagers)
+	IsPatrolCaptain bool
+
 	// Villager data (nil for non-villagers)
 	VillagerData *VillagerData
 
@@ -254,6 +258,7 @@ type MobManager struct {
 	ArrowMgr     *ArrowManager
 	XPOrbMgr     *XPOrbManager
 	AdvMgr       *AdvancementManager
+	EffectMgr    *EffectManager
 	MobStore     store.MobStore
 	HiveMgr      *HiveManager
 	Logger       *log.Logger
@@ -272,6 +277,29 @@ func NewMobManager(manager *game.PlayerManager, timeMgr *TimeManager, world game
 		Survival:     survival,
 		ItemEntities: itemEntities,
 		Mobs:         make(map[int32]*Mob),
+	}
+}
+
+// IsMobAlive returns true if a mob with the given EID exists and has positive health.
+func (m *MobManager) IsMobAlive(eid int32) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mob, ok := m.Mobs[eid]
+	return ok && mob.Health > 0
+}
+
+
+// grantBadOmen increments a player's Bad Omen level when they kill a patrol captain.
+func (m *MobManager) grantBadOmen(killer *game.Player) {
+	killer.BadOmen++
+	if killer.BadOmen > 7 {
+		killer.BadOmen = 7
+	}
+	if m.EffectMgr != nil {
+		m.EffectMgr.ApplyEffect(killer, EffectBadOmen, killer.BadOmen-1, 120000, false)
+	}
+	if m.Logger != nil {
+		m.Logger.Printf("Player %s killed patrol captain, Bad Omen level %d", killer.Name, killer.BadOmen)
 	}
 }
 
@@ -1939,6 +1967,9 @@ func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLe
 
 	// Spawn XP orbs at mob death location
 	if killer != nil {
+		if mob.TypeID == MobTypePillager && mob.IsPatrolCaptain {
+			m.grantBadOmen(killer)
+		}
 		m.spawnMobXPOrbs(mob)
 	}
 }
@@ -1987,6 +2018,9 @@ func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 	// Award XP to killer
 	// Spawn XP orbs at mob death location
 	if killer != nil {
+		if mob.TypeID == MobTypePillager && mob.IsPatrolCaptain {
+			m.grantBadOmen(killer)
+		}
 		m.spawnMobXPOrbs(mob)
 	}
 }
@@ -2550,7 +2584,7 @@ func (m *MobManager) SendExistingMobs(player *game.Player) {
 	r2 := PlayerTrackingRange * PlayerTrackingRange
 
 	for _, mob := range m.Mobs {
-		if mob.Health <= 0 {
+		if mob.Health <= 0 || mob.InsideHive {
 			continue
 		}
 		// Only send mobs within tracking range

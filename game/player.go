@@ -413,6 +413,9 @@ type Player struct {
 	SpawnX, SpawnY, SpawnZ float64
 	HasSpawnPoint          bool
 
+	// Bad Omen level (0 = none, 1-7 = active)
+	BadOmen int32
+
 	// Sleep state
 	Sleeping      bool
 	LastSleepTick int64
