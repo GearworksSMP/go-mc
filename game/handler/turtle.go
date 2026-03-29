@@ -203,27 +203,25 @@ func (tm *TurtleManager) hatchEggs(pos [3]int, tick int64) {
 	tm.World.SetBlock(pos[0], pos[1], pos[2], 0)
 	broadcastBlockUpdateDirect(tm.Manager, pos[0], pos[1], pos[2], 0)
 
-	// Spawn baby turtles
+	var w MetadataWriter
+	w.WriteBoolean(16, true)
+	babyMeta := w.Bytes()
+
 	for i := 0; i < numEggs; i++ {
 		x := float64(pos[0]) + 0.5 + (rand.Float64()-0.5)*0.5
 		y := float64(pos[1])
 		z := float64(pos[2]) + 0.5 + (rand.Float64()-0.5)*0.5
 		eid := tm.MobMgr.SpawnMobAt(MobTypeTurtle, x, y, z)
-		// Make it a baby
 		tm.MobMgr.mu.Lock()
 		if mob, ok := tm.MobMgr.Mobs[eid]; ok {
 			mob.Baby = true
-			mob.BabyAge = 24000 // 20 minutes to grow
-			mob.Speed *= 1.5    // baby speed boost
+			mob.BabyAge = 24000
+			mob.Speed *= 1.5
 		}
 		tm.MobMgr.mu.Unlock()
 
-		// Send baby metadata
-		var w MetadataWriter
-		w.WriteBoolean(16, true)
-		data := w.Bytes()
 		tm.Manager.ForEachNearby(x, z, PlayerTrackingRange, func(p *game.Player) {
-			SendEntityMetadata(p, eid, data)
+			SendEntityMetadata(p, eid, babyMeta)
 		})
 	}
 
@@ -285,9 +283,8 @@ func (tm *TurtleManager) findWaterSurface(x, y, z int) int {
 	return y + 1
 }
 
-// findNearbyWater searches for a water block within range and returns its position, or nil.
+// findNearbyWater samples random positions within radius looking for water.
 func (tm *TurtleManager) findNearbyWater(cx, cy, cz, radius int) *[3]int {
-	// Sample random positions within radius
 	for i := 0; i < 10; i++ {
 		dx := rand.Intn(radius*2+1) - radius
 		dz := rand.Intn(radius*2+1) - radius

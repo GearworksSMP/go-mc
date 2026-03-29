@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
+	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -1086,5 +1088,438 @@ parsePlayerInfo:
 
 	if !found {
 		t.Fatalf("ClientboundPlayerInfoUpdate packet with player %q not found (saw %d PlayerInfoUpdate packets)", expectedName, piuCount)
+	}
+}
+
+// connectToPlayPhaseWithName is like connectToPlayPhase but allows specifying the player name and UUID.
+func connectToPlayPhaseWithName(t *testing.T, addr, name string, uuid pk.UUID) (*mcnet.Conn, []pk.Packet) {
+	t.Helper()
+
+	conn, err := mcnet.DialMC(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	port := 25565
+	fmt.Sscanf(addr, "127.0.0.1:%d", &port)
+
+	// Handshake
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.VarInt(server.ProtocolVersion),
+		pk.String("127.0.0.1"),
+		pk.UnsignedShort(uint16(port)),
+		pk.VarInt(2),
+	))
+	if err != nil {
+		conn.Close()
+		t.Fatalf("handshake: %v", err)
+	}
+
+	// Login Start
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.String(name),
+		uuid,
+	))
+	if err != nil {
+		conn.Close()
+		t.Fatalf("login start: %v", err)
+	}
+
+	phase := "login"
+	var p pk.Packet
+	var playPackets []pk.Packet
+
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < 5000; i++ {
+		select {
+		case <-timeout:
+			conn.Close()
+			t.Fatalf("timeout after 10s (phase=%s)", phase)
+		default:
+		}
+
+		err = conn.ReadPacket(&p)
+		if err != nil {
+			conn.Close()
+			t.Fatalf("read packet %d (%s): %v", i, phase, err)
+		}
+
+		switch phase {
+		case "login":
+			if p.ID == 0x03 {
+				var threshold pk.VarInt
+				p.Scan(&threshold)
+				conn.SetThreshold(int(threshold))
+			}
+			if p.ID == 0x02 {
+				conn.WritePacket(pk.Marshal(0x03))
+				phase = "config"
+			}
+		case "config":
+			if p.ID == int32(packetid.ClientboundConfigSelectKnownPacks) {
+				conn.WritePacket(pk.Marshal(int32(packetid.ServerboundConfigSelectKnownPacks),
+					pk.VarInt(1),
+					pk.String("minecraft"),
+					pk.String("core"),
+					pk.String("26.1-snapshot-2"),
+				))
+			}
+			if p.ID == int32(packetid.ClientboundConfigFinishConfiguration) {
+				conn.WritePacket(pk.Marshal(int32(packetid.ServerboundConfigFinishConfiguration)))
+				phase = "play"
+			}
+		case "play":
+			saved := pk.Packet{
+				ID:   p.ID,
+				Data: append([]byte(nil), p.Data...),
+			}
+			playPackets = append(playPackets, saved)
+
+			if p.ID == int32(packetid.ClientboundChunkBatchFinished) {
+				return conn, playPackets
+			}
+		}
+	}
+
+	conn.Close()
+	t.Fatal("Did not reach ChunkBatchFinished")
+	return nil, nil
+}
+
+// doHandshakeAndLoginRaw performs the handshake and sends login start on a raw mcnet.Conn.
+// It does NOT read any response — the caller handles that.
+func doHandshakeAndLoginRaw(t *testing.T, conn *mcnet.Conn, addr, name string, uuid pk.UUID) {
+	t.Helper()
+	port := 25565
+	fmt.Sscanf(addr, "127.0.0.1:%d", &port)
+
+	err := conn.WritePacket(pk.Marshal(0x00,
+		pk.VarInt(server.ProtocolVersion),
+		pk.String("127.0.0.1"),
+		pk.UnsignedShort(uint16(port)),
+		pk.VarInt(2),
+	))
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.String(name),
+		uuid,
+	))
+	if err != nil {
+		t.Fatalf("login start: %v", err)
+	}
+}
+
+// TestRapidPacketBurst sends 100 movement packets in rapid succession and verifies
+// the connection stays alive.
+func TestRapidPacketBurst(t *testing.T) {
+	addr := startTestServer(t)
+	conn, _ := connectToPlayPhase(t, addr)
+	defer conn.Close()
+
+	// Send 100 movement packets with small position increments
+	for i := 0; i < 100; i++ {
+		x := 8.5 + float64(i)*0.01
+		err := conn.WritePacket(pk.Marshal(
+			int32(packetid.ServerboundMovePlayerPos),
+			pk.Double(x), pk.Double(65), pk.Double(8.5),
+			pk.Boolean(true),
+		))
+		if err != nil {
+			t.Fatalf("Failed to send movement packet %d: %v", i, err)
+		}
+	}
+
+	// Verify connection is still alive by reading a packet
+	var p pk.Packet
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.ReadPacket(&p)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Connection died after rapid packet burst: %v", err)
+		}
+		t.Logf("PASS: Connection alive after 100 rapid movement packets, received packet 0x%02X", p.ID)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timed out waiting for server response after rapid packet burst")
+	}
+}
+
+// TestConcurrentConnections connects 3 clients simultaneously and verifies all reach play phase.
+func TestConcurrentConnections(t *testing.T) {
+	addr := startTestServer(t)
+
+	names := []string{"ProtoBot1", "ProtoBot2", "ProtoBot3"}
+	uuids := []pk.UUID{
+		{0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11},
+		{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22},
+		{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33},
+	}
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 3)
+	conns := make(chan *mcnet.Conn, 3)
+
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			c, _ := connectToPlayPhaseWithName(t, addr, names[idx], uuids[idx])
+			conns <- c
+			t.Logf("Client %s reached play phase", names[idx])
+		}(i)
+	}
+
+	// Wait for all goroutines
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All connected
+	case <-time.After(30 * time.Second):
+		t.Fatal("Timed out waiting for all 3 clients to reach play phase")
+	}
+
+	close(errors)
+	close(conns)
+
+	// Close all connections
+	count := 0
+	for c := range conns {
+		c.Close()
+		count++
+	}
+	t.Logf("PASS: %d concurrent clients all reached play phase", count)
+}
+
+// TestReconnectAfterDisconnect connects, disconnects, then reconnects with the same player name.
+func TestReconnectAfterDisconnect(t *testing.T) {
+	addr := startTestServer(t)
+
+	// First connection
+	conn1, _ := connectToPlayPhase(t, addr)
+	t.Log("First connection reached play phase")
+	conn1.Close()
+
+	// Brief pause to let server process the disconnect
+	time.Sleep(500 * time.Millisecond)
+
+	// Reconnect with the same name
+	conn2, _ := connectToPlayPhase(t, addr)
+	defer conn2.Close()
+	t.Log("PASS: Reconnection with same player name reached play phase")
+}
+
+// TestMalformedHandshake sends garbage bytes and verifies the server handles it gracefully.
+func TestMalformedHandshake(t *testing.T) {
+	addr := startTestServer(t)
+
+	// Send garbage bytes via raw TCP
+	rawConn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Failed to connect raw TCP: %v", err)
+	}
+
+	garbage := []byte{0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0x00, 0x01, 0x02, 0x03}
+	_, err = rawConn.Write(garbage)
+	if err != nil {
+		t.Fatalf("Failed to write garbage: %v", err)
+	}
+
+	// Wait for server to close the connection (read should fail or return EOF)
+	rawConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 256)
+	_, readErr := rawConn.Read(buf)
+	rawConn.Close()
+	// Either EOF, connection reset, or timeout is acceptable — server didn't crash
+	t.Logf("Garbage connection result: read err = %v (expected)", readErr)
+
+	// Verify server still works with a normal connection
+	conn, _ := connectToPlayPhase(t, addr)
+	conn.Close()
+	t.Log("PASS: Server survived malformed handshake and still accepts normal connections")
+}
+
+// TestOversizedPacket sends a 1MB packet during login and verifies the server handles it.
+func TestOversizedPacket(t *testing.T) {
+	addr := startTestServer(t)
+
+	conn, err := mcnet.DialMC(addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	port := 25565
+	fmt.Sscanf(addr, "127.0.0.1:%d", &port)
+
+	// Valid handshake first
+	err = conn.WritePacket(pk.Marshal(0x00,
+		pk.VarInt(server.ProtocolVersion),
+		pk.String("127.0.0.1"),
+		pk.UnsignedShort(uint16(port)),
+		pk.VarInt(2),
+	))
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+
+	// Send oversized login packet: 1MB of zeros as the packet data
+	bigData := make([]byte, 1024*1024)
+	oversized := pk.Packet{ID: 0x00, Data: bigData}
+	err = conn.WritePacket(oversized)
+	// The write may succeed (buffered) or fail — either is fine
+	if err != nil {
+		t.Logf("Oversized packet write failed (expected): %v", err)
+	}
+
+	// Try to read — server should disconnect us
+	var p pk.Packet
+	readErr := conn.ReadPacket(&p)
+	conn.Close()
+	t.Logf("Oversized packet read result: err = %v (disconnect expected)", readErr)
+
+	// Verify server still works
+	normalConn, _ := connectToPlayPhase(t, addr)
+	normalConn.Close()
+	t.Log("PASS: Server survived oversized packet and still accepts normal connections")
+}
+
+// TestMovementFlood sends movement packets with wildly varying positions.
+func TestMovementFlood(t *testing.T) {
+	addr := startTestServer(t)
+	conn, _ := connectToPlayPhase(t, addr)
+	defer conn.Close()
+
+	// Send movement packets to wildly different positions
+	positions := [][3]float64{
+		{0, 65, 0},
+		{10000, 200, 10000},
+		{-10000, 0, -10000},
+		{0, 320, 0},
+		{9999, 65, -9999},
+		{-5000, 100, 5000},
+		{1, 65, 1},
+		{30000, 255, 30000},
+		{-30000, 1, -30000},
+		{8.5, 65, 8.5},
+	}
+
+	for i, pos := range positions {
+		err := conn.WritePacket(pk.Marshal(
+			int32(packetid.ServerboundMovePlayerPos),
+			pk.Double(pos[0]), pk.Double(pos[1]), pk.Double(pos[2]),
+			pk.Boolean(true),
+		))
+		if err != nil {
+			t.Logf("Movement flood packet %d write failed: %v", i, err)
+			break
+		}
+	}
+
+	// Verify connection is still usable
+	var p pk.Packet
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.ReadPacket(&p)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			// Server may have disconnected us for invalid movement — that's acceptable
+			t.Logf("PASS: Server handled movement flood (disconnected client: %v)", err)
+		} else {
+			t.Logf("PASS: Server handled movement flood, connection still alive, received packet 0x%02X", p.ID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timed out waiting for response after movement flood")
+	}
+}
+
+// TestInvalidPacketDuringPlay sends a packet with a very high/invalid packet ID during play.
+func TestInvalidPacketDuringPlay(t *testing.T) {
+	addr := startTestServer(t)
+	conn, _ := connectToPlayPhase(t, addr)
+
+	// Send a packet with invalid ID 0xFF
+	err := conn.WritePacket(pk.Marshal(0xFF, pk.VarInt(0)))
+	if err != nil {
+		t.Logf("Invalid packet write failed: %v", err)
+	}
+
+	// Try to read — server may disconnect or ignore
+	var p pk.Packet
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.ReadPacket(&p)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Logf("Server disconnected after invalid packet (acceptable): %v", err)
+		} else {
+			t.Logf("Server ignored invalid packet, connection alive, received packet 0x%02X", p.ID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("No response after 10s — server likely ignored the invalid packet")
+	}
+	conn.Close()
+
+	// Verify server still works for new connections
+	normalConn, _ := connectToPlayPhase(t, addr)
+	normalConn.Close()
+	t.Log("PASS: Server survived invalid packet ID and still accepts new connections")
+}
+
+// TestKeepAliveTimeout connects to play phase and does NOT respond to keepalive packets.
+// The server should eventually disconnect the client.
+func TestKeepAliveTimeout(t *testing.T) {
+	addr := startTestServer(t)
+	conn, _ := connectToPlayPhase(t, addr)
+	defer conn.Close()
+
+	// Read packets but never respond to keepalive. The server should
+	// disconnect us after ~30 seconds of no keepalive response.
+	deadline := time.After(45 * time.Second)
+	var p pk.Packet
+	keepAlivesSeen := 0
+
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("Server did not disconnect after 45s without keepalive response (saw %d keepalives)", keepAlivesSeen)
+		default:
+		}
+
+		readDone := make(chan error, 1)
+		go func() {
+			readDone <- conn.ReadPacket(&p)
+		}()
+
+		select {
+		case err := <-readDone:
+			if err != nil {
+				// Server disconnected us — expected behavior
+				t.Logf("PASS: Server disconnected client after %d keepalive(s) went unanswered: %v", keepAlivesSeen, err)
+				return
+			}
+			if p.ID == int32(packetid.ClientboundKeepAlive) {
+				keepAlivesSeen++
+				t.Logf("Received keepalive #%d — ignoring it", keepAlivesSeen)
+			}
+			// Ignore all other packets, just don't respond to keepalives
+		case <-deadline:
+			t.Fatalf("Server did not disconnect after 45s without keepalive response (saw %d keepalives)", keepAlivesSeen)
+		}
 	}
 }

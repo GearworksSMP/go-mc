@@ -164,7 +164,12 @@ func (h *BlockHandler) handlePlayerAction(player *game.Player, p pk.Packet) {
 		return
 	}
 
-	// Survival mode
+	// Spectator cannot break blocks
+	if player.GameMode == 3 {
+		return
+	}
+
+	// Survival / adventure mode
 	switch action {
 	case 0: // started_digging
 		CancelEating(player)
@@ -424,6 +429,21 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 	placeX := pos.X + offset[0]
 	placeY := pos.Y + offset[1]
 	placeZ := pos.Z + offset[2]
+
+	// Adventure mode: only allow placement if held item's CanPlaceOn list matches
+	// the clicked (adjacent) block.
+	if player.GameMode == 2 {
+		adjacentState, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
+		if err != nil {
+			h.sendAck(player, int32(sequence))
+			return
+		}
+		adjacentName := BlockNameFromState(int(adjacentState))
+		if !CanPlaceBlock(player, adjacentName) {
+			h.sendAck(player, int32(sequence))
+			return
+		}
+	}
 
 	// Check if holding a door or bed item (needs special two-block placement)
 	heldItemID := player.HeldItemID()
@@ -752,6 +772,22 @@ func (h *BlockHandler) heldBlockState(player *game.Player) int32 {
 
 // breakBlock removes a block (sets to air) and broadcasts the change.
 func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int32) {
+	// Adventure mode: only allow breaking if held item's CanDestroy list matches.
+	if player.GameMode == 2 {
+		stateID, err := h.World.GetBlock(x, y, z)
+		if err != nil {
+			h.sendAck(player, sequence)
+			return
+		}
+		blockName := BlockNameFromState(int(stateID))
+		if !CanBreakBlock(player, blockName) {
+			// Revert client prediction by re-sending the existing block state.
+			h.sendBlockUpdate(player, x, y, z, int32(stateID))
+			h.sendAck(player, sequence)
+			return
+		}
+	}
+
 	oldState, err := h.World.SetBlock(x, y, z, 0) // 0 = air
 	if err != nil {
 		h.logf("Error breaking block at (%d,%d,%d): %v", x, y, z, err)
@@ -1474,6 +1510,15 @@ func (h *BlockHandler) broadcastBlockDestruction(entityID int32, x, y, z int, st
 	h.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pkt)
 	})
+}
+
+// sendBlockUpdate sends a ClientboundBlockUpdate to a single player (e.g. to revert a prediction).
+func (h *BlockHandler) sendBlockUpdate(player *game.Player, x, y, z int, stateID int32) {
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundBlockUpdate,
+		pk.Position{X: x, Y: y, Z: z},
+		pk.VarInt(stateID),
+	))
 }
 
 // broadcastBlockUpdate sends ClientboundBlockUpdate to all connected players.

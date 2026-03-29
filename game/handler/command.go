@@ -33,6 +33,7 @@ type CommandExecutor struct {
 	EffectMgr       *EffectManager
 	BanMgr          *BanManager
 	ScoreboardMgr   *ScoreboardManager
+	WorldBorderMgr  *WorldBorderManager
 }
 
 // Execute parses and dispatches a command line (without the leading /).
@@ -54,7 +55,7 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		switch cmd {
 		case "gamemode", "gm", "tp", "teleport", "give", "kill", "time",
 			"clear", "difficulty", "weather", "xp", "experience", "enchant", "gamerule",
-			"summon", "setblock", "fill", "effect", "title", "scoreboard":
+			"summon", "setblock", "fill", "effect", "title", "scoreboard", "worldborder":
 			if pm.OpLevel(player.UUID) < 2 {
 				c.sendSystemMsg(player, "You don't have permission to use this command", "red")
 				return
@@ -122,6 +123,8 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		c.cmdMsg(player, args)
 	case "scoreboard":
 		c.cmdScoreboard(player, args)
+	case "worldborder":
+		c.cmdWorldBorder(player, args)
 	default:
 		c.sendSystemMsg(player, fmt.Sprintf("Unknown command: /%s. Type /help for a list of commands.", cmd), "red")
 	}
@@ -629,6 +632,7 @@ func (c *CommandExecutor) cmdHelp(player *game.Player) {
 		"  /msg <player> <message> — Send a private message (/tell, /w)",
 		"  /scoreboard objectives <add|remove|setdisplay> — Manage objectives",
 		"  /scoreboard players <set|add|remove|reset> — Manage scores",
+		"  /worldborder <center|set|add|get|damage|warning> — Manage world border",
 		"  /help — Show this help message",
 	}
 	for _, line := range lines {

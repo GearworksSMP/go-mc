@@ -230,6 +230,8 @@ type ItemStack struct {
 	DisplayName   string           `json:"display_name,omitempty"` // custom name (from anvil rename)
 	PotionType    string           `json:"potion_type,omitempty"`  // e.g. "healing", "strength"
 	Lodestone     *LodestoneTarget `json:"lodestone,omitempty"`    // lodestone compass target
+	CanDestroy    []string         `json:"can_destroy,omitempty"`  // adventure mode: blocks this item can break
+	CanPlaceOn    []string         `json:"can_place_on,omitempty"` // adventure mode: blocks this item can be placed on
 }
 
 // ToSlot converts an ItemStack to a Slot261 for wire encoding.

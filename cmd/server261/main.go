@@ -313,6 +313,9 @@ func main() {
 	}
 
 	scoreboardMgr := handler.NewScoreboardManager(players)
+	worldBorderMgr := handler.NewWorldBorderManager(players)
+	worldBorderMgr.SurvivalHandler = survHandler
+	worldBorderMgr.Logger = logger
 
 	gp := &gamePlay{
 		logger:          logger,
@@ -386,6 +389,7 @@ func main() {
 		permMgr:          permMgr,
 		banMgr:           banMgr,
 		scoreboardMgr:    scoreboardMgr,
+		worldBorderMgr:  worldBorderMgr,
 		gameRules:        gameRules,
 		tracer:           tp.Tracer("gearworks-mc"),
 	}
@@ -524,6 +528,7 @@ func main() {
 			raidMgr.Tick(tick)
 			turtleMgr.TickTurtleEggs(tick)
 			conduitMgr.Tick(tick)
+			worldBorderMgr.Tick(tick)
 			villagerMgr.TickRestock(tick, timeMgr)
 			villageMgr.Tick(tick)
 
@@ -749,6 +754,7 @@ type gamePlay struct {
 	permMgr         *handler.PermissionManager
 	banMgr          *handler.BanManager
 	scoreboardMgr   *handler.ScoreboardManager
+	worldBorderMgr  *handler.WorldBorderManager
 	tracer          trace.Tracer
 }
 
@@ -1104,6 +1110,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		g.weatherMgr.SendWeather(player)
 	}
 
+	// Send world border state
+	if g.worldBorderMgr != nil {
+		g.worldBorderMgr.SendBorderState(player)
+	}
+
 	// ServerData — MOTD + optional icon (enforcesSecureChat was removed in 1.20.5+)
 	if err := conn.WritePacket(pk.Marshal(
 		packetid.ClientboundServerData,
@@ -1357,6 +1368,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		EffectMgr:       g.effectMgr,
 		BanMgr:          g.banMgr,
 		ScoreboardMgr:   g.scoreboardMgr,
+		WorldBorderMgr:  g.worldBorderMgr,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:     g.players,
