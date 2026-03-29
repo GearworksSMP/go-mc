@@ -77,6 +77,7 @@ type BlockHandler struct {
 	CopperMgr        *CopperManager                      // optional; handles copper waxing/scraping
 	HiveMgr          *HiveManager                        // optional; handles beehive/bee_nest interactions
 	DecoratedPotMgr  *DecoratedPotManager                // optional; handles decorated pot interactions
+	CampfireMgr      *CampfireManager                   // optional; handles campfire cooking
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -886,6 +887,14 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 	if h.DecoratedPotMgr != nil && oldState > 0 {
 		if BlockNameFromState(int(oldState)) == "decorated_pot" {
 			h.DecoratedPotMgr.BreakPot(x, y, z)
+		}
+	}
+
+	// Drop campfire cooking items if breaking a campfire
+	if h.CampfireMgr != nil && oldState > 0 {
+		bn := BlockNameFromState(int(oldState))
+		if bn == "campfire" || bn == "soul_campfire" {
+			h.CampfireMgr.RemoveItems(x, y, z)
 		}
 	}
 
@@ -1917,6 +1926,14 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 	case block.Beehive:
 		if h.HiveMgr != nil {
 			return h.HiveMgr.UseHive(player, x, y, z)
+		}
+	case block.Campfire:
+		if h.CampfireMgr != nil {
+			return h.CampfireMgr.PlaceItem(player, x, y, z)
+		}
+	case block.SoulCampfire:
+		if h.CampfireMgr != nil {
+			return h.CampfireMgr.PlaceItem(player, x, y, z)
 		}
 	}
 
