@@ -491,7 +491,6 @@ func main() {
 			witherMgr.Tick(tick)
 			leashMgr.Tick(tick)
 			raidMgr.Tick(tick)
-			copperMgr.Tick(tick)
 			villagerMgr.TickRestock(tick, timeMgr)
 		}),
 	)
