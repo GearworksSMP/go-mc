@@ -302,9 +302,6 @@ func (m *MobManager) LoadSavedMobs(dimension string) {
 
 // trySpawn attempts to spawn hostile mobs near players at night.
 func (m *MobManager) trySpawn() {
-	if !m.TimeMgr.IsNight() {
-		return
-	}
 	hostileCount := 0
 	for _, mob := range m.Mobs {
 		if mob.Hostile {
@@ -327,21 +324,41 @@ func (m *MobManager) trySpawn() {
 	}
 
 	player := players[rand.Intn(len(players))]
-	px, _, pz := player.Position()
 
-	// Pick random position 24-48 blocks from player
+	// Nether and End always spawn hostiles; Overworld only at night
+	switch player.Dimension {
+	case "minecraft:the_nether":
+		m.spawnNetherHostileAt(player)
+	case "minecraft:the_end":
+		m.spawnEndHostileAt(player)
+	default:
+		if !m.TimeMgr.IsNight() {
+			return
+		}
+		m.spawnOverworldHostileAt(player)
+	}
+}
+
+// pickSpawnPos picks a random spawn position 24-48 blocks from the player and
+// returns the coordinates. ok is false if no valid surface was found.
+func (m *MobManager) pickSpawnPos(player *game.Player) (x float64, y int, z float64, ok bool) {
+	px, _, pz := player.Position()
 	angle := rand.Float64() * 2 * math.Pi
 	dist := 24 + rand.Float64()*24
-	spawnX := px + math.Cos(angle)*dist
-	spawnZ := pz + math.Sin(angle)*dist
+	x = px + math.Cos(angle)*dist
+	z = pz + math.Sin(angle)*dist
+	y = m.findSurfaceY(int(x), int(z))
+	ok = y >= m.MinY
+	return
+}
 
-	// Find surface Y
-	spawnY := m.findSurfaceY(int(spawnX), int(spawnZ))
-	if spawnY < m.MinY {
+// spawnOverworldHostileAt spawns a hostile mob near the given player in the overworld.
+func (m *MobManager) spawnOverworldHostileAt(player *game.Player) {
+	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
+	if !ok {
 		return
 	}
 
-	// Pick mob type: 40% zombie, 20% skeleton, 15% spider, 10% creeper, 5% enderman, 5% witch, 5% spider(extra)
 	var typeID int32
 	var health, damage float32
 	var speed float64
@@ -363,16 +380,60 @@ func (m *MobManager) trySpawn() {
 		typeID, health, damage, speed = MobTypeSpider, 16, 2, 0.15
 	}
 
+	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, typeID, health, damage, speed)
+}
+
+// spawnNetherHostileAt spawns a nether-specific hostile mob near the given player.
+func (m *MobManager) spawnNetherHostileAt(player *game.Player) {
+	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
+	if !ok {
+		return
+	}
+
+	var typeID int32
+	var health, damage float32
+	var speed float64
+	roll := rand.Float64()
+	switch {
+	case roll < 0.30:
+		typeID, health, damage, speed = MobTypeZombifiedPiglin, 20, 5, 0.1
+	case roll < 0.50:
+		typeID, health, damage, speed = MobTypePiglin, 16, 5, 0.1
+	case roll < 0.65:
+		typeID, health, damage, speed = MobTypeMagmaCube, 16, 3, 0.1
+	case roll < 0.80:
+		typeID, health, damage, speed = MobTypeGhast, 10, 6, 0.05
+	case roll < 0.90:
+		typeID, health, damage, speed = MobTypeWitherSkeleton, 20, 8, 0.1
+	default:
+		typeID, health, damage, speed = MobTypeBlaze, 20, 6, 0.1
+	}
+
+	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, typeID, health, damage, speed)
+}
+
+// spawnEndHostileAt spawns an enderman near the given player in the End.
+func (m *MobManager) spawnEndHostileAt(player *game.Player) {
+	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
+	if !ok {
+		return
+	}
+
+	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, MobTypeEnderman, 40, 7, 0.15)
+}
+
+// spawnHostileMob creates a hostile mob at the given position and broadcasts it.
+func (m *MobManager) spawnHostileMob(x, y, z float64, typeID int32, health, damage float32, speed float64) {
 	eid := m.Manager.NextEntityID()
 	mob := &Mob{
 		EID:       eid,
 		TypeID:    typeID,
-		X:         spawnX + 0.5,
-		Y:         float64(spawnY),
-		Z:         spawnZ + 0.5,
-		PrevX:     spawnX + 0.5,
-		PrevY:     float64(spawnY),
-		PrevZ:     spawnZ + 0.5,
+		X:         x + 0.5,
+		Y:         y,
+		Z:         z + 0.5,
+		PrevX:     x + 0.5,
+		PrevY:     y,
+		PrevZ:     z + 0.5,
 		Health:    health,
 		MaxHealth: health,
 		Damage:    damage,
@@ -381,8 +442,6 @@ func (m *MobManager) trySpawn() {
 		Hostile:   true,
 	}
 	m.Mobs[eid] = mob
-
-	// Broadcast spawn to all players
 	m.broadcastSpawn(mob)
 }
 
@@ -401,9 +460,10 @@ func (m *MobManager) trySpawnPassive() {
 		return
 	}
 
+	// Only spawn passive mobs in the overworld
 	var players []*game.Player
 	m.Manager.ForEach(func(p *game.Player) {
-		if !p.Dead {
+		if !p.Dead && (p.Dimension == "" || p.Dimension == "minecraft:overworld") {
 			players = append(players, p)
 		}
 	})
