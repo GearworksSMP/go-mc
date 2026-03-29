@@ -467,6 +467,12 @@ type Player struct {
 	SwiftSneakLevel   int32 // current Swift Sneak level (0 = inactive)
 	EnchantMoveTick   int64 // tick counter for throttling enchantment checks
 
+	// Step/splash sound tracking
+	WalkDistAccum float64 // accumulated walk distance for step sounds
+	LastStepTick  int64   // tick of last step sound (throttle)
+	WasInWater    bool    // previous tick water state for splash detection
+	SwimSoundTick int64   // tick of last swim sound
+
 	// SessionEvents receives tracing events (nil when tracing is disabled).
 	SessionEvents SessionEvents
 }

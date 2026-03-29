@@ -265,6 +265,19 @@ const (
 	SoundTurtleEggHatch int32 = 1050 // entity.turtle.egg_hatch
 	SoundTurtleSwim     int32 = 1056 // entity.turtle.swim
 
+	// Fall sounds
+	SoundFallBig   int32 = 397 // entity.generic.big_fall
+	SoundFallSmall int32 = 980 // entity.generic.small_fall
+
+	// Water sounds
+	SoundGenericSplash int32 = 983 // entity.generic.splash
+	SoundGenericSwim   int32 = 981 // entity.generic.swim
+
+	// Step sounds (generic)
+	SoundStoneStep int32 = 1008 // block.stone.step
+	SoundGrassStep int32 = 450  // block.grass.step
+	SoundWoodStep  int32 = 1150 // block.wood.step
+
 	// UI sounds
 	SoundUIButtonClick int32 = 1055 // ui.button.click
 )
@@ -584,6 +597,11 @@ func BlockPlaceSound(blockName string) int32 {
 // BlockBreakSound returns the break sound ID for a block based on its material category.
 func BlockBreakSound(blockName string) int32 {
 	return blockMaterialSound(blockName, SoundGrassBreak, SoundStoneBreak, SoundWoodBreak)
+}
+
+// BlockStepSound returns the step sound ID for a block based on its material category.
+func BlockStepSound(blockName string) int32 {
+	return blockMaterialSound(blockName, SoundGrassStep, SoundStoneStep, SoundWoodStep)
 }
 
 // blockMaterialSound classifies a block name and returns the appropriate sound.

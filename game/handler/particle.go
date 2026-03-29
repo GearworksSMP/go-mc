@@ -19,6 +19,7 @@ const (
 	ParticleSplash          int32 = 70
 	ParticleSonicBoom       int32 = 63
 	ParticleSculkCharge     int32 = 61
+	ParticleBlock           int32 = 2  // block crack/break particles
 )
 
 // BroadcastParticle sends a ClientboundLevelParticles packet to all players.
