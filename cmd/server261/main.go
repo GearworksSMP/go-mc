@@ -300,6 +300,10 @@ func main() {
 		Logger:   logger,
 	}
 	mobMgr.EffectMgr = effectMgr
+	sculkMgr := handler.NewSculkManager(players, world)
+	sculkMgr.MobMgr = mobMgr
+	sculkMgr.EffectMgr = effectMgr
+	mobMgr.SculkMgr = sculkMgr
 	turtleMgr := handler.NewTurtleManager(mobMgr, players, world, logger)
 	mobMgr.TurtleMgr = turtleMgr
 	conduitMgr := handler.NewConduitManager(players, world, effectMgr, mobMgr, logger)
@@ -534,6 +538,7 @@ func main() {
 			witherMgr.Tick(tick)
 			leashMgr.Tick(tick)
 			raidMgr.Tick(tick)
+			sculkMgr.Tick(tick)
 			turtleMgr.TickTurtleEggs(tick)
 			conduitMgr.Tick(tick)
 			worldBorderMgr.Tick(tick)

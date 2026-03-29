@@ -85,7 +85,14 @@ type TerrainGenerator struct {
 	dripstoneBlockID                             level.BlocksState
 	azaleaID                                     level.BlocksState
 	smallDripleafID                              level.BlocksState
+	// Deep dark blocks
+	sculkID                                      level.BlocksState
+	sculkVeinDownID                              level.BlocksState
+	sculkSensorID                                level.BlocksState
+	sculkShriekerID                              level.BlocksState
+	sculkCatalystID                              level.BlocksState
 
+	deepDarkNoise                                *SimplexNoise
 	biomeNoise                                   *SimplexNoise
 	humidNoise                                   *SimplexNoise
 	structurePlacer                              *StructurePlacer
@@ -108,6 +115,7 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 		aquiferNoise:   NewSimplexNoise(seed + 10),
 		lushNoise:      NewSimplexNoise(seed + 11),
 		dripstoneNoise: NewSimplexNoise(seed + 12),
+		deepDarkNoise:  NewSimplexNoise(seed + 13),
 	}
 
 	g.bedrockID, _ = block.ToStateID[block.Bedrock{}]
@@ -189,6 +197,13 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.azaleaID, _ = block.ToStateID[block.Azalea{}]
 	g.smallDripleafID, _ = block.ToStateID[block.SmallDripleaf{Facing: block.North, Half: block.DoubleBlockHalfLower}]
 
+	// Deep dark blocks
+	g.sculkID, _ = block.ToStateID[block.Sculk{}]
+	g.sculkVeinDownID, _ = block.ToStateID[block.SculkVein{Down: true}]
+	g.sculkSensorID, _ = block.ToStateID[block.SculkSensor{}]
+	g.sculkShriekerID, _ = block.ToStateID[block.SculkShrieker{Can_summon: true}]
+	g.sculkCatalystID, _ = block.ToStateID[block.SculkCatalyst{}]
+
 	g.biomeNoise = NewSimplexNoise(seed + 3)
 	g.humidNoise = NewSimplexNoise(seed + 4)
 	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
@@ -218,6 +233,9 @@ const (
 	BiomeMushroom    BiomeType = 14
 	BiomeBadlands    BiomeType = 15
 )
+
+// biomeDeepDarkID is the wire biome registry ID for minecraft:deep_dark.
+const biomeDeepDarkID biome.Type = 53
 
 // biomeRegistryID maps internal BiomeType to the biome registry ID used on the wire.
 func biomeRegistryID(b BiomeType) biome.Type {
@@ -401,7 +419,12 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 					wz := pos.Z*16 + bz*4 + 2
 					b := g.biomeAt(wx, wz)
 					idx := by*16 + bz*4 + bx
-					chunk.Sections[secIdx].Biomes.Set(idx, biomeRegistryID(b))
+					wy := g.MinY + secIdx*16 + by*4 + 2
+					if g.isDeepDark(wx, wy, wz) {
+						chunk.Sections[secIdx].Biomes.Set(idx, biomeDeepDarkID)
+					} else {
+						chunk.Sections[secIdx].Biomes.Set(idx, biomeRegistryID(b))
+					}
 				}
 			}
 		}
@@ -1103,6 +1126,15 @@ func (g *TerrainGenerator) decorateCaves(chunk *level.Chunk, pos game.ChunkPos, 
 					}
 				}
 
+				// Deep dark decoration: below Y=-20, in large patches
+				if worldY < -20 && isAir {
+					ddVal := g.deepDarkNoise.Noise2D(float64(worldX)*0.008, float64(worldZ)*0.008)
+					if ddVal > 0.45 {
+						g.decorateDeepDark(chunk, pos, x, worldY, z, worldX, worldZ, below, above)
+						continue
+					}
+				}
+
 				// Dripstone cave decoration: Y=-64 to Y=16
 				if worldY >= -64 && worldY <= 16 && isAir {
 					dripVal := g.dripstoneNoise.Noise2D(float64(worldX)*0.01, float64(worldZ)*0.01)
@@ -1246,4 +1278,69 @@ func (g *TerrainGenerator) decorateDripstoneCave(chunk *level.Chunk, pos game.Ch
 			}
 		}
 	}
+}
+
+// decorateDeepDark places sculk blocks and variants in a deep dark cave position.
+func (g *TerrainGenerator) decorateDeepDark(chunk *level.Chunk, _ game.ChunkPos, x, worldY, z, worldX, worldZ int, below, above level.BlocksState) {
+	h := posHash(worldX, worldY, worldZ, g.Seed+700)
+
+	// Floor decoration: replace stone/deepslate below air with sculk
+	if g.isStoneOrDeepslate(below) {
+		g.setBlock(chunk, x, worldY-1, z, g.sculkID)
+
+		if g.sculkSensorID != 0 && h%50 == 0 {
+			g.setBlock(chunk, x, worldY, z, g.sculkSensorID)
+			return
+		}
+		if g.sculkShriekerID != 0 && h%100 == 0 {
+			g.setBlock(chunk, x, worldY, z, g.sculkShriekerID)
+			return
+		}
+		if g.sculkCatalystID != 0 && h%200 == 0 {
+			g.setBlock(chunk, x, worldY, z, g.sculkCatalystID)
+			return
+		}
+		return
+	}
+
+	// Wall/ceiling decoration
+	if g.isStoneOrDeepslate(above) && g.sculkVeinDownID != 0 {
+		if h%6 == 0 {
+			g.setBlock(chunk, x, worldY+1, z, g.sculkID)
+		}
+		return
+	}
+
+	// Side wall veins
+	if g.sculkVeinDownID != 0 && h%8 == 0 {
+		hasWall := false
+		if x > 0 && g.isStoneOrDeepslate(g.getBlock(chunk, x-1, worldY, z)) {
+			hasWall = true
+			g.setBlock(chunk, x-1, worldY, z, g.sculkID)
+		}
+		if x < 15 && g.isStoneOrDeepslate(g.getBlock(chunk, x+1, worldY, z)) {
+			hasWall = true
+			g.setBlock(chunk, x+1, worldY, z, g.sculkID)
+		}
+		if z > 0 && g.isStoneOrDeepslate(g.getBlock(chunk, x, worldY, z-1)) {
+			hasWall = true
+			g.setBlock(chunk, x, worldY, z-1, g.sculkID)
+		}
+		if z < 15 && g.isStoneOrDeepslate(g.getBlock(chunk, x, worldY, z+1)) {
+			hasWall = true
+			g.setBlock(chunk, x, worldY, z+1, g.sculkID)
+		}
+		if hasWall {
+			g.setBlock(chunk, x, worldY, z, g.sculkVeinDownID)
+		}
+	}
+}
+
+// isDeepDark checks if a position should use the deep dark biome based on noise.
+func (g *TerrainGenerator) isDeepDark(worldX, worldY, worldZ int) bool {
+	if worldY >= -20 {
+		return false
+	}
+	ddVal := g.deepDarkNoise.Noise2D(float64(worldX)*0.008, float64(worldZ)*0.008)
+	return ddVal > 0.45
 }

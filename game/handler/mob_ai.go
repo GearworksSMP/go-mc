@@ -1320,6 +1320,11 @@ func (m *MobManager) tickWarden(mob *Mob, tick int64) {
 				angerInc = 1
 			}
 			mob.WardenPlayerAnger[eid] += angerInc
+
+			// Emit vibration for sculk sensors when warden detects movement.
+			if m.SculkMgr != nil {
+				m.SculkMgr.EmitVibration(int(px), int(py), int(pz), VibrationStep, eid, 0)
+			}
 		})
 
 		// Find highest-anger player and set as target.

@@ -319,6 +319,7 @@ type MobManager struct {
 	XPOrbMgr     *XPOrbManager
 	AdvMgr       *AdvancementManager
 	EffectMgr    *EffectManager
+	SculkMgr     *SculkManager
 	MobStore     store.MobStore
 	HiveMgr      *HiveManager
 	TurtleMgr    *TurtleManager
