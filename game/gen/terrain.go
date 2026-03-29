@@ -89,6 +89,7 @@ type TerrainGenerator struct {
 	biomeNoise                                   *SimplexNoise
 	humidNoise                                   *SimplexNoise
 	structurePlacer                              *StructurePlacer
+	oceanBlocks                                  oceanVegetationBlocks
 }
 
 // NewTerrainGenerator creates a terrain generator with the given seed.
@@ -191,6 +192,7 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.biomeNoise = NewSimplexNoise(seed + 3)
 	g.humidNoise = NewSimplexNoise(seed + 4)
 	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
+	g.oceanBlocks = newOceanVegetationBlocks()
 
 	return g
 }
@@ -410,6 +412,7 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 	g.placeBiomeVegetation(chunk, pos, heights, biomes)
 	g.placeSugarCane(chunk, pos, heights, biomes)
 	g.placePumpkins(chunk, pos, heights, biomes)
+	g.decorateOceanFloor(chunk, pos, heights, biomes)
 	g.decorateCaves(chunk, pos, heights)
 	g.structurePlacer.PlaceStructures(chunk, pos.X, pos.Z, g)
 	g.computeHeightmaps(chunk)

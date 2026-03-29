@@ -32,10 +32,11 @@ type StructurePlacer struct {
 	oceanMonumentPlacer   *OceanMonumentPlacer
 	witchHutPlacer        *WitchHutPlacer
 	pillagerOutpostPlacer *PillagerOutpostPlacer
-	shipwreckPlacer       *ShipwreckPlacer
-	buriedTreasurePlacer  *BuriedTreasurePlacer
-	ruinedPortalPlacer    *RuinedPortalPlacer
-	woodlandMansionPlacer *WoodlandMansionPlacer
+	shipwreckPlacer        *ShipwreckPlacer
+	buriedTreasurePlacer   *BuriedTreasurePlacer
+	ruinedPortalPlacer     *RuinedPortalPlacer
+	woodlandMansionPlacer  *WoodlandMansionPlacer
+	underwaterRuinsPlacer  *UnderwaterRuinsPlacer
 }
 
 // NewStructurePlacer creates a StructurePlacer with resolved block state IDs.
@@ -70,6 +71,7 @@ func NewStructurePlacer(seed int64, waterID level.BlocksState) *StructurePlacer 
 	sp.buriedTreasurePlacer = NewBuriedTreasurePlacer(seed)
 	sp.ruinedPortalPlacer = NewRuinedPortalPlacer(seed)
 	sp.woodlandMansionPlacer = NewWoodlandMansionPlacer(seed)
+	sp.underwaterRuinsPlacer = NewUnderwaterRuinsPlacer(seed, waterID)
 
 	return sp
 }
@@ -220,6 +222,16 @@ func (sp *StructurePlacer) PlaceStructures(chunk *level.Chunk, chunkX, chunkZ in
 		// Place on the ocean floor.
 		floorY := gen.SeaLevel - 5 - int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0x5B13))%8)
 		sp.shipwreckPlacer.PlaceShipwreck(chunk, lx, floorY, lz, gen)
+	}
+
+	// Try underwater ruins placement (1.5% chance in ocean biome).
+	urHash := structureHash(chunkX, chunkZ, sp.Seed, 0xD170)
+	if abs64(urHash)%200 < 3 && centerBiome == BiomeOcean {
+		lx := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD175))%6)
+		lz := 1 + int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD176))%6)
+		// Place on the ocean floor.
+		floorY := gen.SeaLevel - 5 - int(abs64(structureHash(chunkX, chunkZ, sp.Seed, 0xD177))%8)
+		sp.underwaterRuinsPlacer.PlaceUnderwaterRuins(chunk, lx, floorY, lz, gen)
 	}
 
 	// Try buried treasure placement (3% chance at chunks bordering ocean).
