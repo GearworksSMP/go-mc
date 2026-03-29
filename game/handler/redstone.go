@@ -795,44 +795,10 @@ func (r *RedstoneManager) PlayNoteBlockPowered(x, y, z int) {
 	r.playNoteBlock(x, y, z, nb)
 }
 
-// noteBlockSoundID maps a NoteBlockInstrument to the correct sound ID.
+// noteBlockSoundID delegates to noteBlockInstrumentSoundID in noteblock.go
+// which uses the named SoundNoteBlock* constants.
 func noteBlockSoundID(inst block.NoteBlockInstrument) int32 {
-	switch inst {
-	case block.NoteBlockInstrumentHarp:
-		return 692
-	case block.NoteBlockInstrumentBasedrum:
-		return 686
-	case block.NoteBlockInstrumentSnare:
-		return 695
-	case block.NoteBlockInstrumentHat:
-		return 693
-	case block.NoteBlockInstrumentBass:
-		return 687
-	case block.NoteBlockInstrumentFlute:
-		return 690
-	case block.NoteBlockInstrumentBell:
-		return 688
-	case block.NoteBlockInstrumentGuitar:
-		return 691
-	case block.NoteBlockInstrumentChime:
-		return 689
-	case block.NoteBlockInstrumentXylophone:
-		return 696
-	case block.NoteBlockInstrumentIronXylophone:
-		return 697
-	case block.NoteBlockInstrumentCowBell:
-		return 698
-	case block.NoteBlockInstrumentDidgeridoo:
-		return 699
-	case block.NoteBlockInstrumentBit:
-		return 700
-	case block.NoteBlockInstrumentBanjo:
-		return 701
-	case block.NoteBlockInstrumentPling:
-		return 694
-	default:
-		return 692 // harp fallback for mob head instruments
-	}
+	return noteBlockInstrumentSoundID(inst)
 }
 
 // playNoteBlock plays the note sound with correct pitch.

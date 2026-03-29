@@ -16,19 +16,16 @@ import (
 type NoteBlockManager struct {
 	Manager *game.PlayerManager
 	World   game.World
-	Logger  *log.Logger
 	mu      sync.Mutex
 	// ambientTimers tracks the next tick each player should hear an ambient sound.
-	// Key is player EID.
 	ambientTimers map[int32]int64
 }
 
 // NewNoteBlockManager creates a new NoteBlockManager.
-func NewNoteBlockManager(manager *game.PlayerManager, world game.World, logger *log.Logger) *NoteBlockManager {
+func NewNoteBlockManager(manager *game.PlayerManager, world game.World, _ *log.Logger) *NoteBlockManager {
 	return &NoteBlockManager{
 		Manager:       manager,
 		World:         world,
-		Logger:        logger,
 		ambientTimers: make(map[int32]int64),
 	}
 }
@@ -82,7 +79,15 @@ func (nm *NoteBlockManager) TuneNote(x, y, z int) {
 	nm.World.SetBlock(x, y, z, newID)
 	broadcastBlockUpdateDirect(nm.Manager, x, y, z, int32(newID))
 
-	nm.PlayNote(x, y, z)
+	// Check air above before playing.
+	aboveID, err := nm.World.GetBlock(x, y+1, z)
+	if err == nil {
+		aboveName := BlockNameFromState(int(aboveID))
+		if aboveName != "air" && aboveName != "cave_air" && aboveName != "void_air" {
+			return
+		}
+	}
+	nm.playNoteSound(x, y, z, nb)
 }
 
 // OnRedstone plays the note block when it receives redstone power.
@@ -158,51 +163,43 @@ func noteBlockInstrumentSoundID(inst block.NoteBlockInstrument) int32 {
 // ---------------------------------------------------------------------------
 
 // TickAmbientSounds plays ambient biome sounds for players periodically.
-// Call this from the main tick loop.
 func (nm *NoteBlockManager) TickAmbientSounds(tick int64) {
 	nm.Manager.ForEach(func(p *game.Player) {
 		if p.Dead {
 			return
 		}
-
-		nm.mu.Lock()
-		nextTick, exists := nm.ambientTimers[p.EID]
-		if !exists {
-			// Initialize with a random delay of 200-400 ticks.
-			nm.ambientTimers[p.EID] = tick + 200 + int64(rand.Intn(201))
-			nm.mu.Unlock()
+		if !nm.shouldPlayAmbient(p.EID, tick) {
 			return
 		}
-		if tick < nextTick {
-			nm.mu.Unlock()
-			return
-		}
-		// Schedule the next ambient sound 200-400 ticks from now.
-		nm.ambientTimers[p.EID] = tick + 200 + int64(rand.Intn(201))
-		nm.mu.Unlock()
 
 		px, py, pz := p.Position()
 
-		// Cave ambient: play when player is below Y=50.
+		// Cave ambient when below Y=50.
 		if py < 50 {
 			sendSoundToPlayer(p, SoundAmbientCave, SoundCategoryAmbient,
 				px, py, pz, 1.0, 1.0)
 			return
 		}
 
-		// Underwater ambient: play when player head is submerged.
-		// Check the block at the player's head position.
-		headY := int(py) + 1
-		headStateID, err := nm.World.GetBlock(int(px), headY, int(pz))
-		if err == nil {
-			headName := BlockNameFromState(int(headStateID))
-			if headName == "water" {
-				sendSoundToPlayer(p, SoundAmbientUnderwaterLoop, SoundCategoryAmbient,
-					px, py, pz, 1.0, 1.0)
-				return
-			}
+		// Underwater ambient when head is submerged.
+		headStateID, err := nm.World.GetBlock(int(px), int(py)+1, int(pz))
+		if err == nil && BlockNameFromState(int(headStateID)) == "water" {
+			sendSoundToPlayer(p, SoundAmbientUnderwaterLoop, SoundCategoryAmbient,
+				px, py, pz, 1.0, 1.0)
 		}
 	})
+}
+
+// shouldPlayAmbient checks and updates the per-player ambient timer.
+func (nm *NoteBlockManager) shouldPlayAmbient(eid int32, tick int64) bool {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+	nextTick, exists := nm.ambientTimers[eid]
+	if !exists || tick >= nextTick {
+		nm.ambientTimers[eid] = tick + 200 + int64(rand.Intn(201))
+		return exists // skip on first registration
+	}
+	return false
 }
 
 // CleanupPlayer removes ambient timer state for a disconnected player.
