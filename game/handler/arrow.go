@@ -347,22 +347,23 @@ func (am *ArrowManager) Tick(tick int64) {
 				}
 				am.Survival.ApplyDamage(am.Manager, p, damage, dmgType)
 
-				// Punch enchantment: extra knockback away from arrow direction
-				if arrow.PunchLevel > 0 {
-					kbStr := 0.6 * float64(arrow.PunchLevel)
-					arrowSpeed := math.Sqrt(arrow.VelX*arrow.VelX + arrow.VelZ*arrow.VelZ)
-					if arrowSpeed > 0.001 {
-						kbX := arrow.VelX / arrowSpeed * kbStr
-						kbZ := arrow.VelZ / arrowSpeed * kbStr
-						pkt := pk.Marshal(
-							packetid.ClientboundSetEntityMotion,
-							pk.VarInt(p.EID),
-							pk.Short(int16(kbX*8000)),
-							pk.Short(4000), // upward boost
-							pk.Short(int16(kbZ*8000)),
-						)
-						p.WritePacket(pkt)
+				// Base arrow knockback + Punch enchantment bonus
+				arrowSpeed := math.Sqrt(arrow.VelX*arrow.VelX + arrow.VelZ*arrow.VelZ)
+				if arrowSpeed > 0.001 {
+					kbStr := 0.4 // base knockback for all arrows/tridents
+					if arrow.PunchLevel > 0 {
+						kbStr += 0.6 * float64(arrow.PunchLevel)
 					}
+					kbX := arrow.VelX / arrowSpeed * kbStr
+					kbZ := arrow.VelZ / arrowSpeed * kbStr
+					pkt := pk.Marshal(
+						packetid.ClientboundSetEntityMotion,
+						pk.VarInt(p.EID),
+						pk.Short(int16(kbX*8000)),
+						pk.Short(3000), // small upward boost
+						pk.Short(int16(kbZ*8000)),
+					)
+					p.WritePacket(pkt)
 				}
 
 				// Flame enchantment: set target on fire (4 seconds = 80 ticks)
@@ -416,6 +417,29 @@ func (am *ArrowManager) Tick(tick int64) {
 					damage = 5
 				}
 				killed, mobTypeID := am.MobMgr.DamageMobByArrow(arrow.ShooterEID, mobEID, damage)
+
+				// Knockback mob away from arrow direction
+				mobArrowSpeed := math.Sqrt(arrow.VelX*arrow.VelX + arrow.VelZ*arrow.VelZ)
+				if mobArrowSpeed > 0.001 && !killed {
+					mobKbStr := 0.4
+					if arrow.PunchLevel > 0 {
+						mobKbStr += 0.6 * float64(arrow.PunchLevel)
+					}
+					kbX := arrow.VelX / mobArrowSpeed * mobKbStr
+					kbZ := arrow.VelZ / mobArrowSpeed * mobKbStr
+					mx, _, mz := am.MobMgr.GetMobPos(mobEID)
+					mobKbPkt := pk.Marshal(
+						packetid.ClientboundSetEntityMotion,
+						pk.VarInt(mobEID),
+						pk.Short(int16(kbX*8000)),
+						pk.Short(3000),
+						pk.Short(int16(kbZ*8000)),
+					)
+					am.Manager.ForEachNearby(mx, mz, 64, func(p *game.Player) {
+						p.WritePacket(mobKbPkt)
+					})
+				}
+
 				// Music disc drop: skeleton arrow kills creeper
 				if killed && mobTypeID == MobTypeCreeper && am.MobMgr.IsMobOfType(arrow.ShooterEID, MobTypeSkeleton) {
 					if am.ItemEntities != nil {
