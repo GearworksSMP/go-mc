@@ -514,16 +514,55 @@ func main() {
 		}),
 	)
 
-	// Add dirty-chunk flush handlers (every 30s = 600 ticks)
-	if dbw != nil {
-		tickLoop.AddHandler(dbw.FlushTick(600))
+	// Pair each DB-backed world with an async flusher.
+	type dimWorld struct {
+		world   *dbworld.World
+		flusher *dbworld.AsyncFlusher
 	}
-	if netherDBW != nil {
-		tickLoop.AddHandler(netherDBW.FlushTick(600))
+	var dbWorlds []dimWorld
+	allDBWorlds := []*dbworld.World{dbw, netherDBW, endDBW}
+	for _, dw := range allDBWorlds {
+		if dw != nil {
+			dbWorlds = append(dbWorlds, dimWorld{
+				world:   dw,
+				flusher: dbworld.NewAsyncFlusher(pg, logger),
+			})
+		}
 	}
-	if endDBW != nil {
-		tickLoop.AddHandler(endDBW.FlushTick(600))
-	}
+
+	// Periodic chunk management: tick update, eviction, and async flush.
+	evictionPolicy := dbworld.DefaultEvictionPolicy()
+	tickLoop.AddHandler(game.TickHandlerFunc(func(tick int64) {
+		for _, dw := range dbWorlds {
+			dw.world.SetTick(tick)
+		}
+
+		// Chunk eviction every 1200 ticks.
+		if tick%1200 == 0 && tick > 0 && len(dbWorlds) > 0 {
+			var positions [][2]int
+			vd := 10
+			players.ForEach(func(p *game.Player) {
+				px, _, pz := p.Position()
+				positions = append(positions, [2]int{int(px) >> 4, int(pz) >> 4})
+				if p.ViewDistance > vd {
+					vd = p.ViewDistance
+				}
+			})
+			for _, dw := range dbWorlds {
+				n := dbworld.EvictUnused(dw.world, positions, vd, tick, evictionPolicy)
+				if n > 0 {
+					logger.Printf("Evicted %d idle chunks (loaded=%d)", n, dw.world.ChunkCount())
+				}
+			}
+		}
+
+		// Async flush every 6000 ticks.
+		if tick%6000 == 0 && tick > 0 {
+			for _, dw := range dbWorlds {
+				dw.flusher.FlushDirty(dw.world)
+			}
+		}
+	}))
 
 	// Auto-save all online players every 5 minutes (6000 ticks)
 	if playerStore != nil {
@@ -569,15 +608,14 @@ func main() {
 		// Save mobs for all dimensions
 		mobMgr.SaveAllMobs("overworld")
 
-		// Flush dirty chunks for all dimensions
-		for _, dw := range []*dbworld.World{dbw, netherDBW, endDBW} {
-			if dw != nil {
-				n, err := dw.FlushDirty(context.Background())
-				if err != nil {
-					logger.Printf("Shutdown flush error: %v", err)
-				} else if n > 0 {
-					logger.Printf("Shutdown: flushed %d dirty chunks", n)
-				}
+		// Close async flushers (drain pending writes), then flush remaining dirty chunks.
+		for _, dw := range dbWorlds {
+			dw.flusher.Close()
+			n, err := dw.world.FlushDirty(context.Background())
+			if err != nil {
+				logger.Printf("Shutdown flush error: %v", err)
+			} else if n > 0 {
+				logger.Printf("Shutdown: flushed %d dirty chunks", n)
 			}
 		}
 
