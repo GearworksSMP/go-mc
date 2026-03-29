@@ -37,6 +37,24 @@ type Arrow struct {
 	PunchLevel           int32  // Punch enchantment: extra knockback on hit
 	OnFire               bool   // Flame enchantment: sets target on fire
 	PotionType           string // Tipped arrow: potion effect to apply on hit
+	PiercingLevel        int32          // Piercing enchantment level (max entities to pass through)
+	PiercedCount         int32          // Number of entities already pierced
+	PiercedEIDs          map[int32]bool // Entity IDs already hit (avoid double-hitting)
+}
+
+// alreadyPierced returns true if this entity was already hit by a piercing arrow.
+func (a *Arrow) alreadyPierced(eid int32) bool {
+	return a.PiercedEIDs != nil && a.PiercedEIDs[eid]
+}
+
+// recordPierce records a piercing hit and returns true if the arrow should continue.
+func (a *Arrow) recordPierce(eid int32) bool {
+	if a.PiercingLevel <= 0 {
+		return false
+	}
+	a.PiercedEIDs[eid] = true
+	a.PiercedCount++
+	return a.PiercedCount < a.PiercingLevel
 }
 
 // ArrowManager manages arrow projectiles.
@@ -164,7 +182,7 @@ func (am *ArrowManager) SpawnTippedArrow(shooterEID int32, x, y, z, dirX, dirY, 
 }
 
 // SpawnPlayerArrow creates and broadcasts an arrow shot by a player with a given direction and damage.
-func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool) {
+func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool, piercingLevel ...int32) {
 	speed := 3.0
 	velX := dirX * speed
 	velY := dirY * speed
@@ -183,6 +201,10 @@ func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, 
 		Damage:     float32(damage),
 		PunchLevel: punchLevel,
 		OnFire:     onFire,
+	}
+	if len(piercingLevel) > 0 && piercingLevel[0] > 0 {
+		arrow.PiercingLevel = piercingLevel[0]
+		arrow.PiercedEIDs = make(map[int32]bool)
 	}
 
 	am.mu.Lock()
@@ -257,6 +279,10 @@ func (am *ArrowManager) Tick(tick int64) {
 			}
 			// Skip the shooter (player arrows should not hit themselves)
 			if p.EID == arrow.ShooterEID && arrow.LifeTick < 5 {
+				return
+			}
+			// Piercing: skip entities already hit
+			if arrow.alreadyPierced(p.EID) {
 				return
 			}
 			px, py, pz := p.Position()
@@ -360,6 +386,11 @@ func (am *ArrowManager) Tick(tick int64) {
 					}
 				}
 
+				// Piercing: track hit and continue if under piercing limit
+				if arrow.recordPierce(p.EID) {
+					return // arrow continues through
+				}
+
 				hitPlayer = true
 			}
 		})
@@ -374,7 +405,7 @@ func (am *ArrowManager) Tick(tick int64) {
 		// Check mob collision
 		if am.MobMgr != nil {
 			mobEID := am.MobMgr.FindMobNear(arrow.X, arrow.Y, arrow.Z, 1.0, arrow.ShooterEID)
-			if mobEID >= 0 {
+			if mobEID >= 0 && !arrow.alreadyPierced(mobEID) {
 				damage := arrow.Damage
 				if damage < 2 {
 					damage = 2
@@ -396,8 +427,11 @@ func (am *ArrowManager) Tick(tick int64) {
 						}
 					}
 				}
-				toRemove = append(toRemove, eid)
-				continue
+				// Piercing: track hit and continue if under piercing limit
+				if !arrow.recordPierce(mobEID) {
+					toRemove = append(toRemove, eid)
+					continue
+				}
 			}
 		}
 

@@ -39,6 +39,7 @@ const (
 	FrostWalker          = "frost_walker"
 	SoulSpeed            = "soul_speed"
 	SwiftSneak           = "swift_sneak"
+	Piercing             = "piercing"
 	CurseOfBinding  = "binding_curse"
 	CurseOfVanishing = "vanishing_curse"
 	Sweeping             = "sweeping" // alias for sweeping_edge
@@ -79,7 +80,8 @@ func init() {
 		Flame:                {Name: Flame, MaxLevel: 1},
 		Infinity:             {Name: Infinity, MaxLevel: 1, Incompatible: []string{Mending}},
 		QuickCharge:          {Name: QuickCharge, MaxLevel: 3},
-		Multishot:            {Name: Multishot, MaxLevel: 1},
+		Multishot:            {Name: Multishot, MaxLevel: 1, Incompatible: []string{Piercing}},
+		Piercing:             {Name: Piercing, MaxLevel: 4, Incompatible: []string{Multishot}},
 		Riptide:              {Name: Riptide, MaxLevel: 3, Incompatible: []string{Loyalty, Channeling}},
 		Channeling:           {Name: Channeling, MaxLevel: 1, Incompatible: []string{Riptide}},
 		Loyalty:              {Name: Loyalty, MaxLevel: 3, Incompatible: []string{Riptide}},
