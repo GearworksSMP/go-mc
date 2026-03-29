@@ -182,6 +182,9 @@ func (cm *CrossbowManager) fireCrossbow(player *game.Player, invItem *game.ItemS
 		multishotCount = 3
 	}
 
+	// Check for Piercing enchantment
+	piercingLvl := enchant.GetLevel(invItem.Enchantments, enchant.Piercing)
+
 	// Consume one arrow (multishot still only consumes one)
 	if player.GameMode == 0 {
 		player.Inventory[arrowSlot].Count--
@@ -206,7 +209,7 @@ func (cm *CrossbowManager) fireCrossbow(player *game.Player, invItem *game.ItemS
 			dx = dirX*cos - dirZ*sin
 			dz = dirX*sin + dirZ*cos
 		}
-		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage, 0, false)
+		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage, 0, false, piercingLvl)
 	}
 
 	// Reduce crossbow durability in survival mode

@@ -454,6 +454,41 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 	if player.FallStartY > -900 && (onGround || newY >= oldY) {
 		fallDist := player.FallStartY - newY
 		player.FallStartY = -999
+
+		// Resolve block below once for slime/honey bounce and farmland trampling
+		var landingBlock string
+		var w game.World
+		var bx, by, bz int
+		if fallDist > 0 {
+			bx = int(math.Floor(player.X))
+			by = int(math.Floor(newY)) - 1
+			bz = int(math.Floor(player.Z))
+			w = h.worldForPlayer(player)
+			if state, err := w.GetBlock(bx, by, bz); err == nil {
+				landingBlock = BlockNameFromState(int(state))
+			}
+		}
+
+		// Slime block: negate fall damage, bounce player upward
+		if landingBlock == "slime_block" {
+			bounceVel := math.Sqrt(2 * 0.08 * fallDist)
+			if bounceVel > 4.0 {
+				bounceVel = 4.0
+			}
+			pkt := pk.Marshal(
+				packetid.ClientboundSetEntityMotion,
+				pk.VarInt(player.EID),
+				pk.Short(0),
+				pk.Short(int16(bounceVel*8000)),
+				pk.Short(0),
+			)
+			player.WritePacket(pkt)
+			return // no fall damage on slime
+		}
+
+		// Honey block: reduce fall damage by 80%
+		isHoney := landingBlock == "honey_block"
+
 		if fallDist > 3 {
 			// Slow Falling negates all fall damage
 			if player.Effects != nil {
@@ -463,6 +498,11 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 			}
 
 			damage := float32(fallDist - 3)
+
+			// Honey block reduces fall damage by 80%
+			if isHoney {
+				damage *= 0.2
+			}
 
 			// Feather Falling enchantment: check boots (slot 8) for reduction.
 			// Each level reduces fall damage by 12% (multiply by 1 - 0.12*level).
@@ -482,28 +522,19 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		}
 
 		// Farmland trampling: any significant fall converts farmland to dirt
-		if fallDist > 0.5 {
-			bx := int(math.Floor(player.X))
-			by := int(math.Floor(player.Y)) - 1
-			bz := int(math.Floor(player.Z))
-			w := h.worldForPlayer(player)
-			if state, err := w.GetBlock(bx, by, bz); err == nil {
-				blockName := BlockNameFromState(int(state))
-				if blockName == "farmland" {
-					dirtID, ok := block.ToStateID[block.Dirt{}]
-					if ok {
-						w.SetBlock(bx, by, bz, dirtID)
-						broadcastBlockUpdateDirect(h.Manager, bx, by, bz, int32(dirtID))
-					}
-					// Break crop on top if any
-					if h.CropMgr != nil {
-						aboveState, err := w.GetBlock(bx, by+1, bz)
-						if err == nil && isCropBlock(BlockNameFromState(int(aboveState))) {
-							w.SetBlock(bx, by+1, bz, 0)
-							broadcastBlockUpdateDirect(h.Manager, bx, by+1, bz, 0)
-							h.CropMgr.UnregisterCrop(bx, by+1, bz)
-						}
-					}
+		if fallDist > 0.5 && landingBlock == "farmland" && w != nil {
+			dirtID, ok := block.ToStateID[block.Dirt{}]
+			if ok {
+				w.SetBlock(bx, by, bz, dirtID)
+				broadcastBlockUpdateDirect(h.Manager, bx, by, bz, int32(dirtID))
+			}
+			// Break crop on top if any
+			if h.CropMgr != nil {
+				aboveState, err := w.GetBlock(bx, by+1, bz)
+				if err == nil && isCropBlock(BlockNameFromState(int(aboveState))) {
+					w.SetBlock(bx, by+1, bz, 0)
+					broadcastBlockUpdateDirect(h.Manager, bx, by+1, bz, 0)
+					h.CropMgr.UnregisterCrop(bx, by+1, bz)
 				}
 			}
 		}
