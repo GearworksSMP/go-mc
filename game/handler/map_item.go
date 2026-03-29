@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"io"
+	"math"
 	"sync"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -8,6 +10,26 @@ import (
 	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
+
+// MapCursor represents a cursor/icon displayed on a map.
+type MapCursor struct {
+	Type        int32  // cursor type: 0=white arrow, 8=monument, 9=mansion, etc.
+	X           int8   // X position on map (-128 to 127)
+	Z           int8   // Z position on map (-128 to 127)
+	Rotation    int8   // rotation 0-15 (yaw / 360 * 16)
+	DisplayName string // optional display name (empty for none)
+}
+
+// WriteTo encodes a MapCursor to the Minecraft map icon wire format.
+func (mc MapCursor) WriteTo(w io.Writer) (n int64, err error) {
+	return pk.Tuple{
+		pk.VarInt(mc.Type),
+		pk.Byte(mc.X),
+		pk.Byte(mc.Z),
+		pk.Byte(mc.Rotation),
+		pk.Boolean(mc.DisplayName != ""),
+	}.WriteTo(w)
+}
 
 // MapData holds the state of a single map.
 type MapData struct {
@@ -17,6 +39,7 @@ type MapData struct {
 	Scale   byte // 0 = 1:1 (128 blocks), 1 = 1:2 (256), etc up to 4
 	Locked  bool
 	Pixels  [128][128]byte // map color IDs (row-major: Pixels[z][x])
+	Cursors []MapCursor    // map cursors/icons (player positions, structure markers)
 	Dirty   bool
 }
 
@@ -78,11 +101,13 @@ func (mm *MapManager) SendMapData(player *game.Player, mapID int32) {
 		return
 	}
 
-	// Copy pixel data under lock
+	// Copy data under lock
 	var pixels [128][128]byte
 	copy(pixels[:], md.Pixels[:])
 	scale := md.Scale
 	locked := md.Locked
+	cursors := make([]MapCursor, len(md.Cursors))
+	copy(cursors, md.Cursors)
 	mm.mu.Unlock()
 
 	// Build color data (row-major, 128x128)
@@ -93,24 +118,208 @@ func (mm *MapManager) SendMapData(player *game.Player, mapID int32) {
 		}
 	}
 
-	player.WritePacket(pk.Marshal(
-		packetid.ClientboundMapItemData,
+	// Build cursor fields
+	cursorFields := make([]pk.FieldEncoder, 0, len(cursors)+1)
+	cursorFields = append(cursorFields, pk.VarInt(len(cursors)))
+	for _, c := range cursors {
+		cursorFields = append(cursorFields, c)
+	}
+
+	fields := make([]pk.FieldEncoder, 0, 9+len(cursors))
+	fields = append(fields,
 		pk.VarInt(mapID),
 		pk.Byte(int8(scale)),
 		pk.Boolean(locked),
-		pk.VarInt(0),                // 0 icons
-		pk.UnsignedByte(128),        // columns (0 = no update, >0 = update)
-		pk.UnsignedByte(128),        // rows
-		pk.UnsignedByte(0),          // x offset
-		pk.UnsignedByte(0),          // z offset
-		pk.ByteArray(colors),        // color data (VarInt-prefixed)
-	))
+	)
+	fields = append(fields, cursorFields...)
+	fields = append(fields,
+		pk.UnsignedByte(128), // columns (0 = no update, >0 = update)
+		pk.UnsignedByte(128), // rows
+		pk.UnsignedByte(0),   // x offset
+		pk.UnsignedByte(0),   // z offset
+		pk.ByteArray(colors), // color data (VarInt-prefixed)
+	)
+
+	player.WritePacket(pk.Marshal(packetid.ClientboundMapItemData, fields...))
+}
+
+// sendMapCursorsOnly sends only cursor updates (no pixel data) to a player.
+func (mm *MapManager) sendMapCursorsOnly(player *game.Player, mapID int32) {
+	mm.mu.Lock()
+	md, ok := mm.maps[mapID]
+	if !ok {
+		mm.mu.Unlock()
+		return
+	}
+	scale := md.Scale
+	locked := md.Locked
+	cursors := make([]MapCursor, len(md.Cursors))
+	copy(cursors, md.Cursors)
+	mm.mu.Unlock()
+
+	cursorFields := make([]pk.FieldEncoder, 0, len(cursors)+1)
+	cursorFields = append(cursorFields, pk.VarInt(len(cursors)))
+	for _, c := range cursors {
+		cursorFields = append(cursorFields, c)
+	}
+
+	fields := make([]pk.FieldEncoder, 0, 4+len(cursors))
+	fields = append(fields,
+		pk.VarInt(mapID),
+		pk.Byte(int8(scale)),
+		pk.Boolean(locked),
+	)
+	fields = append(fields, cursorFields...)
+	fields = append(fields, pk.UnsignedByte(0)) // columns=0 means no pixel update
+
+	player.WritePacket(pk.Marshal(packetid.ClientboundMapItemData, fields...))
 }
 
 // Tick updates maps for players holding them (called each server tick).
-func (mm *MapManager) Tick() {
-	// For now, maps are static once created.
-	// Future: scan explored area and update pixels as players move.
+// tickCount should be the current server tick number.
+func (mm *MapManager) Tick(tickCount int64) {
+	// Update player cursors every 20 ticks (1 second)
+	if tickCount%20 != 0 {
+		return
+	}
+
+	mm.mu.Lock()
+	mapIDs := make([]int32, 0, len(mm.maps))
+	for id := range mm.maps {
+		mapIDs = append(mapIDs, id)
+	}
+	mm.mu.Unlock()
+
+	for _, mapID := range mapIDs {
+		mm.updatePlayerCursors(mapID)
+	}
+}
+
+// updatePlayerCursors recalculates player arrow cursors for a specific map
+// and re-sends cursor data to all players viewing it.
+func (mm *MapManager) updatePlayerCursors(mapID int32) {
+	mm.mu.Lock()
+	md, ok := mm.maps[mapID]
+	if !ok || md.Locked {
+		mm.mu.Unlock()
+		return
+	}
+	centerX := md.CenterX
+	centerZ := md.CenterZ
+	scale := md.Scale
+	// Keep any non-player cursors (structure markers, type >= 8)
+	var structureCursors []MapCursor
+	for _, c := range md.Cursors {
+		if c.Type >= 8 {
+			structureCursors = append(structureCursors, c)
+		}
+	}
+	mm.mu.Unlock()
+
+	blocksPerPixel := 1 << scale
+	mapRadius := 64 * blocksPerPixel // half the map width in world blocks
+
+	var newCursors []MapCursor
+	newCursors = append(newCursors, structureCursors...)
+
+	// Add a white arrow cursor for each player within the map's coverage
+	mm.Manager.ForEach(func(p *game.Player) {
+		if p.Dead {
+			return
+		}
+		px, _, pz := p.Position()
+		// Check if player is within map bounds
+		dx := int(px) - centerX
+		dz := int(pz) - centerZ
+		if dx < -mapRadius || dx > mapRadius || dz < -mapRadius || dz > mapRadius {
+			return
+		}
+
+		// Convert world position to map coordinates (-128 to 127)
+		mapX := int8(clampInt(dx*128/mapRadius, -128, 127))
+		mapZ := int8(clampInt(dz*128/mapRadius, -128, 127))
+
+		// Convert yaw to rotation (0-15)
+		yaw := p.Yaw
+		rotation := int8(math.Floor(float64(yaw)/360.0*16.0+0.5)) & 0x0F
+
+		newCursors = append(newCursors, MapCursor{
+			Type:     0, // white arrow (player)
+			X:        mapX,
+			Z:        mapZ,
+			Rotation: rotation,
+		})
+	})
+
+	// Update cursors and send to viewers
+	mm.mu.Lock()
+	md2, ok := mm.maps[mapID]
+	if !ok {
+		mm.mu.Unlock()
+		return
+	}
+	md2.Cursors = newCursors
+	mm.mu.Unlock()
+
+	// Send cursor-only update to all players holding this map
+	mm.Manager.ForEach(func(p *game.Player) {
+		if p.Dead {
+			return
+		}
+		if isPlayerHoldingMap(p) {
+			mm.sendMapCursorsOnly(p, mapID)
+		}
+	})
+}
+
+// AddStructureCursor adds a structure marker cursor to a map.
+// cursorType: 8 = ocean monument, 9 = woodland mansion.
+func (mm *MapManager) AddStructureCursor(mapID int32, cursorType int32, worldX, worldZ int) {
+	mm.mu.Lock()
+	md, ok := mm.maps[mapID]
+	if !ok {
+		mm.mu.Unlock()
+		return
+	}
+
+	blocksPerPixel := 1 << md.Scale
+	mapRadius := 64 * blocksPerPixel
+	dx := worldX - md.CenterX
+	dz := worldZ - md.CenterZ
+
+	mapX := int8(clampInt(dx*128/mapRadius, -128, 127))
+	mapZ := int8(clampInt(dz*128/mapRadius, -128, 127))
+
+	md.Cursors = append(md.Cursors, MapCursor{
+		Type: cursorType,
+		X:    mapX,
+		Z:    mapZ,
+	})
+	mm.mu.Unlock()
+}
+
+// isPlayerHoldingMap checks if a player is holding a filled_map item.
+func isPlayerHoldingMap(p *game.Player) bool {
+	heldSlot := int(p.HeldSlot) + 36
+	if heldSlot < 0 || heldSlot >= len(p.Inventory) {
+		return false
+	}
+	held := p.Inventory[heldSlot]
+	if held.ID <= 0 || held.Count <= 0 {
+		return false
+	}
+	return ItemNameByID(held.ID) == "filled_map"
+}
+
+// clampInt clamps v to the range [lo, hi].
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // renderMap generates pixel data from the world blocks.
