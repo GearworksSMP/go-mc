@@ -33,7 +33,9 @@ const (
 	EffectAbsorption     int32 = 22
 	EffectGlowing        int32 = 24
 	EffectLevitation     int32 = 25
-	EffectSlowFalling    int32 = 28
+	EffectSlowFalling      int32 = 28
+	EffectBadOmen          int32 = 31
+	EffectHeroOfTheVillage int32 = 32
 )
 
 // EffectManager manages status effects for all players.

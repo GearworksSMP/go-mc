@@ -238,6 +238,8 @@ func main() {
 
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
+	mobMgr.EffectMgr = effectMgr
+	raidMgr := handler.NewRaidManager(players, mobMgr, world, effectMgr, logger)
 
 	survHandler.ItemEntities = itemEntities
 	survHandler.KeepInventory = &keepInventory
@@ -412,6 +414,7 @@ func main() {
 			elytraMgr.Tick(tick)
 			dimensionMgr.Tick(tick)
 			dragonMgr.Tick(tick)
+			raidMgr.Tick(tick)
 		}),
 	)
 

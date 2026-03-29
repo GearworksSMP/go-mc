@@ -112,6 +112,9 @@ type Mob struct {
 	PathIndex     int        // current step along path
 	PathRecalcTick int64     // tick when path was last recalculated
 
+	// Patrol captain flag (pillagers)
+	IsPatrolCaptain bool
+
 	// Villager data (nil for non-villagers)
 	VillagerData *VillagerData
 
@@ -130,6 +133,7 @@ type MobManager struct {
 	ItemEntities *ItemEntityManager
 	ArrowMgr     *ArrowManager
 	AdvMgr       *AdvancementManager
+	EffectMgr    *EffectManager
 	MobStore     store.MobStore
 	Logger       *log.Logger
 	mu           sync.Mutex
@@ -150,6 +154,55 @@ func NewMobManager(manager *game.PlayerManager, timeMgr *TimeManager, world game
 		Mobs:         make(map[int32]*Mob),
 		maxMobs:      20,
 		maxPassive:   15,
+	}
+}
+
+// IsMobAlive returns true if a mob with the given EID exists and has positive health.
+func (m *MobManager) IsMobAlive(eid int32) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mob, ok := m.Mobs[eid]
+	return ok && mob.Health > 0
+}
+
+// SpawnMobAt creates and broadcasts a mob at the given position.
+// Returns the mob's EID. The caller must not hold m.mu.
+func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64, health, damage float32, speed float64) int32 {
+	eid := m.Manager.NextEntityID()
+	mob := &Mob{
+		EID:       eid,
+		TypeID:    typeID,
+		X:         x,
+		Y:         y,
+		Z:         z,
+		PrevX:     x,
+		PrevY:     y,
+		PrevZ:     z,
+		Health:    health,
+		MaxHealth: health,
+		Damage:    damage,
+		Speed:     speed,
+		WanderYaw: rand.Float32() * 360,
+		Hostile:   true,
+	}
+	m.mu.Lock()
+	m.Mobs[eid] = mob
+	m.mu.Unlock()
+	m.broadcastSpawn(mob)
+	return eid
+}
+
+// grantBadOmen increments a player's Bad Omen level when they kill a patrol captain.
+func (m *MobManager) grantBadOmen(killer *game.Player) {
+	killer.BadOmen++
+	if killer.BadOmen > 7 {
+		killer.BadOmen = 7
+	}
+	if m.EffectMgr != nil {
+		m.EffectMgr.ApplyEffect(killer, EffectBadOmen, killer.BadOmen-1, 120000, false)
+	}
+	if m.Logger != nil {
+		m.Logger.Printf("Player %s killed patrol captain, Bad Omen level %d", killer.Name, killer.BadOmen)
 	}
 }
 
@@ -1441,6 +1494,9 @@ func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLe
 	}()
 
 	if killer != nil {
+		if mob.TypeID == MobTypePillager && mob.IsPatrolCaptain {
+			m.grantBadOmen(killer)
+		}
 		if mob.Hostile {
 			AddExperience(killer, 5)
 		} else {
@@ -1499,6 +1555,9 @@ func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 
 	// Award XP to killer
 	if killer != nil {
+		if mob.TypeID == MobTypePillager && mob.IsPatrolCaptain {
+			m.grantBadOmen(killer)
+		}
 		if mob.Hostile {
 			AddExperience(killer, 5)
 		} else {
