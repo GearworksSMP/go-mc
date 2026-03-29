@@ -192,6 +192,16 @@ const (
 	SoundZombifiedPiglinHurt  int32 = 1180
 	SoundVexDeath             int32 = 1094
 	SoundVexHurt              int32 = 1096
+
+	// Warden sounds
+	SoundWardenAmbient        int32 = 1103
+	SoundWardenDeath          int32 = 1106
+	SoundWardenHurt           int32 = 1110
+	SoundWardenHeartbeat      int32 = 1109
+	SoundWardenRoar           int32 = 1113
+	SoundWardenSonicBoom      int32 = 1116
+	SoundWardenSniff          int32 = 1115
+
 	SoundNoteBlock            int32 = 686
 
 	// Chest sounds
@@ -376,6 +386,8 @@ func MobHurtSound(typeID int32) int32 {
 		return SoundHoglinHurt
 	case MobTypeStrider:
 		return SoundStriderHurt
+	case MobTypeWarden:
+		return SoundWardenHurt
 	}
 	return SoundPlayerHurt
 }
@@ -469,6 +481,8 @@ func MobDeathSound(typeID int32) int32 {
 		return SoundHoglinDeath
 	case MobTypeStrider:
 		return SoundStriderDeath
+	case MobTypeWarden:
+		return SoundWardenDeath
 	}
 	return SoundPlayerDeath
 }

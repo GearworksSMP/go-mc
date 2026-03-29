@@ -17,6 +17,8 @@ const (
 	ParticleSmoke           int32 = 62
 	ParticleSweepAttack     int32 = 67
 	ParticleSplash          int32 = 70
+	ParticleSonicBoom       int32 = 63
+	ParticleSculkCharge     int32 = 61
 )
 
 // BroadcastParticle sends a ClientboundLevelParticles packet to all players.

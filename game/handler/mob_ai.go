@@ -1270,6 +1270,192 @@ const (
 	SoundEvokerCast      = 333
 )
 
+// tickWarden runs warden AI: vibration detection, 3-strike anger, melee + sonic boom.
+func (m *MobManager) tickWarden(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	// Initialize per-player tracking maps on first tick.
+	if mob.WardenPlayerAnger == nil {
+		mob.WardenPlayerAnger = make(map[int32]int32)
+		mob.WardenPrevPos = make(map[int32][3]float64)
+	}
+
+	// --- Vibration detection: every 20 ticks, scan for players within 16 blocks ---
+	if tick-mob.WardenSniffTick >= 20 {
+		mob.WardenSniffTick = tick
+
+		m.Manager.ForEach(func(p *game.Player) {
+			if p.Dead || p.GameMode != 0 {
+				return
+			}
+			px, py, pz := p.Position()
+			dx := px - mob.X
+			dy := py - mob.Y
+			dz := pz - mob.Z
+			dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			if dist > 16 {
+				return
+			}
+
+			eid := p.EID
+			prev, hasPrev := mob.WardenPrevPos[eid]
+			mob.WardenPrevPos[eid] = [3]float64{px, py, pz}
+
+			if !hasPrev {
+				return
+			}
+
+			// Check if player moved since last scan.
+			mdx := px - prev[0]
+			mdy := py - prev[1]
+			mdz := pz - prev[2]
+			moveDist := math.Sqrt(mdx*mdx + mdy*mdy + mdz*mdz)
+			if moveDist < 0.1 {
+				return
+			}
+
+			// Sneaking players generate much less anger.
+			angerInc := int32(10)
+			if p.Sneaking {
+				angerInc = 1
+			}
+			mob.WardenPlayerAnger[eid] += angerInc
+		})
+
+		// Find highest-anger player and set as target.
+		var bestAnger int32
+		var bestEID int32 = -1
+		for eid, anger := range mob.WardenPlayerAnger {
+			if anger > bestAnger {
+				bestAnger = anger
+				bestEID = eid
+			}
+		}
+		mob.WardenAnger = bestAnger
+		mob.WardenTarget = bestEID
+
+		// Anger decay: reduce each player's anger by 1.
+		for eid, anger := range mob.WardenPlayerAnger {
+			if anger <= 1 {
+				delete(mob.WardenPlayerAnger, eid)
+				delete(mob.WardenPrevPos, eid)
+			} else {
+				mob.WardenPlayerAnger[eid] = anger - 1
+			}
+		}
+	}
+
+	// --- Resolve target player ---
+	var target *game.Player
+	if mob.WardenTarget >= 0 {
+		m.Manager.ForEach(func(p *game.Player) {
+			if p.EID == mob.WardenTarget && !p.Dead && p.GameMode == 0 {
+				target = p
+			}
+		})
+	}
+
+	// --- Heartbeat sound based on anger tier ---
+	var heartbeatInterval int64
+	switch {
+	case mob.WardenAnger >= 80:
+		heartbeatInterval = 10
+	case mob.WardenAnger >= 40:
+		heartbeatInterval = 30
+	default:
+		heartbeatInterval = 60
+	}
+	if tick-mob.WardenLastHeartbeat >= heartbeatInterval {
+		mob.WardenLastHeartbeat = tick
+		BroadcastSound(m.Manager, SoundWardenHeartbeat, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+	}
+
+	// --- Tier behavior ---
+	switch {
+	case mob.WardenAnger >= 80:
+		// Enraged: chase and attack target.
+		if target != nil {
+			px, py, pz := target.Position()
+			dx := px - mob.X
+			dy := py - mob.Y
+			dz := pz - mob.Z
+			dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+			// Melee attack: within 2 blocks, 20-tick cooldown.
+			if dist <= 2.0 && mob.AttackCooldown <= 0 {
+				mob.AttackCooldown = 20
+				target.LastDamageMessage = target.Name + " was slain by Warden"
+				m.Survival.ApplyDamage(m.Manager, target, mob.Damage, m.Survival.MobDamageTypeID)
+			}
+
+			// Sonic boom: 5-15 blocks, 100-tick cooldown.
+			if dist >= 5.0 && dist <= 15.0 && tick-mob.WardenRoarTick >= 100 {
+				mob.WardenRoarTick = tick
+				BroadcastSound(m.Manager, SoundWardenSonicBoom, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+
+				// Broadcast particles along the line from warden to target.
+				steps := int(dist * 2)
+				if steps < 4 {
+					steps = 4
+				}
+				for i := 0; i <= steps; i++ {
+					t := float64(i) / float64(steps)
+					lx := mob.X + dx*t
+					ly := mob.Y + 1.0 + dy*t
+					lz := mob.Z + dz*t
+					BroadcastParticle(m.Manager, ParticleSonicBoom, lx, ly, lz, 0, 0, 0, 0, 1)
+				}
+
+				// Sonic boom deals 10 damage that bypasses armor (use mob damage type).
+				target.LastDamageMessage = target.Name + " was obliterated by Warden's sonic boom"
+				m.Survival.ApplyDamage(m.Manager, target, 10, m.Survival.MobDamageTypeID)
+			}
+
+			// Chase target.
+			if dist > 2.0 {
+				m.moveWithPathfinding(mob, target, tick)
+			}
+		} else {
+			// Sniff around when angry but no visible target.
+			m.tickWander(mob, tick)
+		}
+
+	case mob.WardenAnger >= 40:
+		// Alert: move toward target, apply Darkness effect to nearby players.
+		if m.EffectMgr != nil {
+			m.Manager.ForEach(func(p *game.Player) {
+				if p.Dead || p.GameMode != 0 {
+					return
+				}
+				px, py, pz := p.Position()
+				d := math.Sqrt(sqDist3(px-mob.X, py-mob.Y, pz-mob.Z))
+				if d <= 20.0 {
+					m.EffectMgr.ApplyEffect(p, EffectDarkness, 0, 260, true) // ~13 seconds, re-applied
+				}
+			})
+		}
+		if target != nil {
+			m.moveWithPathfinding(mob, target, tick)
+		} else {
+			m.tickWander(mob, tick)
+		}
+
+	default:
+		// Idle: sniffing animation, wander slowly.
+		if tick%100 == 0 {
+			BroadcastSound(m.Manager, SoundWardenSniff, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+		}
+		m.tickWander(mob, tick)
+	}
+
+	if mob.AttackCooldown > 0 {
+		mob.AttackCooldown--
+	}
+
+	m.broadcastMobMove(mob)
+}
+
 // broadcastEntityEvent sends an entity event packet to all players.
 func (m *MobManager) broadcastEntityEvent(mob *Mob, event byte) {
 	pkt := pk.Marshal(

@@ -36,6 +36,7 @@ const (
 	EffectSlowFalling      int32 = 28
 	EffectBadOmen          int32 = 31
 	EffectHeroOfTheVillage int32 = 32
+	EffectDarkness         int32 = 33
 )
 
 // effectNameToID maps effect names to IDs for /effect command.

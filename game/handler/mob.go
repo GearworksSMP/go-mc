@@ -60,6 +60,7 @@ const (
 	MobTypeFox              int32 = 54
 	MobTypeRabbit           int32 = 108
 	MobTypeBat              int32 = 10
+	MobTypeWarden           int32 = 132
 )
 
 // mobNameToType maps entity names to type IDs for /summon.
@@ -80,6 +81,7 @@ var mobNameToType = map[string]int32{
 	"vindicator": MobTypeVindicator, "evoker": MobTypeEvoker,
 	"vex": MobTypeVex, "ravager": MobTypeRavager,
 	"bee": MobTypeBee, "fox": MobTypeFox, "rabbit": MobTypeRabbit, "bat": MobTypeBat,
+	"warden": MobTypeWarden,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -121,6 +123,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 20, 8, 0.1, true
 	case MobTypeCaveSpider:
 		return 12, 2, 0.15, true
+	case MobTypeWarden:
+		return 500, 30, 0.3, true
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -244,6 +248,15 @@ type Mob struct {
 
 	// Fire ticks remaining (0 = not on fire). Decrements each tick, deals 1 damage every 20 ticks.
 	FireTicks int32
+
+	// Warden-specific fields
+	WardenAnger     int32          // anger level: 0-39 idle, 40-79 alert, 80+ enraged
+	WardenTarget    int32          // entity ID of highest-anger source
+	WardenSniffTick int64          // last tick vibration scan ran
+	WardenRoarTick  int64          // last tick sonic boom fired
+	WardenLastHeartbeat int64      // last tick heartbeat sound played
+	WardenPlayerAnger map[int32]int32 // per-player anger tracking (player EID -> anger)
+	WardenPrevPos   map[int32][3]float64 // previous player positions for movement detection
 
 	// Death animation: tick when killed (0 = alive). Entity is removed after 20 ticks.
 	DeathTick int64
@@ -992,6 +1005,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		return
 	case mob.TypeID == MobTypeCaveSpider:
 		m.tickCaveSpider(mob, tick)
+		return
+	case mob.TypeID == MobTypeWarden:
+		m.tickWarden(mob, tick)
 		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
@@ -2343,6 +2359,8 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		drops = []drop{{"feather", 1, 2}}
 	case MobTypeBee:
 		// Bees drop nothing in vanilla
+	case MobTypeWarden:
+		drops = []drop{{"sculk_catalyst", 1, 1}}
 	}
 
 	for _, d := range drops {
