@@ -20,6 +20,7 @@ type FireManager struct {
 	Manager  *game.PlayerManager
 	World    game.World
 	Survival *SurvivalHandler
+	Rules    *GameRules
 	Logger   *log.Logger
 	mu       sync.Mutex
 	fires    map[[3]int]int64 // position -> tick when placed
@@ -138,7 +139,8 @@ func (fm *FireManager) Tick(tick int64) {
 	}
 
 	// Fire spread and burn-out: every 30 ticks (1.5 seconds)
-	if tick%30 != 0 {
+	// Skip fire spread if doFireTick is false
+	if tick%30 != 0 || (fm.Rules != nil && !fm.Rules.GetDoFireTick()) {
 		return
 	}
 

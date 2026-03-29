@@ -1,10 +1,12 @@
 package gen
 
 import (
+	"math"
 	"math/bits"
 
 	"github.com/Tnze/go-mc/game"
 	"github.com/Tnze/go-mc/level"
+	"github.com/Tnze/go-mc/level/biome"
 	"github.com/Tnze/go-mc/level/block"
 )
 
@@ -15,9 +17,11 @@ type TerrainGenerator struct {
 	MinY     int
 	Sections int
 
-	heightNoise *SimplexNoise
-	caveNoise   *SimplexNoise
-	oreNoise    *SimplexNoise
+	heightNoise  *SimplexNoise
+	caveNoise    *SimplexNoise
+	caveNoise2   *SimplexNoise
+	ravineNoise  *SimplexNoise
+	oreNoise     *SimplexNoise
 
 	bedrockID, stoneID, dirtID, grassID, airID level.BlocksState
 	coalOreID, ironOreID, copperOreID           level.BlocksState
@@ -29,10 +33,19 @@ type TerrainGenerator struct {
 	gravelID                                     level.BlocksState
 	birchLogID, birchLeavesID                    level.BlocksState
 	spruceLogID, spruceLeavesID                  level.BlocksState
+	acaciaLogID, acaciaLeavesID                  level.BlocksState
 	cactusID                                     level.BlocksState
 	sugarCaneID                                  level.BlocksState
 	pumpkinID                                    level.BlocksState
+	snowLayerID                                  level.BlocksState
+	iceID                                        level.BlocksState
+	snowyGrassID                                 level.BlocksState
+	deepslateID                                  level.BlocksState
+	dsCoalOreID, dsIronOreID, dsCopperOreID      level.BlocksState
+	dsGoldOreID, dsDiamondOreID, dsLapisOreID    level.BlocksState
+	dsRedstoneOreID                              level.BlocksState
 	biomeNoise                                   *SimplexNoise
+	humidNoise                                   *SimplexNoise
 	structurePlacer                              *StructurePlacer
 }
 
@@ -46,6 +59,8 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 
 		heightNoise: NewSimplexNoise(seed),
 		caveNoise:   NewSimplexNoise(seed + 1),
+		caveNoise2:  NewSimplexNoise(seed + 5),
+		ravineNoise: NewSimplexNoise(seed + 6),
 		oreNoise:    NewSimplexNoise(seed + 2),
 	}
 
@@ -72,10 +87,24 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.birchLeavesID, _ = block.ToStateID[block.BirchLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
 	g.spruceLogID, _ = block.ToStateID[block.SpruceLog{Axis: block.Y}]
 	g.spruceLeavesID, _ = block.ToStateID[block.SpruceLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
+	g.acaciaLogID, _ = block.ToStateID[block.AcaciaLog{Axis: block.Y}]
+	g.acaciaLeavesID, _ = block.ToStateID[block.AcaciaLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
 	g.cactusID, _ = block.ToStateID[block.Cactus{Age: 0}]
 	g.sugarCaneID, _ = block.ToStateID[block.SugarCane{Age: 0}]
 	g.pumpkinID, _ = block.ToStateID[block.Pumpkin{}]
+	g.snowLayerID, _ = block.ToStateID[block.Snow{Layers: 1}]
+	g.iceID, _ = block.ToStateID[block.Ice{}]
+	g.snowyGrassID, _ = block.ToStateID[block.GrassBlock{Snowy: true}]
+	g.deepslateID, _ = block.ToStateID[block.Deepslate{Axis: block.Y}]
+	g.dsCoalOreID, _ = block.ToStateID[block.DeepslateCoalOre{}]
+	g.dsIronOreID, _ = block.ToStateID[block.DeepslateIronOre{}]
+	g.dsCopperOreID, _ = block.ToStateID[block.DeepslateCopperOre{}]
+	g.dsGoldOreID, _ = block.ToStateID[block.DeepslateGoldOre{}]
+	g.dsDiamondOreID, _ = block.ToStateID[block.DeepslateDiamondOre{}]
+	g.dsLapisOreID, _ = block.ToStateID[block.DeepslateLapisOre{}]
+	g.dsRedstoneOreID, _ = block.ToStateID[block.DeepslateRedstoneOre{Lit: false}]
 	g.biomeNoise = NewSimplexNoise(seed + 3)
+	g.humidNoise = NewSimplexNoise(seed + 4)
 	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
 
 	return g
@@ -85,27 +114,85 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 type BiomeType int
 
 const (
-	BiomePlains    BiomeType = 0
-	BiomeForest    BiomeType = 1
-	BiomeDesert    BiomeType = 2
-	BiomeMountains BiomeType = 3
-	BiomeOcean     BiomeType = 4
+	BiomePlains      BiomeType = 0
+	BiomeForest      BiomeType = 1
+	BiomeDesert      BiomeType = 2
+	BiomeMountains   BiomeType = 3
+	BiomeOcean       BiomeType = 4
+	BiomeTaiga       BiomeType = 5
+	BiomeSnowyPlains BiomeType = 6
+	BiomeSnowyTaiga  BiomeType = 7
+	BiomeBirchForest BiomeType = 8
+	BiomeSavanna     BiomeType = 9
 )
 
-// biomeAt returns the biome type for a world position using large-scale noise.
-func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
-	val := g.biomeNoise.Noise2D(float64(x)*0.002, float64(z)*0.002)
-	switch {
-	case val < -0.3:
-		return BiomeOcean
-	case val < 0.1:
-		return BiomePlains
-	case val < 0.35:
-		return BiomeForest
-	case val < 0.6:
-		return BiomeDesert
+// biomeRegistryID maps internal BiomeType to the biome registry ID used on the wire.
+func biomeRegistryID(b BiomeType) biome.Type {
+	switch b {
+	case BiomePlains:
+		return 1 // minecraft:plains
+	case BiomeForest:
+		return 8 // minecraft:forest
+	case BiomeDesert:
+		return 5 // minecraft:desert
+	case BiomeMountains:
+		return 19 // minecraft:windswept_hills
+	case BiomeOcean:
+		return 43 // minecraft:ocean
+	case BiomeTaiga:
+		return 15 // minecraft:taiga
+	case BiomeSnowyPlains:
+		return 3 // minecraft:snowy_plains
+	case BiomeSnowyTaiga:
+		return 16 // minecraft:snowy_taiga
+	case BiomeBirchForest:
+		return 10 // minecraft:birch_forest
+	case BiomeSavanna:
+		return 17 // minecraft:savanna
 	default:
-		return BiomeMountains
+		return 1
+	}
+}
+
+// biomeAt returns the biome type for a world position using temperature + humidity noise.
+func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
+	temp := g.biomeNoise.Noise2D(float64(x)*0.002, float64(z)*0.002)
+	humid := g.humidNoise.Noise2D(float64(x)*0.002, float64(z)*0.002)
+
+	switch {
+	case temp < -0.3:
+		// Cold biomes
+		if humid > 0 {
+			return BiomeSnowyPlains
+		}
+		return BiomeSnowyTaiga
+	case temp < 0:
+		// Cool biomes
+		return BiomeTaiga
+	case temp < 0.25:
+		// Temperate biomes
+		if humid > 0.3 {
+			return BiomeForest
+		}
+		if humid < -0.1 {
+			return BiomeBirchForest
+		}
+		return BiomePlains
+	case temp < 0.5:
+		// Warm biomes
+		if humid > 0.2 {
+			return BiomeForest
+		}
+		if humid < -0.2 {
+			return BiomeSavanna
+		}
+		return BiomePlains
+	default:
+		// Hot biomes
+		if humid > 0.1 {
+			return BiomeSavanna
+		}
+		return BiomeDesert
 	}
 }
 
@@ -139,15 +226,22 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 
 				// Cave carving (only in stone, not in desert sand or surface)
 				if stateID == g.stoneID && worldY > g.MinY+1 && worldY < h-2 {
-					cv := g.caveNoise.Noise3D(float64(worldX)/16.0, float64(worldY)/16.0, float64(worldZ)/16.0)
-					if cv > 0.6 {
+					if g.isCave(worldX, worldY, worldZ) {
 						continue
 					}
 				}
 
-				// Ore placement (only replace stone)
-				if stateID == g.stoneID {
+				// Deepslate below Y=0
+				if stateID == g.stoneID && worldY < 0 {
+					stateID = g.deepslateID
+				}
+
+				// Ore placement (replace stone or deepslate)
+				if stateID == g.stoneID || stateID == g.deepslateID {
 					if ore := g.getOre(worldX, worldY, worldZ); ore != 0 {
+						if stateID == g.deepslateID {
+							ore = g.deepslateOre(ore)
+						}
 						stateID = ore
 					}
 				}
@@ -161,6 +255,22 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 		}
 	}
 
+	// Write biome data to each section (4x4x4 grid = 64 entries per section)
+	for secIdx := 0; secIdx < g.Sections; secIdx++ {
+		for by := 0; by < 4; by++ {
+			for bz := 0; bz < 4; bz++ {
+				for bx := 0; bx < 4; bx++ {
+					wx := pos.X*16 + bx*4 + 2 // sample center of 4-block region
+					wz := pos.Z*16 + bz*4 + 2
+					b := g.biomeAt(wx, wz)
+					idx := by*16 + bz*4 + bx
+					chunk.Sections[secIdx].Biomes.Set(idx, biomeRegistryID(b))
+				}
+			}
+		}
+	}
+
+	g.placeSnowAndIce(chunk, pos, heights, biomes)
 	g.placeBiomeTrees(chunk, pos, heights, biomes)
 	g.placeSugarCane(chunk, pos, heights, biomes)
 	g.placePumpkins(chunk, pos, heights, biomes)
@@ -191,7 +301,7 @@ func (g *TerrainGenerator) computeHeights(pos game.ChunkPos) ([256]int, [256]Bio
 			switch biome {
 			case BiomePlains:
 				h = 64 + int(n*8)
-			case BiomeForest:
+			case BiomeForest, BiomeBirchForest:
 				h = 66 + int(n*10)
 			case BiomeDesert:
 				h = 62 + int(n*6)
@@ -199,6 +309,12 @@ func (g *TerrainGenerator) computeHeights(pos game.ChunkPos) ([256]int, [256]Bio
 				h = 72 + int(n*32)
 			case BiomeOcean:
 				h = 45 + int(n*8)
+			case BiomeTaiga, BiomeSnowyTaiga:
+				h = 66 + int(n*12)
+			case BiomeSnowyPlains:
+				h = 64 + int(n*6)
+			case BiomeSavanna:
+				h = 64 + int(n*10)
 			default:
 				h = 64 + int(n*16)
 			}
@@ -236,13 +352,29 @@ func (g *TerrainGenerator) surfaceBlock(biome BiomeType, depthFromSurface, world
 		return g.dirtID
 	case BiomeMountains:
 		if worldY > 90 {
-			return g.stoneID // exposed stone at high altitude
+			return g.stoneID
 		}
 		if depthFromSurface == 0 {
 			return g.grassID
 		}
 		return g.dirtID
-	default: // Plains, Forest
+	case BiomeSnowyPlains, BiomeSnowyTaiga:
+		if depthFromSurface == 0 {
+			if worldY < g.SeaLevel {
+				return g.dirtID
+			}
+			return g.snowyGrassID
+		}
+		return g.dirtID
+	case BiomeSavanna:
+		if depthFromSurface == 0 {
+			if worldY < g.SeaLevel {
+				return g.dirtID
+			}
+			return g.grassID
+		}
+		return g.dirtID
+	default: // Plains, Forest, Birch Forest, Taiga
 		if depthFromSurface == 0 {
 			if worldY < g.SeaLevel {
 				return g.dirtID
@@ -289,6 +421,62 @@ func (g *TerrainGenerator) getOre(x, y, z int) level.BlocksState {
 	}
 
 	return 0
+}
+
+// isCave returns true if the given position should be carved out as a cave.
+// Uses spaghetti caves (dual-offset noise), cheese caves (large caverns below Y=30),
+// and ravines (2D ridge noise for surface-to-deep cuts).
+func (g *TerrainGenerator) isCave(x, y, z int) bool {
+	fx, fy, fz := float64(x), float64(y), float64(z)
+
+	// Spaghetti caves: two offset noise fields creating narrow winding tunnels
+	sa := g.caveNoise.Noise3D(fx*0.03, fy*0.03, fz*0.03)
+	sb := g.caveNoise2.Noise3D(fx*0.03, fy*0.03, fz*0.03)
+	if sa*sa+sb*sb < 0.02 {
+		return true
+	}
+
+	// Cheese caves: large open caverns below Y=30
+	if y < 30 {
+		cheese := g.caveNoise.Noise3D(fx*0.015, fy*0.02, fz*0.015)
+		if cheese > 0.55 {
+			return true
+		}
+	}
+
+	// Ravines: 2D ridge noise creates surface-to-deep vertical cuts
+	ridge := 1.0 - math.Abs(g.ravineNoise.Noise2D(fx*0.005, fz*0.005))
+	if ridge > 0.95 && y < 50 {
+		// Width decreases with depth
+		widthNoise := g.ravineNoise.Noise2D(fx*0.02, fz*0.02)
+		if math.Abs(widthNoise) < 0.15 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// deepslateOre converts a regular ore state ID to its deepslate variant.
+func (g *TerrainGenerator) deepslateOre(ore level.BlocksState) level.BlocksState {
+	switch ore {
+	case g.coalOreID:
+		return g.dsCoalOreID
+	case g.ironOreID:
+		return g.dsIronOreID
+	case g.copperOreID:
+		return g.dsCopperOreID
+	case g.goldOreID:
+		return g.dsGoldOreID
+	case g.diamondOreID:
+		return g.dsDiamondOreID
+	case g.lapisOreID:
+		return g.dsLapisOreID
+	case g.redstoneOreID:
+		return g.dsRedstoneOreID
+	default:
+		return ore
+	}
 }
 
 // posHash returns a deterministic hash for a world position.
@@ -342,12 +530,15 @@ func (g *TerrainGenerator) placeBiomeTrees(chunk *level.Chunk, pos game.ChunkPos
 				} else {
 					g.placeTree(chunk, x, ty, z, g.oakLogID, g.oakLeavesID, &rng)
 				}
+			case BiomeBirchForest:
+				if surfState != g.grassID || treeRng%8 != 0 {
+					continue
+				}
+				g.placeTree(chunk, x, ty, z, g.birchLogID, g.birchLeavesID, &rng)
 			case BiomeDesert:
-				// Cacti on sand (rare)
 				if surfState != g.sandID || treeRng%30 != 0 || g.cactusID == 0 {
 					continue
 				}
-				// Place 1-3 block tall cactus
 				cactusH := 1 + int(treeRng/30)%3
 				for dy := 1; dy <= cactusH; dy++ {
 					g.setBlock(chunk, x, ty+dy, z, g.cactusID)
@@ -357,8 +548,24 @@ func (g *TerrainGenerator) placeBiomeTrees(chunk *level.Chunk, pos game.ChunkPos
 					continue
 				}
 				g.placeTree(chunk, x, ty, z, g.spruceLogID, g.spruceLeavesID, &rng)
+			case BiomeTaiga, BiomeSnowyTaiga:
+				isSnowyGrass := surfState == g.snowyGrassID
+				if (surfState != g.grassID && !isSnowyGrass) || treeRng%10 != 0 {
+					continue
+				}
+				g.placeTree(chunk, x, ty, z, g.spruceLogID, g.spruceLeavesID, &rng)
+			case BiomeSnowyPlains:
+				if surfState != g.snowyGrassID || treeRng%60 != 0 {
+					continue
+				}
+				g.placeTree(chunk, x, ty, z, g.spruceLogID, g.spruceLeavesID, &rng)
+			case BiomeSavanna:
+				if surfState != g.grassID || treeRng%15 != 0 {
+					continue
+				}
+				g.placeTree(chunk, x, ty, z, g.acaciaLogID, g.acaciaLeavesID, &rng)
 			case BiomeOcean:
-				continue // no trees in ocean
+				continue
 			}
 		}
 	}
@@ -390,6 +597,31 @@ func (g *TerrainGenerator) placeTree(chunk *level.Chunk, x, ty, z int, logID, le
 				}
 				g.setBlock(chunk, lx, ly, lz, leavesID)
 			}
+		}
+	}
+}
+
+// placeSnowAndIce adds snow layers and ice in snowy biomes.
+func (g *TerrainGenerator) placeSnowAndIce(chunk *level.Chunk, pos game.ChunkPos, heights [256]int, biomes [256]BiomeType) {
+	if g.snowLayerID == 0 {
+		return
+	}
+	for z := 0; z < 16; z++ {
+		for x := 0; x < 16; x++ {
+			biome := biomes[z*16+x]
+			if biome != BiomeSnowyPlains && biome != BiomeSnowyTaiga {
+				continue
+			}
+			ty := heights[z*16+x]
+			if ty < g.SeaLevel {
+				// Water surface: place ice instead of snow
+				if g.iceID != 0 {
+					g.setBlock(chunk, x, g.SeaLevel, z, g.iceID)
+				}
+				continue
+			}
+			// Place snow layer on top of surface
+			g.setBlock(chunk, x, ty+1, z, g.snowLayerID)
 		}
 	}
 }

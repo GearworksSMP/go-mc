@@ -440,7 +440,7 @@ func (dm *EnderDragonManager) dealAreaDamage(damage float32, radius float64) {
 		if dist < radius {
 			if dm.Survival != nil {
 				p.LastDamageMessage = p.Name + " was roasted in dragon's breath"
-				dm.Survival.ApplyDamage(dm.Manager, p, damage, dm.Survival.AttackDamageTypeID)
+				dm.Survival.ApplyDamage(dm.Manager, p, damage, dm.Survival.MobDamageTypeID)
 			}
 		}
 	})
@@ -463,7 +463,7 @@ func (dm *EnderDragonManager) checkMeleeDamage() {
 			// Contact damage
 			if dm.Survival != nil {
 				p.LastDamageMessage = p.Name + " was squashed by Ender Dragon"
-				dm.Survival.ApplyDamage(dm.Manager, p, 5, dm.Survival.AttackDamageTypeID)
+				dm.Survival.ApplyDamage(dm.Manager, p, 5, dm.Survival.MobDamageTypeID)
 			}
 		}
 	})

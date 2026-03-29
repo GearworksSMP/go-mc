@@ -48,6 +48,7 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 	player.Exhaustion = 0
 	player.Dead = false
 	player.FallStartY = -999
+	player.AirTicks = 300
 	if player.SessionEvents != nil {
 		player.SessionEvents.OnRespawn()
 	}
@@ -96,6 +97,7 @@ func (h *RespawnHandler) handleRespawn(player *game.Player) {
 	}
 
 	player.SetPosition(spawnX, spawnYVal, spawnZ)
+	player.TeleportPending = true
 
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerPosition,

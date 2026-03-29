@@ -495,6 +495,514 @@ func init() {
 		"stone", "stone",
 		"stone", "stone",
 	}, "stone_bricks", 4))
+
+	// -----------------------------------------------------------------------
+	// Storage block recipes (compress 9 → 1 block + decompress 1 → 9)
+	// -----------------------------------------------------------------------
+	storageBlocks := [][2]string{
+		{"iron_ingot", "iron_block"}, {"gold_ingot", "gold_block"},
+		{"diamond", "diamond_block"}, {"emerald", "emerald_block"},
+		{"lapis_lazuli", "lapis_block"}, {"redstone", "redstone_block"},
+		{"coal", "coal_block"}, {"copper_ingot", "copper_block"},
+		{"raw_iron", "raw_iron_block"}, {"raw_gold", "raw_gold_block"},
+		{"raw_copper", "raw_copper_block"}, {"netherite_ingot", "netherite_block"},
+		{"slime_ball", "slime_block"}, {"dried_kelp", "dried_kelp_block"},
+		{"wheat", "hay_block"}, {"bone_meal", "bone_block"},
+	}
+	for _, sb := range storageBlocks {
+		allRecipes = append(allRecipes, shaped(3, 3, []string{
+			sb[0], sb[0], sb[0],
+			sb[0], sb[0], sb[0],
+			sb[0], sb[0], sb[0],
+		}, sb[1], 1))
+		allRecipes = append(allRecipes, shapeless1(sb[1], sb[0], 9))
+	}
+	// Ingot/nugget conversions
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_nugget", "iron_nugget", "iron_nugget",
+		"iron_nugget", "iron_nugget", "iron_nugget",
+		"iron_nugget", "iron_nugget", "iron_nugget",
+	}, "iron_ingot", 1))
+	allRecipes = append(allRecipes, shapeless1("iron_ingot", "iron_nugget", 9))
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"gold_nugget", "gold_nugget", "gold_nugget",
+		"gold_nugget", "gold_nugget", "gold_nugget",
+		"gold_nugget", "gold_nugget", "gold_nugget",
+	}, "gold_ingot", 1))
+	allRecipes = append(allRecipes, shapeless1("gold_ingot", "gold_nugget", 9))
+
+	// -----------------------------------------------------------------------
+	// Redstone component recipes
+	// -----------------------------------------------------------------------
+	// Repeater: RTR / SSS
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"redstone_torch", "redstone", "redstone_torch",
+		"stone", "stone", "stone",
+	}, "repeater", 1))
+	// Comparator: _T_ / TQT / SSS
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "redstone_torch", "",
+		"redstone_torch", "quartz", "redstone_torch",
+		"stone", "stone", "stone",
+	}, "comparator", 1))
+	// Observer: CCC / RRQ / CCC
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"cobblestone", "cobblestone", "cobblestone",
+		"redstone", "redstone", "quartz",
+		"cobblestone", "cobblestone", "cobblestone",
+	}, "observer", 1))
+	// Piston: PPP / CIC / CRC
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "oak_planks", "oak_planks",
+		"cobblestone", "iron_ingot", "cobblestone",
+		"cobblestone", "redstone", "cobblestone",
+	}, "piston", 1))
+	// Sticky piston: slime_ball + piston (1x2)
+	allRecipes = append(allRecipes, shaped(1, 2, []string{"slime_ball", "piston"}, "sticky_piston", 1))
+	// Hopper: I_I / ICI / _I_
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_ingot", "", "iron_ingot",
+		"iron_ingot", "chest", "iron_ingot",
+		"", "iron_ingot", "",
+	}, "hopper", 1))
+	// Dropper: CCC / C_C / CRC
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"cobblestone", "cobblestone", "cobblestone",
+		"cobblestone", "", "cobblestone",
+		"cobblestone", "redstone", "cobblestone",
+	}, "dropper", 1))
+	// Dispenser: CCC / CBC / CRC
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"cobblestone", "cobblestone", "cobblestone",
+		"cobblestone", "bow", "cobblestone",
+		"cobblestone", "redstone", "cobblestone",
+	}, "dispenser", 1))
+	// Note block: PPP / PRP / PPP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "oak_planks", "oak_planks",
+		"oak_planks", "redstone", "oak_planks",
+		"oak_planks", "oak_planks", "oak_planks",
+	}, "note_block", 1))
+	// Redstone lamp: _R_ / RGR / _R_
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "redstone", "",
+		"redstone", "glowstone", "redstone",
+		"", "redstone", "",
+	}, "redstone_lamp", 1))
+	// Tripwire hook: I / S / P (1x3)
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"iron_ingot", "stick", "oak_planks"}, "tripwire_hook", 2))
+	// Lever: stick + cobblestone (1x2)
+	allRecipes = append(allRecipes, shaped(1, 2, []string{"stick", "cobblestone"}, "lever", 1))
+	// Trapped chest: tripwire_hook + chest
+	allRecipes = append(allRecipes, shapeless2("tripwire_hook", "chest", "trapped_chest", 1))
+	// Daylight detector: GGG / QQQ / SSS
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"glass", "glass", "glass",
+		"quartz", "quartz", "quartz",
+		"oak_slab", "oak_slab", "oak_slab",
+	}, "daylight_detector", 1))
+	// Target: R_R / _H_ / R_R (redstone + hay_block)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "redstone", "",
+		"redstone", "hay_block", "redstone",
+		"", "redstone", "",
+	}, "target", 1))
+	// Weighted pressure plates
+	allRecipes = append(allRecipes, shaped(2, 1, []string{"iron_ingot", "iron_ingot"}, "heavy_weighted_pressure_plate", 1))
+	allRecipes = append(allRecipes, shaped(2, 1, []string{"gold_ingot", "gold_ingot"}, "light_weighted_pressure_plate", 1))
+
+	// -----------------------------------------------------------------------
+	// Workstation & utility recipes
+	// -----------------------------------------------------------------------
+	// Enchanting table: _B_ / DOD / OOO
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "book", "",
+		"diamond", "obsidian", "diamond",
+		"obsidian", "obsidian", "obsidian",
+	}, "enchanting_table", 1))
+	// Anvil: BBB / _I_ / III
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_block", "iron_block", "iron_block",
+		"", "iron_ingot", "",
+		"iron_ingot", "iron_ingot", "iron_ingot",
+	}, "anvil", 1))
+	// Brewing stand: _B_ / CCC
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"", "blaze_rod", "",
+		"cobblestone", "cobblestone", "cobblestone",
+	}, "brewing_stand", 1))
+	// Blast furnace: III / IFI / SSS
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_ingot", "iron_ingot", "iron_ingot",
+		"iron_ingot", "furnace", "iron_ingot",
+		"smooth_stone", "smooth_stone", "smooth_stone",
+	}, "blast_furnace", 1))
+	// Smoker: _L_ / LFL / _L_
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "oak_log", "",
+		"oak_log", "furnace", "oak_log",
+		"", "oak_log", "",
+	}, "smoker", 1))
+	// Grindstone: SSS / P_P
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"stick", "stone_slab", "stick",
+		"oak_planks", "", "oak_planks",
+	}, "grindstone", 1))
+	// Stonecutter: _I_ / SSS
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"", "iron_ingot", "",
+		"stone", "stone", "stone",
+	}, "stonecutter", 1))
+	// Smithing table: II / PP / PP
+	allRecipes = append(allRecipes, shaped(2, 3, []string{
+		"iron_ingot", "iron_ingot",
+		"oak_planks", "oak_planks",
+		"oak_planks", "oak_planks",
+	}, "smithing_table", 1))
+	// Campfire: _S_ / SCS / LLL
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "stick", "",
+		"stick", "coal", "stick",
+		"oak_log", "oak_log", "oak_log",
+	}, "campfire", 1))
+	// Soul campfire
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "stick", "",
+		"stick", "soul_sand", "stick",
+		"oak_log", "oak_log", "oak_log",
+	}, "soul_campfire", 1))
+	// Lantern: III / ICI / III (chain + torches — actually: NNN / NTN / NNN where N=iron_nugget, T=torch)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_nugget", "iron_nugget", "iron_nugget",
+		"iron_nugget", "torch", "iron_nugget",
+		"iron_nugget", "iron_nugget", "iron_nugget",
+	}, "lantern", 1))
+	// Soul lantern
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_nugget", "iron_nugget", "iron_nugget",
+		"iron_nugget", "soul_torch", "iron_nugget",
+		"iron_nugget", "iron_nugget", "iron_nugget",
+	}, "soul_lantern", 1))
+	// Soul torch: coal + stick + soul_sand (1x3) — actually: C / S where C is coal on soul_sand not quite
+	// Vanilla: shapeless(coal/charcoal, stick, soul_sand) but actually it's shaped: C / S / SS
+	// Actually: shaped 1x2 coal+stick = torch, soul torch = shaped(1,3, [charcoal, stick, soul_sand])
+	// Let's just do: coal_or_charcoal + stick + soul_sand/soul_soil
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"coal", "stick", "soul_sand"}, "soul_torch", 4))
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"charcoal", "stick", "soul_sand"}, "soul_torch", 4))
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"coal", "stick", "soul_soil"}, "soul_torch", 4))
+	// Chain: N / I / N (1x3)
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"iron_nugget", "iron_ingot", "iron_nugget"}, "chain", 1))
+	// Lightning rod: CCC (1x3) where C=copper_ingot
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"copper_ingot", "copper_ingot", "copper_ingot"}, "lightning_rod", 1))
+	// Spyglass: ACA (1x3) where A=amethyst_shard, C=copper_ingot — actually _A_ / _C_ / _C_
+	allRecipes = append(allRecipes, shaped(1, 3, []string{"amethyst_shard", "copper_ingot", "copper_ingot"}, "spyglass", 1))
+	// Cauldron: I_I / I_I / III
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"iron_ingot", "", "iron_ingot",
+		"iron_ingot", "", "iron_ingot",
+		"iron_ingot", "iron_ingot", "iron_ingot",
+	}, "cauldron", 1))
+	// Composter: P_P / P_P / PPP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_slab", "", "oak_slab",
+		"oak_slab", "", "oak_slab",
+		"oak_slab", "oak_slab", "oak_slab",
+	}, "composter", 1))
+	// Lectern: SSS / _B_ / _S_  (slab on top, bookshelf in middle, slab at bottom)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_slab", "oak_slab", "oak_slab",
+		"", "bookshelf", "",
+		"", "oak_slab", "",
+	}, "lectern", 1))
+	// Loom: SS / PP (2x2)
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"string", "string",
+		"oak_planks", "oak_planks",
+	}, "loom", 1))
+	// Cartography table: PP / PP / __ (paper on top, planks below — actually: PP / _P / _P with paper+plank)
+	allRecipes = append(allRecipes, shaped(2, 3, []string{
+		"paper", "paper",
+		"oak_planks", "oak_planks",
+		"oak_planks", "oak_planks",
+	}, "cartography_table", 1))
+	// Fletching table: FF / PP / PP
+	allRecipes = append(allRecipes, shaped(2, 3, []string{
+		"flint", "flint",
+		"oak_planks", "oak_planks",
+		"oak_planks", "oak_planks",
+	}, "fletching_table", 1))
+	// Barrel: PSP / P_P / PSP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "oak_slab", "oak_planks",
+		"oak_planks", "", "oak_planks",
+		"oak_planks", "oak_slab", "oak_planks",
+	}, "barrel", 1))
+
+	// -----------------------------------------------------------------------
+	// Decoration & misc
+	// -----------------------------------------------------------------------
+	// Bookshelf: PPP / BBB / PPP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "oak_planks", "oak_planks",
+		"book", "book", "book",
+		"oak_planks", "oak_planks", "oak_planks",
+	}, "bookshelf", 1))
+	// Painting: SSS / SWS / SSS
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stick", "stick", "stick",
+		"stick", "white_wool", "stick",
+		"stick", "stick", "stick",
+	}, "painting", 1))
+	// Item frame: SSS / SLS / SSS
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stick", "stick", "stick",
+		"stick", "leather", "stick",
+		"stick", "stick", "stick",
+	}, "item_frame", 1))
+	// Armor stand: S_S / _S_ / SAS (stick + stone_slab base)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stick", "", "stick",
+		"", "stick", "",
+		"stick", "smooth_stone_slab", "stick",
+	}, "armor_stand", 1))
+	// Jukebox: PPP / PDP / PPP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"oak_planks", "oak_planks", "oak_planks",
+		"oak_planks", "diamond", "oak_planks",
+		"oak_planks", "oak_planks", "oak_planks",
+	}, "jukebox", 1))
+	// Flower pot: B_B / _B_ (brick)
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"brick", "", "brick",
+		"", "brick", "",
+	}, "flower_pot", 1))
+	// Glass bottle: G_G / _G_ (3x2)
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"glass", "", "glass",
+		"", "glass", "",
+	}, "glass_bottle", 3))
+	// Tinted glass: _A_ / AGA / _A_
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "amethyst_shard", "",
+		"amethyst_shard", "glass", "amethyst_shard",
+		"", "amethyst_shard", "",
+	}, "tinted_glass", 2))
+	// Lead: SS_ / SR_ / __S (string + slime_ball)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"string", "string", "",
+		"string", "slime_ball", "",
+		"", "", "string",
+	}, "lead", 2))
+	// Map: PPP / PCP / PPP
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"paper", "paper", "paper",
+		"paper", "compass", "paper",
+		"paper", "paper", "paper",
+	}, "map", 1))
+	// Bone meal from bone
+	allRecipes = append(allRecipes, shapeless1("bone", "bone_meal", 3))
+	// Brick block from bricks
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"brick", "brick",
+		"brick", "brick",
+	}, "bricks", 1))
+	// Nether brick block
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"nether_brick", "nether_brick",
+		"nether_brick", "nether_brick",
+	}, "nether_bricks", 1))
+	// Quartz block
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"quartz", "quartz",
+		"quartz", "quartz",
+	}, "quartz_block", 1))
+	// Blaze powder from blaze rod
+	allRecipes = append(allRecipes, shapeless1("blaze_rod", "blaze_powder", 2))
+	// Magma cream
+	allRecipes = append(allRecipes, shapeless2("blaze_powder", "slime_ball", "magma_cream", 1))
+	// Fire charge: blaze_powder + coal + gunpowder
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"blaze_powder", "coal", "gunpowder"},
+		ResultName:  "fire_charge",
+		ResultCount: 3,
+	})
+	// Ender chest: OEO / OEO / OOO — actually: OEO / OEO / OOO (obsidian + ender_eye)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"obsidian", "obsidian", "obsidian",
+		"obsidian", "ender_eye", "obsidian",
+		"obsidian", "obsidian", "obsidian",
+	}, "ender_chest", 1))
+
+	// -----------------------------------------------------------------------
+	// Weapons & tools
+	// -----------------------------------------------------------------------
+	// Bow: _SM / S_M / _SM (stick + string — mirror handles other variant)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "stick", "string",
+		"stick", "", "string",
+		"", "stick", "string",
+	}, "bow", 1))
+	// Crossbow: SIS / THT / _S_ (stick, iron_ingot, tripwire_hook, string)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stick", "iron_ingot", "stick",
+		"string", "tripwire_hook", "string",
+		"", "stick", "",
+	}, "crossbow", 1))
+	// Fishing rod: __S / _SL / S_L (stick + string)
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"", "", "stick",
+		"", "stick", "string",
+		"stick", "", "string",
+	}, "fishing_rod", 1))
+	// Shears: _I / I_ (2x2)
+	allRecipes = append(allRecipes, shaped(2, 2, []string{
+		"", "iron_ingot",
+		"iron_ingot", "",
+	}, "shears", 1))
+
+	// -----------------------------------------------------------------------
+	// Food recipes
+	// -----------------------------------------------------------------------
+	// Mushroom stew: shapeless(red_mushroom, brown_mushroom, bowl)
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"red_mushroom", "brown_mushroom", "bowl"},
+		ResultName:  "mushroom_stew",
+		ResultCount: 1,
+	})
+	// Beetroot soup: shapeless(beetroot ×6, bowl) — actually shaped: BBB / BBB / _O_ where O=bowl
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"beetroot", "beetroot", "beetroot",
+		"beetroot", "beetroot", "beetroot",
+		"", "bowl", "",
+	}, "beetroot_soup", 1))
+	// Rabbit stew: shapeless(cooked_rabbit, carrot, baked_potato, brown_mushroom, bowl)
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"cooked_rabbit", "carrot", "baked_potato", "brown_mushroom", "bowl"},
+		ResultName:  "rabbit_stew",
+		ResultCount: 1,
+	})
+	// Golden carrot: GGG / GCG / GGG where G=gold_nugget, C=carrot
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"gold_nugget", "gold_nugget", "gold_nugget",
+		"gold_nugget", "carrot", "gold_nugget",
+		"gold_nugget", "gold_nugget", "gold_nugget",
+	}, "golden_carrot", 1))
+	// Glistering melon slice: GGG / GMG / GGG where G=gold_nugget, M=melon_slice
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"gold_nugget", "gold_nugget", "gold_nugget",
+		"gold_nugget", "melon_slice", "gold_nugget",
+		"gold_nugget", "gold_nugget", "gold_nugget",
+	}, "glistering_melon_slice", 1))
+	// Fermented spider eye: shapeless(spider_eye, sugar, brown_mushroom)
+	allRecipes = append(allRecipes, Recipe{
+		Inputs:      []string{"spider_eye", "sugar", "brown_mushroom"},
+		ResultName:  "fermented_spider_eye",
+		ResultCount: 1,
+	})
+
+	// -----------------------------------------------------------------------
+	// Dye & colored blocks
+	// -----------------------------------------------------------------------
+	dyeColors := []struct{ dye, color string }{
+		{"white_dye", "white"}, {"orange_dye", "orange"}, {"magenta_dye", "magenta"},
+		{"light_blue_dye", "light_blue"}, {"yellow_dye", "yellow"}, {"lime_dye", "lime"},
+		{"pink_dye", "pink"}, {"gray_dye", "gray"}, {"light_gray_dye", "light_gray"},
+		{"cyan_dye", "cyan"}, {"purple_dye", "purple"}, {"blue_dye", "blue"},
+		{"brown_dye", "brown"}, {"green_dye", "green"}, {"red_dye", "red"},
+		{"black_dye", "black"},
+	}
+	for _, dc := range dyeColors {
+		// Dye + white wool → colored wool
+		allRecipes = append(allRecipes, shapeless2(dc.dye, "white_wool", dc.color+"_wool", 1))
+		// Dye + white bed → colored bed
+		allRecipes = append(allRecipes, shapeless2(dc.dye, "white_bed", dc.color+"_bed", 1))
+		// Dye + glass → stained glass (8 around dye)
+		allRecipes = append(allRecipes, shaped(3, 3, []string{
+			"glass", "glass", "glass",
+			"glass", dc.dye, "glass",
+			"glass", "glass", "glass",
+		}, dc.color+"_stained_glass", 8))
+		// Dye + terracotta → colored terracotta (8 around dye)
+		allRecipes = append(allRecipes, shaped(3, 3, []string{
+			"terracotta", "terracotta", "terracotta",
+			"terracotta", dc.dye, "terracotta",
+			"terracotta", "terracotta", "terracotta",
+		}, dc.color+"_terracotta", 8))
+		// Concrete powder: dye + 4 sand + 4 gravel
+		allRecipes = append(allRecipes, Recipe{
+			Inputs:      []string{dc.dye, "sand", "sand", "sand", "sand", "gravel", "gravel", "gravel", "gravel"},
+			ResultName:  dc.color + "_concrete_powder",
+			ResultCount: 8,
+		})
+	}
+	// Common dye recipes
+	allRecipes = append(allRecipes, shapeless1("bone_meal", "white_dye", 1))
+	allRecipes = append(allRecipes, shapeless1("ink_sac", "black_dye", 1))
+	allRecipes = append(allRecipes, shapeless1("cocoa_beans", "brown_dye", 1))
+	allRecipes = append(allRecipes, shapeless1("lapis_lazuli", "blue_dye", 1))
+	allRecipes = append(allRecipes, shapeless2("blue_dye", "white_dye", "light_blue_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("red_dye", "white_dye", "pink_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("green_dye", "white_dye", "lime_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("black_dye", "white_dye", "gray_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("gray_dye", "white_dye", "light_gray_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("blue_dye", "red_dye", "purple_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("red_dye", "yellow_dye", "orange_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("blue_dye", "green_dye", "cyan_dye", 2))
+	allRecipes = append(allRecipes, shapeless2("purple_dye", "pink_dye", "magenta_dye", 2))
+
+	// -----------------------------------------------------------------------
+	// Additional stone/mineral recipes
+	// -----------------------------------------------------------------------
+	// Stone slab
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"stone", "stone", "stone"}, "stone_slab", 6))
+	// Stone brick slab
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"stone_bricks", "stone_bricks", "stone_bricks"}, "stone_brick_slab", 6))
+	// Stone brick stairs
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"stone_bricks", "", "",
+		"stone_bricks", "stone_bricks", "",
+		"stone_bricks", "stone_bricks", "stone_bricks",
+	}, "stone_brick_stairs", 4))
+	// Cobblestone wall
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"cobblestone", "cobblestone", "cobblestone",
+		"cobblestone", "cobblestone", "cobblestone",
+	}, "cobblestone_wall", 6))
+	// Stone brick wall
+	allRecipes = append(allRecipes, shaped(3, 2, []string{
+		"stone_bricks", "stone_bricks", "stone_bricks",
+		"stone_bricks", "stone_bricks", "stone_bricks",
+	}, "stone_brick_wall", 6))
+	// Smooth stone slab
+	allRecipes = append(allRecipes, shaped(3, 1, []string{"smooth_stone", "smooth_stone", "smooth_stone"}, "smooth_stone_slab", 6))
+	// Polished granite/diorite/andesite (2x2)
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"granite", "granite", "granite", "granite"}, "polished_granite", 4))
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"diorite", "diorite", "diorite", "diorite"}, "polished_diorite", 4))
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"andesite", "andesite", "andesite", "andesite"}, "polished_andesite", 4))
+	// Polished deepslate
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"cobbled_deepslate", "cobbled_deepslate", "cobbled_deepslate", "cobbled_deepslate"}, "polished_deepslate", 4))
+	// Cut copper
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"copper_block", "copper_block", "copper_block", "copper_block"}, "cut_copper", 4))
+	// Sandstone
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"sand", "sand", "sand", "sand"}, "sandstone", 1))
+	// Red sandstone
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"red_sand", "red_sand", "red_sand", "red_sand"}, "red_sandstone", 1))
+	// Prismarine
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"prismarine_shard", "prismarine_shard", "prismarine_shard", "prismarine_shard"}, "prismarine", 1))
+	// Prismarine bricks
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"prismarine_shard", "prismarine_shard", "prismarine_shard",
+		"prismarine_shard", "prismarine_shard", "prismarine_shard",
+		"prismarine_shard", "prismarine_shard", "prismarine_shard",
+	}, "prismarine_bricks", 1))
+	// Sea lantern
+	allRecipes = append(allRecipes, shaped(3, 3, []string{
+		"prismarine_shard", "prismarine_crystals", "prismarine_shard",
+		"prismarine_crystals", "prismarine_crystals", "prismarine_crystals",
+		"prismarine_shard", "prismarine_crystals", "prismarine_shard",
+	}, "sea_lantern", 1))
+	// End stone bricks
+	allRecipes = append(allRecipes, shaped(2, 2, []string{"end_stone", "end_stone", "end_stone", "end_stone"}, "end_stone_bricks", 4))
 }
 
 // pressurePlateName returns the pressure plate item name for a plank type.

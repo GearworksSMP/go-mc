@@ -181,6 +181,45 @@ func (m *ItemEntityManager) Tick(tick int64) {
 	}
 }
 
+// NearbyItem is a lightweight reference to a dropped item near a position.
+type NearbyItem struct {
+	EID    int32
+	ItemID int32
+	Count  int32
+}
+
+// FindItemsNear returns dropped items within radius of (x, y, z).
+func (m *ItemEntityManager) FindItemsNear(x, y, z, radius float64) []NearbyItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var result []NearbyItem
+	r2 := radius * radius
+	for _, item := range m.Items {
+		dx := item.X - x
+		dy := item.Y - y
+		dz := item.Z - z
+		if dx*dx+dy*dy+dz*dz <= r2 {
+			result = append(result, NearbyItem{EID: item.EID, ItemID: item.ItemID, Count: item.Count})
+		}
+	}
+	return result
+}
+
+// RemoveItem removes a dropped item by EID and broadcasts its removal.
+func (m *ItemEntityManager) RemoveItem(eid int32) {
+	m.mu.Lock()
+	_, ok := m.Items[eid]
+	if ok {
+		delete(m.Items, eid)
+	}
+	m.mu.Unlock()
+
+	if ok {
+		m.broadcastRemoveEntity(eid)
+	}
+}
+
 func (m *ItemEntityManager) broadcastRemoveEntity(eid int32) {
 	pkt := pk.Marshal(
 		packetid.ClientboundRemoveEntities,

@@ -198,6 +198,7 @@ func (bm *BoatManager) DismountBoat(player *game.Player) {
 		newY := boat.Y + 0.6
 		newZ := boat.Z
 		player.SetPosition(newX, newY, newZ)
+		player.TeleportPending = true
 
 		// Send position update to the player
 		player.WritePacket(pk.Marshal(
@@ -254,6 +255,7 @@ func (bm *BoatManager) DamageBoat(attackerEID int32, boatEID int32, damage float
 			})
 			// Teleport rider out
 			rider.SetPosition(bx, by+0.6, bz)
+			rider.TeleportPending = true
 			rider.WritePacket(pk.Marshal(
 				packetid.ClientboundPlayerPosition,
 				pk.VarInt(0),

@@ -6,6 +6,7 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -42,7 +43,7 @@ func (em *EnchantManager) OpenEnchantingTable(player *game.Player, x, y, z int) 
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundOpenScreen,
 		pk.VarInt(windowID),
-		pk.VarInt(7), // menu type: enchantment
+		pk.VarInt(13), // menu type: enchantment
 		title,
 	))
 
@@ -128,10 +129,7 @@ func (em *EnchantManager) HandleEnchantButton(player *game.Player, buttonID int)
 	SendExperience(player)
 
 	// Apply enchantment
-	if heldItem.Enchantments == nil {
-		heldItem.Enchantments = make(map[string]int32)
-	}
-	heldItem.Enchantments[offer.EnchantID] = offer.EnchantLevel
+	heldItem.Enchantments = enchant.ApplyToItem(heldItem.Enchantments, offer.EnchantID, offer.EnchantLevel)
 
 	SendSlotUpdate(player, heldSlot)
 
@@ -188,15 +186,36 @@ func (em *EnchantManager) generateOffers(bookshelves int) [3]EnchantOffer {
 		maxLevel int32
 	}
 	pool := []enchDef{
-		{"sharpness", 5},
-		{"protection", 4},
-		{"efficiency", 5},
-		{"unbreaking", 3},
-		{"knockback", 2},
-		{"fire_aspect", 2},
-		{"looting", 3},
-		{"fortune", 3},
-		{"power", 5},
+		// Melee
+		{enchant.Sharpness, enchant.MaxLevel(enchant.Sharpness)},
+		{enchant.Smite, enchant.MaxLevel(enchant.Smite)},
+		{enchant.BaneOfArthropods, enchant.MaxLevel(enchant.BaneOfArthropods)},
+		{enchant.Knockback, enchant.MaxLevel(enchant.Knockback)},
+		{enchant.FireAspect, enchant.MaxLevel(enchant.FireAspect)},
+		{enchant.Looting, enchant.MaxLevel(enchant.Looting)},
+		{enchant.SweepingEdge, enchant.MaxLevel(enchant.SweepingEdge)},
+		// Armor
+		{enchant.Protection, enchant.MaxLevel(enchant.Protection)},
+		{enchant.FireProtection, enchant.MaxLevel(enchant.FireProtection)},
+		{enchant.BlastProtection, enchant.MaxLevel(enchant.BlastProtection)},
+		{enchant.ProjectileProtection, enchant.MaxLevel(enchant.ProjectileProtection)},
+		{enchant.Thorns, enchant.MaxLevel(enchant.Thorns)},
+		{enchant.FeatherFalling, enchant.MaxLevel(enchant.FeatherFalling)},
+		{enchant.Respiration, enchant.MaxLevel(enchant.Respiration)},
+		{enchant.AquaAffinity, enchant.MaxLevel(enchant.AquaAffinity)},
+		// Tools
+		{enchant.Efficiency, enchant.MaxLevel(enchant.Efficiency)},
+		{enchant.Unbreaking, enchant.MaxLevel(enchant.Unbreaking)},
+		{enchant.Fortune, enchant.MaxLevel(enchant.Fortune)},
+		{enchant.SilkTouch, enchant.MaxLevel(enchant.SilkTouch)},
+		// Bows
+		{enchant.Power, enchant.MaxLevel(enchant.Power)},
+		{enchant.Punch, enchant.MaxLevel(enchant.Punch)},
+		{enchant.Flame, enchant.MaxLevel(enchant.Flame)},
+		{enchant.Infinity, enchant.MaxLevel(enchant.Infinity)},
+		// Fishing
+		{enchant.Lure, enchant.MaxLevel(enchant.Lure)},
+		{enchant.LuckOfTheSea, enchant.MaxLevel(enchant.LuckOfTheSea)},
 	}
 
 	for i := 0; i < 3; i++ {

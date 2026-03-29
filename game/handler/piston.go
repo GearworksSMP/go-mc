@@ -51,14 +51,17 @@ func (pm *PistonManager) TryActivate(x, y, z int) {
 
 	dx, dy, dz := directionOffset(facing)
 
-	// Collect blocks to push
-	blocks := pm.collectPushChain(x+dx, y+dy, z+dz, dx, dy, dz)
+	// Collect blocks to push (BFS through slime/honey connections)
+	blocks := pm.collectPushBFS(x+dx, y+dy, z+dz, dx, dy, dz, x, y, z)
 	if blocks == nil {
 		return // can't push (immovable block or too many)
 	}
 
+	// Sort blocks: farthest in push direction first
+	pm.sortByPushOrder(blocks, dx, dy, dz)
+
 	// Move blocks: start from the farthest and work back
-	for i := len(blocks) - 1; i >= 0; i-- {
+	for i := 0; i < len(blocks); i++ {
 		bx, by, bz := blocks[i][0], blocks[i][1], blocks[i][2]
 		state, err := pm.World.GetBlock(bx, by, bz)
 		if err != nil {
@@ -67,8 +70,22 @@ func (pm *PistonManager) TryActivate(x, y, z int) {
 		// Move block forward
 		pm.World.SetBlock(bx+dx, by+dy, bz+dz, state)
 		broadcastBlockUpdateDirect(pm.Manager, bx+dx, by+dy, bz+dz, int32(state))
-		pm.World.SetBlock(bx, by, bz, 0)
-		broadcastBlockUpdateDirect(pm.Manager, bx, by, bz, 0)
+	}
+	// Clear old positions (reverse order to avoid overwriting moved blocks)
+	for i := len(blocks) - 1; i >= 0; i-- {
+		bx, by, bz := blocks[i][0], blocks[i][1], blocks[i][2]
+		// Only clear if this position isn't a destination of another block
+		destOccupied := false
+		for j := 0; j < len(blocks); j++ {
+			if blocks[j][0]+dx == bx && blocks[j][1]+dy == by && blocks[j][2]+dz == bz {
+				destOccupied = true
+				break
+			}
+		}
+		if !destOccupied {
+			pm.World.SetBlock(bx, by, bz, 0)
+			broadcastBlockUpdateDirect(pm.Manager, bx, by, bz, 0)
+		}
 	}
 
 	// Set piston to extended state
@@ -76,8 +93,6 @@ func (pm *PistonManager) TryActivate(x, y, z int) {
 
 	// Place piston head
 	pm.placePistonHead(x+dx, y+dy, z+dz, facing, sticky)
-
-	_ = sticky // used by placePistonHead
 }
 
 // TryRetract retracts a piston when it loses power.
@@ -116,17 +131,44 @@ func (pm *PistonManager) TryRetract(x, y, z int) {
 	pm.World.SetBlock(x+dx, y+dy, z+dz, 0)
 	broadcastBlockUpdateDirect(pm.Manager, x+dx, y+dy, z+dz, 0)
 
-	// Sticky piston: pull block back
+	// Sticky piston: pull connected blocks back
 	if sticky {
 		pullX, pullY, pullZ := x+dx*2, y+dy*2, z+dz*2
 		pullState, err := pm.World.GetBlock(pullX, pullY, pullZ)
 		if err == nil && pullState != 0 {
 			pullName := BlockNameFromState(int(pullState))
 			if !isImmovable(pullName) {
-				pm.World.SetBlock(x+dx, y+dy, z+dz, pullState)
-				broadcastBlockUpdateDirect(pm.Manager, x+dx, y+dy, z+dz, int32(pullState))
-				pm.World.SetBlock(pullX, pullY, pullZ, 0)
-				broadcastBlockUpdateDirect(pm.Manager, pullX, pullY, pullZ, 0)
+				// Collect connected blocks via slime/honey for pulling
+				pullBlocks := pm.collectPullBFS(pullX, pullY, pullZ, dx, dy, dz, x, y, z)
+				if pullBlocks != nil {
+					// Sort: closest to piston first (reverse of push)
+					pm.sortByPushOrder(pullBlocks, -dx, -dy, -dz)
+					// Move all blocks toward piston
+					for i := 0; i < len(pullBlocks); i++ {
+						bx, by, bz := pullBlocks[i][0], pullBlocks[i][1], pullBlocks[i][2]
+						state, err2 := pm.World.GetBlock(bx, by, bz)
+						if err2 != nil {
+							continue
+						}
+						pm.World.SetBlock(bx-dx, by-dy, bz-dz, state)
+						broadcastBlockUpdateDirect(pm.Manager, bx-dx, by-dy, bz-dz, int32(state))
+					}
+					// Clear vacated positions
+					for i := len(pullBlocks) - 1; i >= 0; i-- {
+						bx, by, bz := pullBlocks[i][0], pullBlocks[i][1], pullBlocks[i][2]
+						destOccupied := false
+						for j := 0; j < len(pullBlocks); j++ {
+							if pullBlocks[j][0]-dx == bx && pullBlocks[j][1]-dy == by && pullBlocks[j][2]-dz == bz {
+								destOccupied = true
+								break
+							}
+						}
+						if !destOccupied {
+							pm.World.SetBlock(bx, by, bz, 0)
+							broadcastBlockUpdateDirect(pm.Manager, bx, by, bz, 0)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -135,35 +177,204 @@ func (pm *PistonManager) TryRetract(x, y, z int) {
 	pm.setExtended(x, y, z, facing, sticky, false)
 }
 
-// collectPushChain collects the chain of blocks that would be pushed.
-// Returns nil if the chain is too long or contains an immovable block.
-func (pm *PistonManager) collectPushChain(startX, startY, startZ, dx, dy, dz int) [][3]int {
-	var chain [][3]int
-	x, y, z := startX, startY, startZ
-
-	for i := 0; i < maxPistonPush; i++ {
-		state, err := pm.World.GetBlock(x, y, z)
-		if err != nil || state == 0 {
-			return chain // air = end of chain
-		}
-
-		name := BlockNameFromState(int(state))
-		if isImmovable(name) {
-			return nil // can't push
-		}
-
-		chain = append(chain, [3]int{x, y, z})
-		x += dx
-		y += dy
-		z += dz
+// collectPushBFS collects all blocks that should be pushed via BFS through
+// slime/honey connections. Returns nil if any block is immovable or limit exceeded.
+func (pm *PistonManager) collectPushBFS(startX, startY, startZ, dx, dy, dz, pistonX, pistonY, pistonZ int) [][3]int {
+	state, err := pm.World.GetBlock(startX, startY, startZ)
+	if err != nil || state == 0 {
+		return [][3]int{} // nothing to push
+	}
+	name := BlockNameFromState(int(state))
+	if isImmovable(name) {
+		return nil
 	}
 
-	// Check the block beyond the chain
-	state, err := pm.World.GetBlock(x, y, z)
-	if err != nil || state != 0 {
-		return nil // too many blocks or blocked
+	visited := make(map[[3]int]bool)
+	queue := [][3]int{{startX, startY, startZ}}
+	visited[[3]int{startX, startY, startZ}] = true
+	var result [][3]int
+
+	for len(queue) > 0 {
+		pos := queue[0]
+		queue = queue[1:]
+
+		bx, by, bz := pos[0], pos[1], pos[2]
+		bState, err := pm.World.GetBlock(bx, by, bz)
+		if err != nil || bState == 0 {
+			continue
+		}
+		bName := BlockNameFromState(int(bState))
+		if isImmovable(bName) {
+			return nil
+		}
+
+		result = append(result, pos)
+		if len(result) > maxPistonPush {
+			return nil
+		}
+
+		// Check if this block is sticky (slime or honey)
+		isSlime := bName == "slime_block"
+		isHoney := bName == "honey_block"
+		if !isSlime && !isHoney {
+			// Non-sticky block: only continue in the push direction (linear chain)
+			next := [3]int{bx + dx, by + dy, bz + dz}
+			if !visited[next] {
+				visited[next] = true
+				ns, err := pm.World.GetBlock(next[0], next[1], next[2])
+				if err == nil && ns != 0 {
+					queue = append(queue, next)
+				}
+			}
+			continue
+		}
+
+		// Sticky block: check all 6 neighbors
+		neighbors := [6][3]int{
+			{bx + 1, by, bz}, {bx - 1, by, bz},
+			{bx, by + 1, bz}, {bx, by - 1, bz},
+			{bx, by, bz + 1}, {bx, by, bz - 1},
+		}
+		for _, nb := range neighbors {
+			if visited[nb] {
+				continue
+			}
+			// Skip the piston itself
+			if nb[0] == pistonX && nb[1] == pistonY && nb[2] == pistonZ {
+				continue
+			}
+			ns, err := pm.World.GetBlock(nb[0], nb[1], nb[2])
+			if err != nil || ns == 0 {
+				continue
+			}
+			nName := BlockNameFromState(int(ns))
+			// Slime doesn't stick to honey and vice versa
+			if isSlime && nName == "honey_block" {
+				continue
+			}
+			if isHoney && nName == "slime_block" {
+				continue
+			}
+			visited[nb] = true
+			queue = append(queue, nb)
+		}
 	}
-	return chain
+
+	// Verify all destination positions are clear (air or another block in the set)
+	resultSet := make(map[[3]int]bool)
+	for _, pos := range result {
+		resultSet[pos] = true
+	}
+	for _, pos := range result {
+		dest := [3]int{pos[0] + dx, pos[1] + dy, pos[2] + dz}
+		if resultSet[dest] {
+			continue // destination is another block being moved
+		}
+		ds, err := pm.World.GetBlock(dest[0], dest[1], dest[2])
+		if err != nil {
+			return nil
+		}
+		if ds != 0 {
+			dName := BlockNameFromState(int(ds))
+			if isImmovable(dName) {
+				return nil
+			}
+			// Destination occupied by non-movable non-air block that isn't in our set
+			return nil
+		}
+	}
+
+	return result
+}
+
+// collectPullBFS collects blocks connected via slime/honey for pulling.
+func (pm *PistonManager) collectPullBFS(startX, startY, startZ, dx, dy, dz, pistonX, pistonY, pistonZ int) [][3]int {
+	// Same logic as push BFS but we don't need to verify destinations
+	state, err := pm.World.GetBlock(startX, startY, startZ)
+	if err != nil || state == 0 {
+		return nil
+	}
+	name := BlockNameFromState(int(state))
+	if isImmovable(name) {
+		return nil
+	}
+
+	visited := make(map[[3]int]bool)
+	queue := [][3]int{{startX, startY, startZ}}
+	visited[[3]int{startX, startY, startZ}] = true
+	var result [][3]int
+
+	for len(queue) > 0 {
+		pos := queue[0]
+		queue = queue[1:]
+
+		bx, by, bz := pos[0], pos[1], pos[2]
+		bState, err := pm.World.GetBlock(bx, by, bz)
+		if err != nil || bState == 0 {
+			continue
+		}
+		bName := BlockNameFromState(int(bState))
+		if isImmovable(bName) {
+			return nil
+		}
+
+		result = append(result, pos)
+		if len(result) > maxPistonPush {
+			return nil
+		}
+
+		isSlime := bName == "slime_block"
+		isHoney := bName == "honey_block"
+		if !isSlime && !isHoney {
+			continue // non-sticky blocks don't pull neighbors
+		}
+
+		neighbors := [6][3]int{
+			{bx + 1, by, bz}, {bx - 1, by, bz},
+			{bx, by + 1, bz}, {bx, by - 1, bz},
+			{bx, by, bz + 1}, {bx, by, bz - 1},
+		}
+		for _, nb := range neighbors {
+			if visited[nb] {
+				continue
+			}
+			if nb[0] == pistonX && nb[1] == pistonY && nb[2] == pistonZ {
+				continue
+			}
+			// Don't pull blocks that are in the retract direction (behind piston head)
+			if nb[0] == pistonX+dx && nb[1] == pistonY+dy && nb[2] == pistonZ+dz {
+				continue
+			}
+			ns, err := pm.World.GetBlock(nb[0], nb[1], nb[2])
+			if err != nil || ns == 0 {
+				continue
+			}
+			nName := BlockNameFromState(int(ns))
+			if isSlime && nName == "honey_block" {
+				continue
+			}
+			if isHoney && nName == "slime_block" {
+				continue
+			}
+			visited[nb] = true
+			queue = append(queue, nb)
+		}
+	}
+
+	return result
+}
+
+// sortByPushOrder sorts blocks so the farthest in the push direction comes first.
+func (pm *PistonManager) sortByPushOrder(blocks [][3]int, dx, dy, dz int) {
+	for i := 0; i < len(blocks); i++ {
+		for j := i + 1; j < len(blocks); j++ {
+			di := blocks[i][0]*dx + blocks[i][1]*dy + blocks[i][2]*dz
+			dj := blocks[j][0]*dx + blocks[j][1]*dy + blocks[j][2]*dz
+			if dj > di {
+				blocks[i], blocks[j] = blocks[j], blocks[i]
+			}
+		}
+	}
 }
 
 // isImmovable returns true if a block can't be moved by pistons.

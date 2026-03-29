@@ -83,6 +83,12 @@ var migrations = []string{
 		extra JSONB NOT NULL DEFAULT '{}'
 	);
 	UPDATE schema_version SET version = 6;`,
+
+	// Version 6 → 7: add ender chest, effects, exhaustion columns
+	`ALTER TABLE players ADD COLUMN IF NOT EXISTS ender_chest JSONB;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS effects JSONB;
+	ALTER TABLE players ADD COLUMN IF NOT EXISTS exhaustion REAL NOT NULL DEFAULT 0;
+	UPDATE schema_version SET version = 7;`,
 }
 
 // Migrate runs all pending schema migrations.

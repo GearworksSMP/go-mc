@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/google/uuid"
 )
@@ -20,10 +21,10 @@ const SoundTNTPrimed int32 = 1022
 
 // PrimedTNT represents a primed (ignited) TNT entity in the world.
 type PrimedTNT struct {
-	EID       int32
-	X, Y, Z   float64
-	VelY      float64
-	FuseTicks int64 // counts down from 80 (4 seconds)
+	EID            int32
+	X, Y, Z        float64
+	VelX, VelY, VelZ float64
+	FuseTicks      int64 // counts down from 80 (4 seconds)
 }
 
 // TNTManager manages primed TNT entities.
@@ -117,6 +118,75 @@ func (tm *TNTManager) Ignite(x, y, z int) {
 	tm.logf("TNT ignited at (%d, %d, %d) EID=%d", x, y, z, eid)
 }
 
+// IgniteFromExplosion ignites TNT at the given block position with horizontal velocity
+// away from the explosion center, simulating blast propulsion.
+func (tm *TNTManager) IgniteFromExplosion(x, y, z int, expCenterX, expCenterZ float64) {
+	// Calculate outward horizontal velocity from explosion center
+	dx := float64(x) + 0.5 - expCenterX
+	dz := float64(z) + 0.5 - expCenterZ
+	dist := math.Sqrt(dx*dx + dz*dz)
+
+	var velX, velZ float64
+	if dist > 0.01 {
+		velX = dx / dist * 0.5
+		velZ = dz / dist * 0.5
+	}
+
+	// Remove TNT block from world
+	oldState, err := tm.World.SetBlock(x, y, z, 0)
+	if err != nil {
+		return
+	}
+	broadcastBlockUpdateDirect(tm.Manager, x, y, z, 0)
+	if oldState > 0 {
+		BroadcastLevelEvent(tm.Manager, 2001, x, y, z, int32(oldState))
+	}
+
+	spawnX := float64(x) + 0.5
+	spawnY := float64(y)
+	spawnZ := float64(z) + 0.5
+
+	eid := tm.Manager.NextEntityID()
+	tnt := &PrimedTNT{
+		EID:       eid,
+		X:         spawnX,
+		Y:         spawnY,
+		Z:         spawnZ,
+		VelX:      velX,
+		VelY:      0.2 + rand.Float64()*0.2, // slight random upward
+		VelZ:      velZ,
+		FuseTicks: 10 + rand.Int63n(20), // short random fuse (0.5-1.5s)
+	}
+
+	tm.mu.Lock()
+	tm.tnts[eid] = tnt
+	tm.mu.Unlock()
+
+	entityUUID := uuid.New()
+	addPkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(entityUUID),
+		pk.VarInt(tntEntityType),
+		pk.Double(spawnX),
+		pk.Double(spawnY),
+		pk.Double(spawnZ),
+		pk.UnsignedByte(0),
+		pk.Angle(0), pk.Angle(0), pk.Angle(0),
+		pk.VarInt(0),
+	)
+	tm.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(addPkt)
+	})
+
+	fuseMetadata := buildTNTFuseMetadata(int32(tnt.FuseTicks))
+	tm.Manager.ForEach(func(p *game.Player) {
+		SendEntityMetadata(p, eid, fuseMetadata)
+	})
+
+	BroadcastSound(tm.Manager, SoundTNTPrimed, SoundCategoryBlock, spawnX, spawnY, spawnZ, 1.0, 1.0)
+}
+
 // Tick processes all primed TNT entities: gravity, fuse countdown, explosion.
 func (tm *TNTManager) Tick(tick int64) {
 	tm.mu.Lock()
@@ -126,9 +196,13 @@ func (tm *TNTManager) Tick(tick int64) {
 	var toRemove []int32
 
 	for eid, tnt := range tm.tnts {
-		// Apply gravity
+		// Apply gravity and horizontal movement
 		tnt.VelY -= 0.04
+		tnt.X += tnt.VelX
 		tnt.Y += tnt.VelY
+		tnt.Z += tnt.VelZ
+		tnt.VelX *= 0.98 // horizontal friction
+		tnt.VelZ *= 0.98
 
 		// Simple ground collision: don't fall below the block below
 		groundY := math.Floor(tnt.Y)
@@ -217,12 +291,11 @@ func (tm *TNTManager) explode(tnt *PrimedTNT) {
 					continue
 				}
 
-				// Check for chain reaction: TNT blocks in range get ignited
+				// Check for chain reaction: TNT blocks in range get ignited with blast velocity
 				if blockName == "tnt" {
-					// Queue ignition (will be processed after this explosion)
-					go func(bx, by, bz int) {
-						tm.Ignite(bx, by, bz)
-					}(bx, by, bz)
+					go func(bx, by, bz int, ecx, ecz float64) {
+						tm.IgniteFromExplosion(bx, by, bz, ecx, ecz)
+					}(bx, by, bz, cx, cz)
 					continue
 				}
 
@@ -271,9 +344,7 @@ func (tm *TNTManager) explode(tnt *PrimedTNT) {
 		// Apply blast protection enchantment
 		blastProtTotal := int32(0)
 		for _, slot := range []int{5, 6, 7, 8} {
-			if p.Inventory[slot].Enchantments != nil {
-				blastProtTotal += p.Inventory[slot].Enchantments["blast_protection"]
-			}
+			blastProtTotal += enchant.GetLevel(p.Inventory[slot].Enchantments, enchant.BlastProtection)
 		}
 		if blastProtTotal > 0 {
 			reduction := float32(blastProtTotal) * 0.08
@@ -314,7 +385,7 @@ func (tm *TNTManager) broadcastTNTMove(tnt *PrimedTNT) {
 		pk.Double(tnt.X),
 		pk.Double(tnt.Y),
 		pk.Double(tnt.Z),
-		pk.Double(0), pk.Double(tnt.VelY), pk.Double(0), // velocity
+		pk.Double(tnt.VelX), pk.Double(tnt.VelY), pk.Double(tnt.VelZ), // velocity
 		pk.Float(0), pk.Float(0), // yaw, pitch
 		pk.Int(0), // relative flags (all absolute)
 		pk.Boolean(false), // on ground

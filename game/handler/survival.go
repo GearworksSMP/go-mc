@@ -9,6 +9,9 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
+	"github.com/Tnze/go-mc/level"
+	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -17,9 +20,12 @@ type SurvivalHandler struct {
 	Logger             *log.Logger
 	FallDamageTypeID   int32
 	AttackDamageTypeID int32
+	MobDamageTypeID    int32 // same as AttackDamageTypeID but tagged for difficulty scaling
 	VoidDamageTypeID   int32
+	FireDamageTypeID   int32
+	DrownDamageTypeID  int32
 	ItemEntities       *ItemEntityManager
-	KeepInventory      *bool
+	Rules              *GameRules
 	EffectMgr          *EffectManager // status effects (set after construction)
 }
 
@@ -39,8 +45,20 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		return
 	}
 
-	// Shield blocking: absorbs all damage (with 250ms cooldown between blocks)
-	if player.Blocking && isHoldingShield(player) && time.Now().After(player.ShieldCooldownUntil) {
+	// Difficulty scaling for mob damage
+	if damageTypeID == s.MobDamageTypeID && s.Rules != nil {
+		switch s.Rules.GetDifficulty() {
+		case 0: // Peaceful: no mob damage
+			return
+		case 1: // Easy: half damage
+			damage *= 0.5
+		case 3: // Hard: 1.5x damage
+			damage *= 1.5
+		}
+	}
+
+	// Shield blocking: absorbs all damage except void (with 250ms cooldown between blocks)
+	if damageTypeID != s.VoidDamageTypeID && player.Blocking && isHoldingShield(player) && time.Now().After(player.ShieldCooldownUntil) {
 		reduceShieldDurability(player)
 		player.ShieldCooldownUntil = time.Now().Add(250 * time.Millisecond)
 		// Play shield block sound
@@ -49,15 +67,23 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		return
 	}
 
-	// Calculate armor protection
-	armorPoints := 0
+	// Calculate armor protection with toughness (vanilla formula)
+	armorPts := float32(0)
+	toughness := float32(0)
 	for _, slot := range []int{5, 6, 7, 8} {
-		armorPoints += GetArmorProtection(ItemNameByID(player.Inventory[slot].ID))
+		name := ItemNameByID(player.Inventory[slot].ID)
+		armorPts += float32(GetArmorProtection(name))
+		toughness += GetArmorToughness(name)
 	}
-	if armorPoints > 0 {
-		reduction := float32(armorPoints) / 25.0
+	if armorPts > 0 {
+		a := float64(armorPts) / 5.0
+		b := float64(armorPts) - float64(damage)/(2.0+float64(toughness)/4.0)
+		reduction := float32(math.Max(a, b)) / 25.0
 		if reduction > 0.8 {
 			reduction = 0.8
+		}
+		if reduction < 0 {
+			reduction = 0
 		}
 		damage *= (1 - reduction)
 	}
@@ -65,9 +91,7 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	// Protection enchantment: sum from all armor pieces, 4% reduction per level (cap 80%)
 	protectionTotal := int32(0)
 	for _, slot := range []int{5, 6, 7, 8} {
-		if player.Inventory[slot].Enchantments != nil {
-			protectionTotal += player.Inventory[slot].Enchantments["protection"]
-		}
+		protectionTotal += enchant.GetLevel(player.Inventory[slot].Enchantments, enchant.Protection)
 	}
 	if protectionTotal > 0 {
 		protReduction := float32(protectionTotal) * 0.04
@@ -80,9 +104,7 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	// Fire Protection enchantment: 8% reduction per level (cap 80%)
 	fireProtTotal := int32(0)
 	for _, slot := range []int{5, 6, 7, 8} {
-		if player.Inventory[slot].Enchantments != nil {
-			fireProtTotal += player.Inventory[slot].Enchantments["fire_protection"]
-		}
+		fireProtTotal += enchant.GetLevel(player.Inventory[slot].Enchantments, enchant.FireProtection)
 	}
 	if fireProtTotal > 0 {
 		fpReduction := float32(fireProtTotal) * 0.08
@@ -95,9 +117,7 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	// Blast Protection enchantment: 8% reduction per level (cap 80%)
 	blastProtTotal := int32(0)
 	for _, slot := range []int{5, 6, 7, 8} {
-		if player.Inventory[slot].Enchantments != nil {
-			blastProtTotal += player.Inventory[slot].Enchantments["blast_protection"]
-		}
+		blastProtTotal += enchant.GetLevel(player.Inventory[slot].Enchantments, enchant.BlastProtection)
 	}
 	if blastProtTotal > 0 {
 		bpReduction := float32(blastProtTotal) * 0.08
@@ -110,9 +130,7 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	// Projectile Protection enchantment: 8% reduction per level (cap 80%)
 	projProtTotal := int32(0)
 	for _, slot := range []int{5, 6, 7, 8} {
-		if player.Inventory[slot].Enchantments != nil {
-			projProtTotal += player.Inventory[slot].Enchantments["projectile_protection"]
-		}
+		projProtTotal += enchant.GetLevel(player.Inventory[slot].Enchantments, enchant.ProjectileProtection)
 	}
 	if projProtTotal > 0 {
 		ppReduction := float32(projProtTotal) * 0.08
@@ -189,10 +207,7 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	armorChanged := false
 	for _, slot := range []int{5, 6, 7, 8} {
 		if player.Inventory[slot].MaxDurability > 0 && player.Inventory[slot].ID > 0 {
-			unbreakLvl := int32(0)
-			if player.Inventory[slot].Enchantments != nil {
-				unbreakLvl = player.Inventory[slot].Enchantments["unbreaking"]
-			}
+			unbreakLvl := enchant.GetLevel(player.Inventory[slot].Enchantments, enchant.Unbreaking)
 			if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 				continue // unbreaking saved this durability point
 			}
@@ -231,7 +246,7 @@ func (s *SurvivalHandler) handleDeath(manager *game.PlayerManager, player *game.
 
 // dropPlayerInventory drops all inventory items as entities and resets XP.
 func (s *SurvivalHandler) dropPlayerInventory(manager *game.PlayerManager, player *game.Player) {
-	if s.KeepInventory != nil && *s.KeepInventory {
+	if s.Rules != nil && s.Rules.GetKeepInventory() {
 		return
 	}
 	px, py, pz := player.Position()
@@ -240,8 +255,11 @@ func (s *SurvivalHandler) dropPlayerInventory(manager *game.PlayerManager, playe
 		if item.ID <= 0 || item.Count <= 0 {
 			continue
 		}
-		if s.ItemEntities != nil {
-			s.ItemEntities.SpawnItem(manager, px, py+1, pz, item.ID, item.Count, 40)
+		// Curse of Vanishing: item is destroyed instead of dropped
+		if !enchant.HasEnchant(item.Enchantments, enchant.CurseOfVanishing) {
+			if s.ItemEntities != nil {
+				s.ItemEntities.SpawnItem(manager, px, py+1, pz, item.ID, item.Count, 40)
+			}
 		}
 		*item = game.ItemStack{}
 	}
@@ -338,29 +356,60 @@ func (s *SurvivalHandler) HungerTick(manager *game.PlayerManager, tick int64) {
 			}
 		}
 
-		// Natural regeneration: when food >= 18, heal 1 HP every 80 ticks
-		if p.Food >= 18 && p.Health < 20 && tick%80 == 0 {
-			p.Health += 1
-			if p.Health > 20 {
-				p.Health = 20
+		// Natural regeneration (three tiers) — only if naturalRegeneration is enabled
+		naturalRegen := s.Rules == nil || s.Rules.GetNaturalRegeneration()
+		if naturalRegen && p.Health < 20 && !p.Dead {
+			if p.Food >= 20 && p.Saturation > 0 {
+				// Tier 1: Full food + saturation → heal every tick, consume saturation
+				p.Health += 1
+				if p.Health > 20 {
+					p.Health = 20
+				}
+				p.Saturation -= 1.0
+				if p.Saturation < 0 {
+					p.Saturation = 0
+				}
+				changed = true
+			} else if p.Food >= 18 && p.Saturation > 0 && tick%10 == 0 {
+				// Tier 2: High food + saturation → heal every 10 ticks (0.5s)
+				p.Health += 1
+				if p.Health > 20 {
+					p.Health = 20
+				}
+				p.Exhaustion += 6.0
+				changed = true
+			} else if p.Food >= 18 && tick%80 == 0 {
+				// Tier 3: High food, no saturation → heal every 80 ticks (4s)
+				p.Health += 1
+				if p.Health > 20 {
+					p.Health = 20
+				}
+				p.Exhaustion += 6.0
+				changed = true
 			}
-			p.Exhaustion += 6.0
-			changed = true
 		}
 
-		// Starvation: when food = 0, damage 1 HP every 80 ticks (min 1 HP)
-		if p.Food == 0 && tick%80 == 0 && p.Health > 1 {
-			p.Health -= 1
-			changed = true
-			// Broadcast hurt animation for starvation
-			hurtPkt := pk.Marshal(
-				packetid.ClientboundHurtAnimation,
-				pk.VarInt(p.EID),
-				pk.Float(0),
-			)
-			manager.ForEach(func(other *game.Player) {
-				other.WritePacket(hurtPkt)
-			})
+		// Starvation: when food = 0, damage 1 HP every 80 ticks
+		// Easy: stops at 10 HP, Normal: stops at 1 HP, Hard: can kill
+		if p.Food == 0 && tick%80 == 0 && p.Health > 0 {
+			diff := int32(2) // default Normal
+			if s.Rules != nil {
+				diff = s.Rules.GetDifficulty()
+			}
+			canStarve := true
+			switch diff {
+			case 0: // Peaceful: no starvation
+				canStarve = false
+			case 1: // Easy: stop at 10 HP
+				canStarve = p.Health > 10
+			case 2: // Normal: stop at 1 HP
+				canStarve = p.Health > 1
+			}
+			if canStarve {
+				p.LastDamageMessage = p.Name + " starved to death"
+				s.ApplyDamage(manager, p, 1.0, s.AttackDamageTypeID)
+				changed = true
+			}
 		}
 
 		if changed {
@@ -387,6 +436,110 @@ func (s *SurvivalHandler) VoidDamageTick(manager *game.PlayerManager, minY int) 
 	})
 }
 
+// FireTick processes fire damage for burning players every tick.
+func (s *SurvivalHandler) FireTick(manager *game.PlayerManager) {
+	manager.ForEach(func(p *game.Player) {
+		if p.FireTicks <= 0 || p.Dead || p.IsInvulnerable() {
+			return
+		}
+		// Fire Resistance makes player immune
+		if s.EffectMgr != nil && s.EffectMgr.HasEffect(p, EffectFireResistance) {
+			p.FireTicks = 0
+			broadcastFireMetadata(manager, p.EID, false)
+			return
+		}
+		p.FireTicks--
+		if p.FireTicks%20 == 0 { // 1 damage per second
+			p.LastDamageMessage = p.Name + " burned to death"
+			s.ApplyDamage(manager, p, 1.0, s.FireDamageTypeID)
+		}
+		if p.FireTicks == 0 {
+			broadcastFireMetadata(manager, p.EID, false)
+		}
+	})
+}
+
+// WaterTick handles drowning when the player's head is submerged in water.
+// Also extinguishes fire when entering water, tracks InWater/OnLadder state,
+// and applies swimming exhaustion.
+func (s *SurvivalHandler) WaterTick(manager *game.PlayerManager, world game.World) {
+	manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.IsInvulnerable() {
+			return
+		}
+		px, py, pz := p.Position()
+		bx := int(math.Floor(px))
+		feetY := int(math.Floor(py))
+		bz := int(math.Floor(pz))
+		eyeY := int(math.Floor(py + 1.62))
+
+		// Track feet-in-water state (for fall damage cancellation and swimming exhaustion)
+		feetInWater := false
+		if feetState, err := world.GetBlock(bx, feetY, bz); err == nil {
+			if int(feetState) < len(block.StateList) && block.StateList[feetState] != nil {
+				_, feetInWater = block.StateList[feetState].(block.Water)
+			}
+		}
+		p.InWater = feetInWater
+
+		// Track ladder/vine state (for fall damage cancellation)
+		onClimbable := false
+		if climbState, err := world.GetBlock(bx, feetY, bz); err == nil {
+			if int(climbState) < len(block.StateList) && block.StateList[climbState] != nil {
+				onClimbable = isClimbableBlock(block.StateList[climbState])
+			}
+		}
+		p.OnLadder = onClimbable
+
+		// Head-in-water check for drowning
+		inWater := false
+		state, err := world.GetBlock(bx, eyeY, bz)
+		if err == nil {
+			if int(state) < len(block.StateList) && block.StateList[state] != nil {
+				_, inWater = block.StateList[state].(block.Water)
+			}
+		}
+
+		if inWater {
+			// Extinguish fire
+			if p.FireTicks > 0 {
+				p.FireTicks = 0
+				broadcastFireMetadata(manager, p.EID, false)
+			}
+
+			// Respiration enchant extends air: each level adds ~15s (300 ticks)
+			respirationLevel := int32(0)
+			if len(p.Inventory) > 5 {
+				respirationLevel = enchant.GetLevel(p.Inventory[5].Enchantments, enchant.Respiration)
+			}
+
+			// With Respiration, chance per tick to not consume air = level/(level+1)
+			consumeAir := true
+			if respirationLevel > 0 && rand.Int31n(respirationLevel+1) > 0 {
+				consumeAir = false
+			}
+
+			if consumeAir {
+				p.AirTicks--
+			}
+
+			if p.AirTicks <= -20 {
+				p.AirTicks = 0
+				p.LastDamageMessage = p.Name + " drowned"
+				s.ApplyDamage(manager, p, 2.0, s.DrownDamageTypeID)
+			}
+		} else {
+			// Restore air: +4 per tick, cap at 300
+			if p.AirTicks < 300 {
+				p.AirTicks += 4
+				if p.AirTicks > 300 {
+					p.AirTicks = 300
+				}
+			}
+		}
+	})
+}
+
 // AddSprintExhaustion adds exhaustion for sprint distance.
 func AddSprintExhaustion(player *game.Player, dx, dz float64) {
 	if !player.Sprinting || player.Dead || player.IsInvulnerable() {
@@ -394,6 +547,89 @@ func AddSprintExhaustion(player *game.Player, dx, dz float64) {
 	}
 	dist := math.Sqrt(dx*dx + dz*dz)
 	player.Exhaustion += float32(dist) * 0.1
+}
+
+// AddSwimExhaustion adds exhaustion for swimming distance (0.01 per meter).
+func AddSwimExhaustion(player *game.Player, dx, dy, dz float64) {
+	if !player.InWater || player.Dead || player.IsInvulnerable() {
+		return
+	}
+	dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if dist > 0.01 {
+		player.Exhaustion += float32(dist) * 0.01
+	}
+}
+
+// isClimbableBlock returns true if the block allows climbing (ladder, vine, etc.).
+func isClimbableBlock(b interface{}) bool {
+	switch b.(type) {
+	case block.Ladder, block.Vine,
+		block.TwistingVines, block.TwistingVinesPlant,
+		block.WeepingVines, block.WeepingVinesPlant,
+		block.CaveVines, block.CaveVinesPlant:
+		return true
+	}
+	return false
+}
+
+// EnvironmentDamageTick handles suffocation, cactus, and magma block damage.
+// Called every tick (damage applied once per second = every 20 ticks).
+func (s *SurvivalHandler) EnvironmentDamageTick(manager *game.PlayerManager, world game.World, tick int64) {
+	if tick%20 != 0 {
+		return
+	}
+	manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.IsInvulnerable() {
+			return
+		}
+		px, py, pz := p.Position()
+		ix := int(math.Floor(px))
+		iy := int(math.Floor(py))
+		iz := int(math.Floor(pz))
+
+		// Suffocation: check block at head height (Y + 1.5, inside the head hitbox)
+		headY := int(math.Floor(py + 1.5))
+		if state, err := world.GetBlock(ix, headY, iz); err == nil {
+			if isSolidBlock(level.BlocksState(state)) {
+				name := BlockNameFromState(int(state))
+				if name != "cactus" {
+					p.LastDamageMessage = p.Name + " suffocated in a wall"
+					s.ApplyDamage(manager, p, 1.0, s.AttackDamageTypeID)
+					return
+				}
+			}
+		}
+
+		// Cactus: check block at feet position and adjacent blocks
+		for _, pos := range [][3]int{
+			{ix, iy, iz},
+			{ix + 1, iy, iz}, {ix - 1, iy, iz},
+			{ix, iy, iz + 1}, {ix, iy, iz - 1},
+		} {
+			if state, err := world.GetBlock(pos[0], pos[1], pos[2]); err == nil {
+				if int(state) < len(block.StateList) && block.StateList[state] != nil {
+					if block.StateList[state].ID() == "cactus" {
+						p.LastDamageMessage = p.Name + " was pricked to death"
+						s.ApplyDamage(manager, p, 1.0, s.AttackDamageTypeID)
+						return
+					}
+				}
+			}
+		}
+
+		// Magma block: check block at feet (Y-1), damage if standing and not sneaking
+		feetY := int(math.Floor(py)) - 1
+		if !p.Sneaking {
+			if state, err := world.GetBlock(ix, feetY, iz); err == nil {
+				if int(state) < len(block.StateList) && block.StateList[state] != nil {
+					if block.StateList[state].ID() == "magma_block" {
+						p.LastDamageMessage = p.Name + " discovered the floor was lava"
+						s.ApplyDamage(manager, p, 1.0, s.FireDamageTypeID)
+					}
+				}
+			}
+		}
+	})
 }
 
 func (s *SurvivalHandler) logf(format string, args ...any) {
@@ -407,6 +643,7 @@ type FoodHandler struct {
 	Logger     *log.Logger
 	FishingMgr *FishingManager
 	PotionMgr  *PotionManager
+	EffectMgr  *EffectManager
 }
 
 // HandlePacket processes ServerboundUseItem to start eating.
@@ -457,7 +694,11 @@ func (h *FoodHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 			return true
 		}
 		if itemName == "splash_potion" {
-			h.PotionMgr.ThrowSplashPotion(player, "healing")
+			potionType := invItem.PotionType
+			if potionType == "" {
+				potionType = "healing"
+			}
+			h.PotionMgr.ThrowSplashPotion(player, potionType)
 			return true
 		}
 	}
@@ -529,6 +770,11 @@ func (h *FoodHandler) Tick(manager *game.PlayerManager) {
 		px, py, pz := player.Position()
 		BroadcastSound(manager, SoundPlayerBurp, SoundCategoryPlayer, px, py, pz, 0.5, 1.0)
 
+		// Apply food-specific special effects
+		if h.EffectMgr != nil {
+			applyFoodEffects(h.EffectMgr, manager, player, itemName)
+		}
+
 		h.logf("Player %s ate %s (food=%d, sat=%.1f)", player.Name, itemName, player.Food, player.Saturation)
 	})
 }
@@ -536,6 +782,40 @@ func (h *FoodHandler) Tick(manager *game.PlayerManager) {
 // CancelEating cancels any in-progress eating for a player.
 func CancelEating(player *game.Player) {
 	player.EatingStart = time.Time{}
+}
+
+// applyFoodEffects applies special effects for specific food items.
+func applyFoodEffects(em *EffectManager, manager *game.PlayerManager, player *game.Player, itemName string) {
+	switch itemName {
+	case "golden_apple":
+		em.ApplyEffect(player, EffectRegeneration, 1, 100, false) // Regen II 5s
+		em.ApplyEffect(player, EffectAbsorption, 0, 2400, false)  // Absorption I 2min
+	case "enchanted_golden_apple":
+		em.ApplyEffect(player, EffectRegeneration, 1, 400, false)   // Regen II 20s
+		em.ApplyEffect(player, EffectAbsorption, 3, 2400, false)    // Absorption IV 2min
+		em.ApplyEffect(player, EffectResistance, 0, 6000, false)    // Resistance I 5min
+		em.ApplyEffect(player, EffectFireResistance, 0, 6000, false) // Fire Resistance I 5min
+	case "poisonous_potato":
+		if rand.Float64() < 0.6 {
+			em.ApplyEffect(player, EffectPoison, 0, 100, false) // Poison I 5s
+		}
+	case "spider_eye":
+		em.ApplyEffect(player, EffectPoison, 0, 100, false) // Poison I 5s
+	case "rotten_flesh":
+		if rand.Float64() < 0.8 {
+			em.ApplyEffect(player, EffectHunger, 0, 600, false) // Hunger I 30s
+		}
+	case "raw_chicken":
+		if rand.Float64() < 0.3 {
+			em.ApplyEffect(player, EffectHunger, 0, 600, false) // Hunger I 30s
+		}
+	case "pufferfish":
+		em.ApplyEffect(player, EffectPoison, 1, 1200, false) // Poison II 1min
+		em.ApplyEffect(player, EffectHunger, 2, 300, false)  // Hunger III 15s
+		em.ApplyEffect(player, EffectNausea, 0, 300, false)  // Nausea I 15s
+	case "honey_bottle":
+		em.RemoveEffect(player, EffectPoison)
+	}
 }
 
 func (h *FoodHandler) logf(format string, args ...any) {

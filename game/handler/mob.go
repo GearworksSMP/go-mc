@@ -62,6 +62,102 @@ const (
 	MobTypeBat              int32 = 10
 )
 
+// mobNameToType maps entity names to type IDs for /summon.
+var mobNameToType = map[string]int32{
+	"zombie": MobTypeZombie, "skeleton": MobTypeSkeleton, "creeper": MobTypeCreeper,
+	"spider": MobTypeSpider, "enderman": MobTypeEnderman, "witch": MobTypeWitch,
+	"slime": MobTypeSlime, "phantom": MobTypePhantom, "cow": MobTypeCow,
+	"pig": MobTypePig, "sheep": MobTypeSheep, "chicken": MobTypeChicken,
+	"blaze": MobTypeBlaze, "ghast": MobTypeGhast, "iron_golem": MobTypeIronGolem,
+	"snow_golem": MobTypeSnowGolem, "guardian": MobTypeGuardian,
+	"elder_guardian": MobTypeElderGuardian, "drowned": MobTypeDrowned,
+	"husk": MobTypeHusk, "stray": MobTypeStray, "cave_spider": MobTypeCaveSpider,
+	"silverfish": MobTypeSilverfish, "endermite": MobTypeEndermite,
+	"magma_cube": MobTypeMagmaCube, "piglin": MobTypePiglin,
+	"zombified_piglin": MobTypeZombifiedPiglin, "hoglin": MobTypeHoglin,
+	"strider": MobTypeStrider, "wither_skeleton": MobTypeWitherSkeleton,
+	"shulker": MobTypeShulker, "pillager": MobTypePillager,
+	"vindicator": MobTypeVindicator, "evoker": MobTypeEvoker,
+	"vex": MobTypeVex, "ravager": MobTypeRavager,
+	"bee": MobTypeBee, "fox": MobTypeFox, "rabbit": MobTypeRabbit, "bat": MobTypeBat,
+}
+
+// MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
+func MobTypeByName(name string) int32 {
+	if id, ok := mobNameToType[name]; ok {
+		return id
+	}
+	return -1
+}
+
+// mobDefaults returns default health, damage, speed, and hostile flag for a mob type.
+func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile bool) {
+	switch typeID {
+	case MobTypeZombie:
+		return 20, 3, 0.115, true
+	case MobTypeSkeleton:
+		return 20, 2, 0.1, true
+	case MobTypeCreeper:
+		return 20, 0, 0.1, true
+	case MobTypeSpider:
+		return 16, 2, 0.15, true
+	case MobTypeEnderman:
+		return 40, 7, 0.15, true
+	case MobTypeWitch:
+		return 26, 3, 0.1, true
+	case MobTypeSlime:
+		return 16, 3, 0.1, true
+	case MobTypeCow, MobTypePig, MobTypeSheep:
+		return 10, 0, 0.1, false
+	case MobTypeChicken:
+		return 4, 0, 0.1, false
+	case MobTypeIronGolem:
+		return 100, 15, 0.1, false
+	case MobTypeBlaze:
+		return 20, 6, 0.1, true
+	case MobTypeGhast:
+		return 10, 6, 0.05, true
+	case MobTypeWitherSkeleton:
+		return 20, 8, 0.1, true
+	default:
+		return 20, 3, 0.1, true
+	}
+}
+
+// SpawnMobAt spawns a mob of the given type at the specified position.
+func (m *MobManager) SpawnMobAt(typeID int32, x, y, z float64) {
+	health, damage, speed, hostile := mobDefaults(typeID)
+	eid := m.Manager.NextEntityID()
+	mob := &Mob{
+		EID:       eid,
+		TypeID:    typeID,
+		X:         x,
+		Y:         y,
+		Z:         z,
+		PrevX:     x,
+		PrevY:     y,
+		PrevZ:     z,
+		Health:    health,
+		MaxHealth: health,
+		Damage:    damage,
+		Speed:     speed,
+		WanderYaw: rand.Float32() * 360,
+		Hostile:   hostile,
+	}
+	if typeID == MobTypeSheep {
+		mob.WoolColor = 0 // default white for summoned sheep
+	}
+	m.mu.Lock()
+	m.Mobs[eid] = mob
+	m.mu.Unlock()
+	m.broadcastSpawn(mob)
+}
+
+// isSlimeType returns true if the mob type uses index 16 for slime size (not baby flag).
+func isSlimeType(typeID int32) bool {
+	return typeID == MobTypeSlime || typeID == MobTypeMagmaCube
+}
+
 // Mob represents a mob entity (hostile or passive).
 type Mob struct {
 	EID            int32
@@ -94,6 +190,11 @@ type Mob struct {
 	FleeTicks     int64   // ticks remaining to flee
 	LoveTicks     int64   // ticks remaining in "love" mode (breeding)
 	BreedCooldown int64   // ticks until can breed again
+	Baby          bool    // true if this is a baby mob
+	BabyAge       int64   // ticks remaining until growth to adult (24000 = 20 min)
+
+	// Sheep wool color (0=white, 1=orange, ..., 15=black). Used for drop color.
+	WoolColor int32
 
 	// Enderman
 	TeleportCooldown int64
@@ -107,6 +208,9 @@ type Mob struct {
 	SwoopTick  int64  // tick when current phase started
 	CircleAngle float64 // current angle around target for circling
 
+	// Velocity-based gravity
+	VelY float64
+
 	// Pathfinding
 	Path          []PathStep // computed A* path
 	PathIndex     int        // current step along path
@@ -117,6 +221,15 @@ type Mob struct {
 
 	// Tameable mob data (nil for non-tameable)
 	TameData *TameableMobData
+
+	// Custom name from nametag. Named mobs never naturally despawn.
+	CustomName string
+
+	// Fire ticks remaining (0 = not on fire). Decrements each tick, deals 1 damage every 20 ticks.
+	FireTicks int32
+
+	// Death animation: tick when killed (0 = alive). Entity is removed after 20 ticks.
+	DeathTick int64
 }
 
 // MobManager handles mob spawning, AI, and lifecycle.
@@ -124,18 +237,19 @@ type MobManager struct {
 	Manager      *game.PlayerManager
 	TimeMgr      *TimeManager
 	WeatherMgr   *WeatherManager
+	Rules        *GameRules
 	World        game.World
 	MinY         int
 	Survival     *SurvivalHandler
 	ItemEntities *ItemEntityManager
 	ArrowMgr     *ArrowManager
+	XPOrbMgr     *XPOrbManager
 	AdvMgr       *AdvancementManager
 	MobStore     store.MobStore
 	Logger       *log.Logger
 	mu           sync.Mutex
 	Mobs         map[int32]*Mob
-	maxMobs      int
-	maxPassive   int
+	currentTick  int64 // set at the start of each Tick() call
 }
 
 // NewMobManager creates a new mob manager.
@@ -148,8 +262,6 @@ func NewMobManager(manager *game.PlayerManager, timeMgr *TimeManager, world game
 		Survival:     survival,
 		ItemEntities: itemEntities,
 		Mobs:         make(map[int32]*Mob),
-		maxMobs:      20,
-		maxPassive:   15,
 	}
 }
 
@@ -158,26 +270,36 @@ func (m *MobManager) Tick(tick int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Spawn hostile mobs every 100 ticks (5 seconds)
-	if tick%100 == 0 {
-		m.trySpawn()
-		m.trySpawnSlime()
-	}
+	m.currentTick = tick
 
-	// Spawn phantoms every 200 ticks (10 seconds)
-	if tick%200 == 0 {
-		m.trySpawnPhantom(tick)
-	}
+	// Only spawn mobs if doMobSpawning is enabled
+	mobSpawning := m.Rules == nil || m.Rules.GetDoMobSpawning()
 
-	// Spawn passive mobs every 200 ticks (10 seconds)
-	if tick%200 == 0 {
-		m.trySpawnPassive()
+	if mobSpawning {
+		// Spawn hostile mobs every 100 ticks (5 seconds)
+		if tick%100 == 0 {
+			m.trySpawn()
+			m.trySpawnSlime()
+		}
+
+		// Spawn phantoms every 200 ticks (10 seconds)
+		if tick%200 == 0 {
+			m.trySpawnPhantom(tick)
+		}
+
+		// Spawn passive mobs every 600 ticks (30 seconds) — slower since they no longer despawn
+		if tick%600 == 0 {
+			m.trySpawnPassive()
+		}
 	}
 
 	// AI tick for each mob
 	for _, mob := range m.Mobs {
 		m.tickMob(mob, tick)
 	}
+
+	// Sweep dead mobs after death animation (20 ticks = 1 second)
+	m.sweepDeadMobs(tick)
 
 	// Despawn check every 200 ticks
 	if tick%200 == 0 {
@@ -195,12 +317,37 @@ func (m *MobManager) Tick(tick int64) {
 	}
 }
 
+// sweepDeadMobs removes mobs whose death animation has finished.
+func (m *MobManager) sweepDeadMobs(tick int64) {
+	var toRemove []int32
+	for eid, mob := range m.Mobs {
+		if mob.DeathTick > 0 && tick-mob.DeathTick >= 20 {
+			toRemove = append(toRemove, eid)
+		}
+	}
+	for _, eid := range toRemove {
+		mob := m.Mobs[eid]
+		if mob != nil {
+			removePkt := pk.Marshal(
+				packetid.ClientboundRemoveEntities,
+				pk.VarInt(1),
+				pk.VarInt(mob.EID),
+			)
+			m.Manager.ForEach(func(p *game.Player) {
+				p.WritePacket(removePkt)
+			})
+		}
+		delete(m.Mobs, eid)
+	}
+}
+
 // mobExtraData holds type-specific mob fields for JSON persistence.
 type mobExtraData struct {
-	SlimeSize int32  `json:"slime_size,omitempty"`
-	Hostile   bool   `json:"hostile,omitempty"`
-	Damage    float32 `json:"damage,omitempty"`
-	Speed     float64 `json:"speed,omitempty"`
+	SlimeSize  int32   `json:"slime_size,omitempty"`
+	Hostile    bool    `json:"hostile,omitempty"`
+	Damage     float32 `json:"damage,omitempty"`
+	Speed      float64 `json:"speed,omitempty"`
+	CustomName string  `json:"custom_name,omitempty"`
 }
 
 // SaveAllMobs serializes all living mobs and persists them.
@@ -215,10 +362,11 @@ func (m *MobManager) SaveAllMobs(dimension string) {
 			continue
 		}
 		extra, _ := json.Marshal(mobExtraData{
-			SlimeSize: mob.SlimeSize,
-			Hostile:   mob.Hostile,
-			Damage:    mob.Damage,
-			Speed:     mob.Speed,
+			SlimeSize:  mob.SlimeSize,
+			Hostile:    mob.Hostile,
+			Damage:     mob.Damage,
+			Speed:      mob.Speed,
+			CustomName: mob.CustomName,
 		})
 		mobs = append(mobs, store.MobData{
 			Dimension: dimension,
@@ -278,8 +426,9 @@ func (m *MobManager) LoadSavedMobs(dimension string) {
 			WanderYaw: md.Yaw,
 			Hostile:   extra.Hostile,
 			Damage:    extra.Damage,
-			Speed:     extra.Speed,
-			SlimeSize: extra.SlimeSize,
+			Speed:      extra.Speed,
+			SlimeSize:  extra.SlimeSize,
+			CustomName: extra.CustomName,
 		}
 		if mob.Speed == 0 {
 			mob.Speed = 0.1
@@ -300,19 +449,82 @@ func (m *MobManager) LoadSavedMobs(dimension string) {
 	}
 }
 
-// trySpawn attempts to spawn hostile mobs near players at night.
-func (m *MobManager) trySpawn() {
-	hostileCount := 0
+// NameMob applies a custom name to a mob via nametag. Returns true if the mob was found.
+func (m *MobManager) NameMob(eid int32, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mob, ok := m.Mobs[eid]
+	if !ok || mob.Health <= 0 || mob.DeathTick > 0 {
+		return false
+	}
+	mob.CustomName = name
+	m.broadcastCustomName(mob)
+	return true
+}
+
+// broadcastCustomName sends entity metadata for custom name to all players.
+func (m *MobManager) broadcastCustomName(mob *Mob) {
+	nameJSON := `{"text":"` + mob.CustomName + `"}`
+
+	// Build metadata bytes: index 2 = Optional Chat (custom name), index 3 = Boolean (visible)
+	var meta []byte
+	// Index 2, type 7 (Optional Chat), present=true, value=JSON string
+	meta = append(meta, 2)
+	meta = appendVarInt(meta, 7)       // type: Optional Chat
+	meta = append(meta, 1)             // present = true
+	meta = appendVarInt(meta, len(nameJSON))
+	meta = append(meta, []byte(nameJSON)...)
+	// Index 3, type 8 (Boolean), value=true
+	meta = append(meta, 3)
+	meta = appendVarInt(meta, 8) // type: Boolean
+	meta = append(meta, 1)      // true
+	// Terminator
+	meta = append(meta, 0xFF)
+
+	pkt := pk.Marshal(
+		packetid.ClientboundSetEntityData,
+		pk.VarInt(mob.EID),
+		pk.PluginMessageData(meta),
+	)
+	m.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
+}
+
+const (
+	// Per-player mob caps (vanilla-inspired).
+	hostileCapPerPlayer = 70
+	passiveCapPerPlayer = 10
+)
+
+// countMobsNear counts mobs within radiusSq (squared distance) of (x, z).
+// If hostile is true, counts only hostile mobs; if false, counts only passive mobs.
+func (m *MobManager) countMobsNear(x, z, radiusSq float64, hostile bool) int {
+	count := 0
 	for _, mob := range m.Mobs {
-		if mob.Hostile {
-			hostileCount++
+		if mob.Health <= 0 || mob.DeathTick > 0 {
+			continue
+		}
+		if mob.Hostile != hostile {
+			continue
+		}
+		dx := mob.X - x
+		dz := mob.Z - z
+		if dx*dx+dz*dz <= radiusSq {
+			count++
 		}
 	}
-	if hostileCount >= m.maxMobs {
+	return count
+}
+
+// trySpawn attempts to spawn hostile mobs near each survival player at night.
+// Uses per-player mob caps: only spawns near a player if their nearby hostile count
+// is below hostileCapPerPlayer. Limits to 1 spawn attempt per player per cycle.
+func (m *MobManager) trySpawn() {
+	if !m.TimeMgr.IsNight() {
 		return
 	}
 
-	// Pick a random player
 	var players []*game.Player
 	m.Manager.ForEach(func(p *game.Player) {
 		if !p.Dead && p.GameMode == 0 {
@@ -323,42 +535,33 @@ func (m *MobManager) trySpawn() {
 		return
 	}
 
-	player := players[rand.Intn(len(players))]
+	for _, player := range players {
+		px, _, pz := player.Position()
 
-	// Nether and End always spawn hostiles; Overworld only at night
-	switch player.Dimension {
-	case "minecraft:the_nether":
-		m.spawnNetherHostileAt(player)
-	case "minecraft:the_end":
-		m.spawnEndHostileAt(player)
-	default:
-		if !m.TimeMgr.IsNight() {
-			return
+		// Per-player cap check: count hostile mobs within 128 blocks
+		nearbyHostile := m.countMobsNear(px, pz, 128*128, true)
+		if nearbyHostile >= hostileCapPerPlayer {
+			continue
 		}
-		m.spawnOverworldHostileAt(player)
+
+		// Pick random position 24-48 blocks from player
+		angle := rand.Float64() * 2 * math.Pi
+		dist := 24 + rand.Float64()*24
+		spawnX := px + math.Cos(angle)*dist
+		spawnZ := pz + math.Sin(angle)*dist
+
+		// Find surface Y
+		spawnY := m.findSurfaceY(int(spawnX), int(spawnZ))
+		if spawnY < m.MinY {
+			continue
+		}
+
+		m.spawnHostileMobAt(spawnX+0.5, float64(spawnY), spawnZ+0.5)
 	}
 }
 
-// pickSpawnPos picks a random spawn position 24-48 blocks from the player and
-// returns the coordinates. ok is false if no valid surface was found.
-func (m *MobManager) pickSpawnPos(player *game.Player) (x float64, y int, z float64, ok bool) {
-	px, _, pz := player.Position()
-	angle := rand.Float64() * 2 * math.Pi
-	dist := 24 + rand.Float64()*24
-	x = px + math.Cos(angle)*dist
-	z = pz + math.Sin(angle)*dist
-	y = m.findSurfaceY(int(x), int(z))
-	ok = y >= m.MinY
-	return
-}
-
-// spawnOverworldHostileAt spawns a hostile mob near the given player in the overworld.
-func (m *MobManager) spawnOverworldHostileAt(player *game.Player) {
-	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
-	if !ok {
-		return
-	}
-
+// spawnHostileMobAt creates a random hostile mob at the given position.
+func (m *MobManager) spawnHostileMobAt(x, y, z float64) {
 	var typeID int32
 	var health, damage float32
 	var speed float64
@@ -380,60 +583,16 @@ func (m *MobManager) spawnOverworldHostileAt(player *game.Player) {
 		typeID, health, damage, speed = MobTypeSpider, 16, 2, 0.15
 	}
 
-	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, typeID, health, damage, speed)
-}
-
-// spawnNetherHostileAt spawns a nether-specific hostile mob near the given player.
-func (m *MobManager) spawnNetherHostileAt(player *game.Player) {
-	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
-	if !ok {
-		return
-	}
-
-	var typeID int32
-	var health, damage float32
-	var speed float64
-	roll := rand.Float64()
-	switch {
-	case roll < 0.30:
-		typeID, health, damage, speed = MobTypeZombifiedPiglin, 20, 5, 0.1
-	case roll < 0.50:
-		typeID, health, damage, speed = MobTypePiglin, 16, 5, 0.1
-	case roll < 0.65:
-		typeID, health, damage, speed = MobTypeMagmaCube, 16, 3, 0.1
-	case roll < 0.80:
-		typeID, health, damage, speed = MobTypeGhast, 10, 6, 0.05
-	case roll < 0.90:
-		typeID, health, damage, speed = MobTypeWitherSkeleton, 20, 8, 0.1
-	default:
-		typeID, health, damage, speed = MobTypeBlaze, 20, 6, 0.1
-	}
-
-	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, typeID, health, damage, speed)
-}
-
-// spawnEndHostileAt spawns an enderman near the given player in the End.
-func (m *MobManager) spawnEndHostileAt(player *game.Player) {
-	spawnX, spawnY, spawnZ, ok := m.pickSpawnPos(player)
-	if !ok {
-		return
-	}
-
-	m.spawnHostileMob(spawnX, float64(spawnY), spawnZ, MobTypeEnderman, 40, 7, 0.15)
-}
-
-// spawnHostileMob creates a hostile mob at the given position and broadcasts it.
-func (m *MobManager) spawnHostileMob(x, y, z float64, typeID int32, health, damage float32, speed float64) {
 	eid := m.Manager.NextEntityID()
 	mob := &Mob{
 		EID:       eid,
 		TypeID:    typeID,
-		X:         x + 0.5,
+		X:         x,
 		Y:         y,
-		Z:         z + 0.5,
-		PrevX:     x + 0.5,
+		Z:         z,
+		PrevX:     x,
 		PrevY:     y,
-		PrevZ:     z + 0.5,
+		PrevZ:     z,
 		Health:    health,
 		MaxHealth: health,
 		Damage:    damage,
@@ -446,57 +605,57 @@ func (m *MobManager) spawnHostileMob(x, y, z float64, typeID int32, health, dama
 }
 
 // trySpawnPassive attempts to spawn passive mobs on grass during daytime.
+// Since passive mobs no longer despawn, spawning is conservative:
+// only spawns if fewer than passiveCapPerPlayer passive mobs are near the target player.
 func (m *MobManager) trySpawnPassive() {
 	if m.TimeMgr.IsNight() {
 		return
 	}
-	passiveCount := 0
-	for _, mob := range m.Mobs {
-		if !mob.Hostile {
-			passiveCount++
-		}
-	}
-	if passiveCount >= m.maxPassive {
-		return
-	}
 
-	// Only spawn passive mobs in the overworld
 	var players []*game.Player
 	m.Manager.ForEach(func(p *game.Player) {
-		if !p.Dead && (p.Dimension == "" || p.Dimension == "minecraft:overworld") {
+		if !p.Dead {
 			players = append(players, p)
 		}
 	})
-	if len(players) == 0 {
-		return
+
+	for _, player := range players {
+		px, _, pz := player.Position()
+
+		// Per-player cap: only spawn if fewer than passiveCapPerPlayer passive mobs nearby
+		nearbyPassive := m.countMobsNear(px, pz, 128*128, false)
+		if nearbyPassive >= passiveCapPerPlayer {
+			continue
+		}
+
+		// Pick random position 8-32 blocks from player
+		angle := rand.Float64() * 2 * math.Pi
+		dist := 8 + rand.Float64()*24
+		spawnX := px + math.Cos(angle)*dist
+		spawnZ := pz + math.Sin(angle)*dist
+
+		// Find surface Y
+		spawnY := m.findSurfaceY(int(spawnX), int(spawnZ))
+		if spawnY < m.MinY {
+			continue
+		}
+
+		// Check that the block below is grass_block
+		belowState, err := m.World.GetBlock(int(spawnX), spawnY-1, int(spawnZ))
+		if err != nil {
+			continue
+		}
+		blockName := BlockNameFromState(int(belowState))
+		if blockName != "grass_block" {
+			continue
+		}
+
+		m.spawnPassiveMobAt(spawnX+0.5, float64(spawnY), spawnZ+0.5)
 	}
+}
 
-	player := players[rand.Intn(len(players))]
-	px, _, pz := player.Position()
-
-	// Pick random position 8-32 blocks from player
-	angle := rand.Float64() * 2 * math.Pi
-	dist := 8 + rand.Float64()*24
-	spawnX := px + math.Cos(angle)*dist
-	spawnZ := pz + math.Sin(angle)*dist
-
-	// Find surface Y
-	spawnY := m.findSurfaceY(int(spawnX), int(spawnZ))
-	if spawnY < m.MinY {
-		return
-	}
-
-	// Check that the block below is grass_block
-	belowState, err := m.World.GetBlock(int(spawnX), spawnY-1, int(spawnZ))
-	if err != nil {
-		return
-	}
-	blockName := BlockNameFromState(int(belowState))
-	if blockName != "grass_block" {
-		return
-	}
-
-	// Pick mob type: 20% cow, 20% pig, 14% sheep, 14% chicken, 8% villager, 8% wolf, 6% cat, 6% horse, 4% parrot
+// spawnPassiveMobAt creates a random passive mob at the given position.
+func (m *MobManager) spawnPassiveMobAt(x, y, z float64) {
 	var typeID int32
 	var health float32
 	var vdata *VillagerData
@@ -533,12 +692,12 @@ func (m *MobManager) trySpawnPassive() {
 	mob := &Mob{
 		EID:          eid,
 		TypeID:       typeID,
-		X:            spawnX + 0.5,
-		Y:            float64(spawnY),
-		Z:            spawnZ + 0.5,
-		PrevX:        spawnX + 0.5,
-		PrevY:        float64(spawnY),
-		PrevZ:        spawnZ + 0.5,
+		X:            x,
+		Y:            y,
+		Z:            z,
+		PrevX:        x,
+		PrevY:        y,
+		PrevZ:        z,
 		Health:       health,
 		MaxHealth:    health,
 		Damage:       0,
@@ -547,6 +706,28 @@ func (m *MobManager) trySpawnPassive() {
 		Hostile:      false,
 		VillagerData: vdata,
 		TameData:     tdata,
+	}
+	// Assign random wool color for sheep (vanilla distribution)
+	if typeID == MobTypeSheep {
+		r := rand.Float64()
+		switch {
+		case r < 0.8184: // white (81.84%)
+			mob.WoolColor = 0
+		case r < 0.8184+0.05: // orange
+			mob.WoolColor = 1
+		case r < 0.8184+0.10: // magenta
+			mob.WoolColor = 2
+		case r < 0.8184+0.15: // light blue
+			mob.WoolColor = 3
+		case r < 0.9684: // black (3%)
+			mob.WoolColor = 15
+		case r < 0.9884: // gray (2%)
+			mob.WoolColor = 7
+		case r < 0.9984: // brown (1%)
+			mob.WoolColor = 12
+		default: // pink (0.16%)
+			mob.WoolColor = 6
+		}
 	}
 	m.Mobs[eid] = mob
 	m.broadcastSpawn(mob)
@@ -577,8 +758,33 @@ func (m *MobManager) findSurfaceY(x, z int) int {
 
 // tickMob runs AI for a single mob.
 func (m *MobManager) tickMob(mob *Mob, tick int64) {
-	if mob.Health <= 0 {
+	if mob.Health <= 0 || mob.DeathTick > 0 {
 		return
+	}
+
+	// Fire tick damage
+	if mob.FireTicks > 0 {
+		mob.FireTicks--
+		if mob.FireTicks%20 == 0 { // 1 damage per second
+			mob.Health -= 1.0
+			if mob.Health <= 0 {
+				mob.Health = 0
+				m.killMob(mob, nil)
+				return
+			}
+			// Broadcast hurt animation
+			hurtPkt := pk.Marshal(
+				packetid.ClientboundHurtAnimation,
+				pk.VarInt(mob.EID),
+				pk.Float(0),
+			)
+			m.Manager.ForEach(func(p *game.Player) {
+				p.WritePacket(hurtPkt)
+			})
+		}
+		if mob.FireTicks == 0 {
+			broadcastFireMetadata(m.Manager, mob.EID, false)
+		}
 	}
 
 	if mob.AttackCooldown > 0 {
@@ -710,6 +916,57 @@ func (m *MobManager) isWalkable(x, y, z float64) bool {
 	return true
 }
 
+// isCliff returns true if there is no solid block within 3 blocks below the given position.
+func (m *MobManager) isCliff(x, y, z float64) bool {
+	bx, by, bz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	for dy := 1; dy <= 3; dy++ {
+		state, err := m.World.GetBlock(bx, by-dy, bz)
+		if err != nil {
+			continue
+		}
+		if isSolidBlock(state) {
+			return false
+		}
+	}
+	return true
+}
+
+// hasLineOfSight checks if there is a clear line between two points (no solid blocks).
+// Raycasts every 0.5 blocks, max 64 checks.
+func (m *MobManager) hasLineOfSight(fromX, fromY, fromZ float64, toX, toY, toZ float64) bool {
+	dx := toX - fromX
+	dy := toY - fromY
+	dz := toZ - fromZ
+	dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if dist < 0.5 {
+		return true
+	}
+	steps := int(dist / 0.5)
+	if steps > 64 {
+		steps = 64
+	}
+	stepX := dx / float64(steps)
+	stepY := dy / float64(steps)
+	stepZ := dz / float64(steps)
+	cx, cy, cz := fromX, fromY, fromZ
+	for i := 0; i < steps; i++ {
+		cx += stepX
+		cy += stepY
+		cz += stepZ
+		bx := int(math.Floor(cx))
+		by := int(math.Floor(cy))
+		bz := int(math.Floor(cz))
+		state, err := m.World.GetBlock(bx, by, bz)
+		if err != nil {
+			continue
+		}
+		if isSolidBlock(state) {
+			return false
+		}
+	}
+	return true
+}
+
 // tryMove attempts to move a mob, checking collision. Returns true if moved.
 func (m *MobManager) tryMove(mob *Mob, nx, nz float64) bool {
 	newX := mob.X + nx
@@ -730,7 +987,7 @@ func (m *MobManager) tryMove(mob *Mob, nx, nz float64) bool {
 	return false
 }
 
-// applyGravity applies simple gravity to a mob.
+// applyGravity applies velocity-based gravity to a mob.
 func (m *MobManager) applyGravity(mob *Mob) {
 	bx := int(math.Floor(mob.X))
 	by := int(math.Floor(mob.Y))
@@ -739,18 +996,32 @@ func (m *MobManager) applyGravity(mob *Mob) {
 	if err != nil {
 		return
 	}
-	if !isSolidBlock(below) {
-		mob.Y -= 0.1
+	if isSolidBlock(below) && mob.VelY <= 0 {
+		// On ground — snap to block top, reset velocity
+		groundY := float64(by)
+		if mob.Y < groundY {
+			mob.Y = groundY
+		}
+		mob.VelY = 0
+		return
 	}
+	// In air — apply gravity and drag
+	mob.VelY -= 0.08
+	mob.VelY *= 0.98
+	if mob.VelY < -3.0 {
+		mob.VelY = -3.0
+	}
+	mob.Y += mob.VelY
 }
 
 // tickHostile runs standard melee hostile AI (zombie, spider).
 func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 	m.applyGravity(mob)
 
-	// Find nearest player within 32 blocks
+	// Find nearest player within 32 blocks with line of sight
 	var nearest *game.Player
 	nearestDist := 32.0
+	mobEyeY := mob.Y + 1.5
 	m.Manager.ForEach(func(p *game.Player) {
 		if p.Dead || p.GameMode != 0 {
 			return
@@ -760,7 +1031,7 @@ func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 		dy := py - mob.Y
 		dz := pz - mob.Z
 		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
-		if d < nearestDist {
+		if d < nearestDist && m.hasLineOfSight(mob.X, mobEyeY, mob.Z, px, py+1.62, pz) {
 			nearestDist = d
 			nearest = p
 		}
@@ -781,7 +1052,9 @@ func (m *MobManager) tickHostile(mob *Mob, tick int64) {
 		// Attack if within range
 		if nearestDist <= 1.5 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
 			mob.AttackCooldown = 30 // 1.5 seconds
-			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+			// Arm swing animation
+			m.broadcastArmSwing(mob)
 		}
 
 		m.broadcastMobMove(mob)
@@ -798,6 +1071,7 @@ func (m *MobManager) tickCreeper(mob *Mob, tick int64) {
 
 	var nearest *game.Player
 	nearestDist := 32.0
+	mobEyeY := mob.Y + 1.5
 	m.Manager.ForEach(func(p *game.Player) {
 		if p.Dead || p.GameMode != 0 {
 			return
@@ -807,7 +1081,7 @@ func (m *MobManager) tickCreeper(mob *Mob, tick int64) {
 		dy := py - mob.Y
 		dz := pz - mob.Z
 		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
-		if d < nearestDist {
+		if d < nearestDist && m.hasLineOfSight(mob.X, mobEyeY, mob.Z, px, py+1.62, pz) {
 			nearestDist = d
 			nearest = p
 		}
@@ -877,7 +1151,7 @@ func (m *MobManager) creeperExplode(mob *Mob) {
 			damage := float32(12.0 * (1.0 - d/7.0))
 			if damage > 0 {
 				p.LastDamageMessage = p.Name + " was blown up by Creeper"
-				m.Survival.ApplyDamage(m.Manager, p, damage, m.Survival.AttackDamageTypeID)
+				m.Survival.ApplyDamage(m.Manager, p, damage, m.Survival.MobDamageTypeID)
 			}
 		}
 	})
@@ -936,6 +1210,7 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 
 	var nearest *game.Player
 	nearestDist := 32.0
+	mobEyeY := mob.Y + 1.5
 	m.Manager.ForEach(func(p *game.Player) {
 		if p.Dead || p.GameMode != 0 {
 			return
@@ -945,7 +1220,7 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 		dy := py - mob.Y
 		dz := pz - mob.Z
 		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
-		if d < nearestDist {
+		if d < nearestDist && m.hasLineOfSight(mob.X, mobEyeY, mob.Z, px, py+1.62, pz) {
 			nearestDist = d
 			nearest = p
 		}
@@ -1007,8 +1282,24 @@ func (m *MobManager) tickPassive(mob *Mob, tick int64) {
 		mob.FleeTicks = 0
 	}
 
-	// Love mode countdown
-	if mob.LoveTicks > 0 {
+	// Baby growth: count down and convert to adult
+	if mob.Baby && mob.BabyAge > 0 {
+		mob.BabyAge--
+		if mob.BabyAge <= 0 {
+			mob.Baby = false
+			mob.Speed /= 1.5 // revert baby speed boost
+			// Send adult metadata (isBaby = false)
+			var w MetadataWriter
+			w.WriteBoolean(16, false)
+			data := w.Bytes()
+			m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+				SendEntityMetadata(p, mob.EID, data)
+			})
+		}
+	}
+
+	// Love mode countdown (babies can't breed)
+	if !mob.Baby && mob.LoveTicks > 0 {
 		mob.LoveTicks--
 		// Check for nearby mob in love mode for breeding
 		if mob.LoveTicks > 0 && mob.BreedCooldown <= 0 {
@@ -1057,6 +1348,16 @@ func (m *MobManager) FeedMob(targetEID int32) bool {
 	mob, ok := m.Mobs[targetEID]
 	if !ok || mob.Health <= 0 || mob.Hostile {
 		return false
+	}
+	if mob.Baby {
+		// Feeding a baby accelerates growth by 10% (2400 ticks)
+		if mob.BabyAge > 0 {
+			mob.BabyAge -= 2400
+			if mob.BabyAge < 0 {
+				mob.BabyAge = 0
+			}
+		}
+		return true
 	}
 	if mob.LoveTicks > 0 || mob.BreedCooldown > 0 {
 		return false
@@ -1107,9 +1408,11 @@ func (m *MobManager) tryBreed(mob *Mob) {
 			PrevZ:     babyZ,
 			Health:    mob.MaxHealth / 2,
 			MaxHealth: mob.MaxHealth,
-			Speed:     mob.Speed,
+			Speed:     mob.Speed * 1.5, // babies move faster
 			WanderYaw: rand.Float32() * 360,
 			Hostile:   false,
+			Baby:      true,
+			BabyAge:   24000, // 20 minutes to grow up
 		}
 		m.Mobs[eid] = baby
 		m.broadcastSpawn(baby)
@@ -1150,7 +1453,7 @@ func (m *MobManager) GetMobType(eid int32) int32 {
 	return mob.TypeID
 }
 
-// tickWander makes a mob wander randomly.
+// tickWander makes a mob wander randomly with cliff avoidance.
 func (m *MobManager) tickWander(mob *Mob, tick int64) {
 	if tick-mob.WanderTick > int64(40+rand.Intn(40)) {
 		mob.WanderTick = tick
@@ -1159,6 +1462,17 @@ func (m *MobManager) tickWander(mob *Mob, tick int64) {
 	rad := float64(mob.WanderYaw) * math.Pi / 180
 	nx := math.Cos(rad) * mob.Speed * 0.3
 	nz := math.Sin(rad) * mob.Speed * 0.3
+
+	// Cliff avoidance: don't walk off edges while wandering
+	destX := mob.X + nx
+	destZ := mob.Z + nz
+	if m.isCliff(destX, mob.Y, destZ) {
+		mob.WanderYaw += (rand.Float32()-0.5)*180 + 90
+		mob.Yaw = mob.WanderYaw
+		m.broadcastMobMove(mob)
+		return
+	}
+
 	if !m.tryMove(mob, nx, nz) {
 		// Blocked: pick a new direction
 		mob.WanderYaw += (rand.Float32()-0.5)*180 + 90
@@ -1172,6 +1486,15 @@ func (m *MobManager) tickWander(mob *Mob, tick int64) {
 // Falls back to direct-line movement if no path is found.
 func (m *MobManager) moveWithPathfinding(mob *Mob, target *game.Player, tick int64) {
 	px, py, pz := target.Position()
+
+	// Sprint: 1.5x speed when target is far away
+	speed := mob.Speed
+	tdx := px - mob.X
+	tdz := pz - mob.Z
+	targetDist := math.Sqrt(tdx*tdx + tdz*tdz)
+	if targetDist > 16 {
+		speed *= 1.5
+	}
 
 	// Recalculate path every 20 ticks or if path is empty
 	needsRecalc := mob.Path == nil ||
@@ -1214,8 +1537,8 @@ func (m *MobManager) moveWithPathfinding(mob *Mob, target *game.Player, tick int
 		}
 
 		if dist > 0.05 {
-			nx := dx / dist * mob.Speed
-			nz := dz / dist * mob.Speed
+			nx := dx / dist * speed
+			nz := dz / dist * speed
 			m.tryMove(mob, nx, nz)
 			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
 		}
@@ -1225,8 +1548,8 @@ func (m *MobManager) moveWithPathfinding(mob *Mob, target *game.Player, tick int
 		dz := pz - mob.Z
 		dist := math.Sqrt(dx*dx + dz*dz)
 		if dist > 0.5 {
-			nx := dx / dist * mob.Speed
-			nz := dz / dist * mob.Speed
+			nx := dx / dist * speed
+			nz := dz / dist * speed
 			m.tryMove(mob, nx, nz)
 			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
 		}
@@ -1235,6 +1558,78 @@ func (m *MobManager) moveWithPathfinding(mob *Mob, target *game.Player, tick int
 
 // DamageMob applies damage to a mob from a player attack.
 // Returns true if the mob was found and damaged.
+// FindMobNear returns the EID of the first living mob within radius of (x,y,z),
+// excluding excludeEID. Returns -1 if none found.
+func (m *MobManager) FindMobNear(x, y, z, radius float64, excludeEID int32) int32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r2 := radius * radius
+	for eid, mob := range m.Mobs {
+		if mob.Health <= 0 || mob.DeathTick > 0 {
+			continue
+		}
+		if eid == excludeEID {
+			continue
+		}
+		dx := mob.X - x
+		dy := (mob.Y + 0.9) - y
+		dz := mob.Z - z
+		if dx*dx+dy*dy+dz*dz < r2 {
+			return eid
+		}
+	}
+	return -1
+}
+
+// DamageMobByArrow applies arrow damage to a mob. Returns whether the mob died and its type ID.
+func (m *MobManager) DamageMobByArrow(shooterEID, targetEID int32, damage float32) (killed bool, typeID int32) {
+	m.mu.Lock()
+	mob, ok := m.Mobs[targetEID]
+	if !ok || mob.Health <= 0 {
+		m.mu.Unlock()
+		return false, 0
+	}
+	typeID = mob.TypeID
+	mob.Health -= damage
+	if mob.Health < 0 {
+		mob.Health = 0
+	}
+
+	// Broadcast hurt animation
+	hurtPkt := pk.Marshal(packetid.ClientboundHurtAnimation, pk.VarInt(mob.EID), pk.Float(0))
+	m.Manager.ForEach(func(p *game.Player) { p.WritePacket(hurtPkt) })
+
+	// Play hurt sound
+	BroadcastSound(m.Manager, MobHurtSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
+
+	if mob.Health <= 0 {
+		m.mu.Unlock()
+		m.killMob(mob, nil) // no player killer for mob-on-mob
+		return true, typeID
+	}
+	m.mu.Unlock()
+	return false, typeID
+}
+
+// IsMobOfType checks if the given EID is a living mob of the specified type.
+func (m *MobManager) IsMobOfType(eid int32, typeID int32) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mob, ok := m.Mobs[eid]
+	return ok && mob.TypeID == typeID
+}
+
+// GetMobPos returns the position of a mob by EID. Returns (0,0,0) if not found.
+func (m *MobManager) GetMobPos(eid int32) (x, y, z float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mob, ok := m.Mobs[eid]
+	if !ok {
+		return 0, 0, 0
+	}
+	return mob.X, mob.Y, mob.Z
+}
+
 func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage float32) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1263,7 +1658,7 @@ func (m *MobManager) DamageMob(attacker *game.Player, targetEID int32, damage fl
 	damagePkt := pk.Marshal(
 		packetid.ClientboundDamageEvent,
 		pk.VarInt(mob.EID),
-		pk.VarInt(m.Survival.AttackDamageTypeID),
+		pk.VarInt(m.Survival.MobDamageTypeID),
 		pk.VarInt(attacker.EID+1), // cause entity (+1 because 0 = none)
 		pk.VarInt(attacker.EID+1), // direct entity
 		pk.Boolean(false),
@@ -1344,7 +1739,7 @@ func (m *MobManager) DamageMobEx(attacker *game.Player, targetEID int32, damage 
 	damagePkt := pk.Marshal(
 		packetid.ClientboundDamageEvent,
 		pk.VarInt(mob.EID),
-		pk.VarInt(m.Survival.AttackDamageTypeID),
+		pk.VarInt(m.Survival.MobDamageTypeID),
 		pk.VarInt(attacker.EID+1),
 		pk.VarInt(attacker.EID+1),
 		pk.Boolean(false),
@@ -1370,23 +1765,10 @@ func (m *MobManager) DamageMobEx(attacker *game.Player, targetEID int32, damage 
 		}
 	}
 
-	// Fire Aspect: set mob on fire metadata
+	// Fire Aspect: set mob on fire with ticking damage
 	if fireAspectLevel > 0 {
-		m.Manager.ForEach(func(p *game.Player) {
-			p.WritePacket(pk.Marshal(
-				packetid.ClientboundSetEntityData,
-				pk.VarInt(mob.EID),
-				pk.UnsignedByte(0),
-				pk.VarInt(0),
-				pk.Byte(0x01), // on fire
-				pk.UnsignedByte(0xFF),
-			))
-		})
-		// Apply 1 fire tick damage immediately
-		mob.Health -= 1.0
-		if mob.Health < 0 {
-			mob.Health = 0
-		}
+		mob.FireTicks = fireAspectLevel * 80 // 4 seconds per level
+		broadcastFireMetadata(m.Manager, mob.EID, true)
 	}
 
 	// Enderman teleport on hit
@@ -1463,6 +1845,15 @@ func (m *MobManager) DamageMobsNearExcept(attacker *game.Player, primaryEID int3
 
 // killMobWithLooting handles mob death with Looting enchantment bonus drops.
 func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLevel int32) {
+	if mob.DeathTick > 0 {
+		return // already dying
+	}
+	mob.Health = 0
+	mob.DeathTick = m.currentTick
+	if mob.DeathTick == 0 {
+		mob.DeathTick = 1
+	}
+
 	// Death sound
 	BroadcastSound(m.Manager, MobDeathSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
 
@@ -1486,31 +1877,24 @@ func (m *MobManager) killMobWithLooting(mob *Mob, killer *game.Player, lootingLe
 		m.slimeSplit(mob)
 	}
 
-	go func() {
-		removePkt := pk.Marshal(
-			packetid.ClientboundRemoveEntities,
-			pk.VarInt(1),
-			pk.VarInt(mob.EID),
-		)
-		m.mu.Lock()
-		delete(m.Mobs, mob.EID)
-		m.mu.Unlock()
-		m.Manager.ForEach(func(p *game.Player) {
-			p.WritePacket(removePkt)
-		})
-	}()
-
+	// Spawn XP orbs at mob death location
 	if killer != nil {
-		if mob.Hostile {
-			AddExperience(killer, 5)
-		} else {
-			AddExperience(killer, int32(1+rand.Intn(3)))
-		}
+		m.spawnMobXPOrbs(mob)
 	}
 }
 
-// killMob handles mob death: animation, removal, drops, XP.
+// killMob handles mob death: animation, drops, XP. Entity removal is deferred
+// to sweepDeadMobs (20 ticks later) to allow the death animation to play.
 func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
+	if mob.DeathTick > 0 {
+		return // already dying
+	}
+	mob.Health = 0
+	mob.DeathTick = m.currentTick
+	if mob.DeathTick == 0 {
+		mob.DeathTick = 1 // ensure nonzero so sweep detects it
+	}
+
 	// Death sound
 	BroadcastSound(m.Manager, MobDeathSound(mob.TypeID), MobSoundCategory(mob.TypeID), mob.X, mob.Y, mob.Z, 1.0, 1.0)
 
@@ -1535,141 +1919,113 @@ func (m *MobManager) killMob(mob *Mob, killer *game.Player) {
 		m.slimeSplit(mob)
 	}
 
-	// Remove after brief delay (use goroutine for simplicity)
-	go func() {
-		// Remove entity
-		removePkt := pk.Marshal(
-			packetid.ClientboundRemoveEntities,
-			pk.VarInt(1),
-			pk.VarInt(mob.EID),
-		)
-		m.Manager.ForEach(func(p *game.Player) {
-			p.WritePacket(removePkt)
-		})
-
-		m.mu.Lock()
-		delete(m.Mobs, mob.EID)
-		m.mu.Unlock()
-	}()
-
 	// Advancement check
 	if killer != nil && m.AdvMgr != nil {
 		m.AdvMgr.CheckMobKill(killer, mob.TypeID)
 	}
 
 	// Award XP to killer
+	// Spawn XP orbs at mob death location
 	if killer != nil {
-		if mob.Hostile {
-			AddExperience(killer, 5)
-		} else {
-			AddExperience(killer, int32(1+rand.Intn(3)))
+		m.spawnMobXPOrbs(mob)
+	}
+}
+
+// spawnMobXPOrbs spawns XP orb entities at a mob's death location.
+func (m *MobManager) spawnMobXPOrbs(mob *Mob) {
+	if m.XPOrbMgr == nil {
+		return
+	}
+	xp := mobXPAmount(mob)
+	if xp > 0 {
+		m.XPOrbMgr.SpawnXPOrbs(mob.X, mob.Y+0.5, mob.Z, xp)
+	}
+}
+
+// mobXPAmount returns the vanilla XP value for a mob type.
+func mobXPAmount(mob *Mob) int32 {
+	switch mob.TypeID {
+	case MobTypeBlaze:
+		return 10
+	case MobTypeSlime, MobTypeMagmaCube:
+		if mob.SlimeSize >= 4 {
+			return 4
 		}
+		if mob.SlimeSize >= 2 {
+			return 2
+		}
+		return 1
+	case MobTypeCow, MobTypePig, MobTypeSheep, MobTypeChicken:
+		return int32(1 + rand.Intn(3))
+	case MobTypeBat:
+		return 0
+	default:
+		if mob.Hostile {
+			return 5
+		}
+		return int32(1 + rand.Intn(3))
 	}
 }
 
 // dropMobLoot drops item entities for a killed mob.
 func (m *MobManager) dropMobLoot(mob *Mob) {
-	if m.ItemEntities == nil {
-		return
-	}
+	m.dropMobLootWithLooting(mob, 0)
+}
 
-	type drop struct {
-		name     string
-		minCount int32
-		maxCount int32
+// woolColorToItem returns the wool item name for a given dye color ID.
+func woolColorToItem(color int32) string {
+	switch color {
+	case 0:
+		return "white_wool"
+	case 1:
+		return "orange_wool"
+	case 2:
+		return "magenta_wool"
+	case 3:
+		return "light_blue_wool"
+	case 4:
+		return "yellow_wool"
+	case 5:
+		return "lime_wool"
+	case 6:
+		return "pink_wool"
+	case 7:
+		return "gray_wool"
+	case 8:
+		return "light_gray_wool"
+	case 9:
+		return "cyan_wool"
+	case 10:
+		return "purple_wool"
+	case 11:
+		return "blue_wool"
+	case 12:
+		return "brown_wool"
+	case 13:
+		return "green_wool"
+	case 14:
+		return "red_wool"
+	case 15:
+		return "black_wool"
+	default:
+		return "white_wool"
 	}
+}
 
-	var drops []drop
-	switch mob.TypeID {
-	case MobTypeCow:
-		drops = []drop{
-			{"beef", 1, 3},
-			{"leather", 0, 2},
-		}
-	case MobTypePig:
-		drops = []drop{
-			{"porkchop", 1, 3},
-		}
-	case MobTypeSheep:
-		drops = []drop{
-			{"white_wool", 1, 1},
-		}
-	case MobTypeChicken:
-		drops = []drop{
-			{"chicken", 1, 1},
-			{"feather", 0, 2},
-		}
-	case MobTypeZombie:
-		drops = []drop{
-			{"rotten_flesh", 0, 2},
-		}
-	case MobTypeSkeleton:
-		drops = []drop{
-			{"bone", 0, 2},
-			{"arrow", 0, 2},
-		}
-	case MobTypeVillager:
-		drops = []drop{
-			{"emerald", 0, 1},
-		}
-	case MobTypeEnderman:
-		if rand.Float64() < 0.5 {
-			drops = []drop{{"ender_pearl", 1, 1}}
-		}
-	case MobTypeWitch:
-		if rand.Float64() < 0.33 {
-			drops = append(drops, drop{"glass_bottle", 0, 2})
-		}
-		if rand.Float64() < 0.33 {
-			drops = append(drops, drop{"redstone", 0, 2})
-		}
-		if rand.Float64() < 0.33 {
-			drops = append(drops, drop{"glowstone_dust", 0, 2})
-		}
-	case MobTypeSlime:
-		if mob.SlimeSize <= 1 {
-			drops = []drop{{"slime_ball", 0, 2}}
-		}
-		// Medium and large slimes don't drop items (they split instead)
-	case MobTypePhantom:
-		if rand.Float64() < 0.5 {
-			drops = []drop{{"phantom_membrane", 1, 1}}
-		}
-	case MobTypeWolf:
-		// Wolves don't drop items
-	case MobTypeCat:
-		if rand.Float64() < 0.5 {
-			drops = []drop{{"string", 0, 2}}
-		}
-	case MobTypeHorse:
-		drops = []drop{{"leather", 0, 2}}
-	case MobTypeParrot:
-		drops = []drop{{"feather", 1, 2}}
-	}
-
-	for _, d := range drops {
-		count := d.minCount
-		if d.maxCount > d.minCount {
-			count += rand.Int31n(d.maxCount - d.minCount + 1)
-		}
-		if count <= 0 {
-			continue
-		}
-		itemID := itemIDByName(d.name)
-		if itemID <= 0 {
-			continue
-		}
-		m.ItemEntities.SpawnItem(m.Manager, mob.X, mob.Y+0.5, mob.Z, itemID, count, 10)
-	}
+// cookedMeats maps raw meat items to their cooked variants (for fire kills).
+var cookedMeats = map[string]string{
+	"beef":     "cooked_beef",
+	"porkchop": "cooked_porkchop",
+	"mutton":   "cooked_mutton",
+	"chicken":  "cooked_chicken",
+	"rabbit":   "cooked_rabbit",
+	"cod":      "cooked_cod",
+	"salmon":   "cooked_salmon",
 }
 
 // dropMobLootWithLooting drops loot with Looting enchantment bonus.
 // Each Looting level adds 0-1 extra items per drop.
 func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
-	if lootingLevel <= 0 {
-		m.dropMobLoot(mob)
-		return
-	}
 	if m.ItemEntities == nil {
 		return
 	}
@@ -1687,13 +2043,39 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 	case MobTypePig:
 		drops = []drop{{"porkchop", 1, 3}}
 	case MobTypeSheep:
-		drops = []drop{{"white_wool", 1, 1}}
+		// Drop colored wool based on sheep's wool color
+		woolName := woolColorToItem(mob.WoolColor)
+		drops = []drop{{woolName, 1, 1}, {"mutton", 1, 2}}
 	case MobTypeChicken:
 		drops = []drop{{"chicken", 1, 1}, {"feather", 0, 2}}
 	case MobTypeZombie:
 		drops = []drop{{"rotten_flesh", 0, 2}}
+		// Rare drops: 2.5% base + 1% per looting level
+		rareChance := 0.025 + float64(lootingLevel)*0.01
+		if rand.Float64() < rareChance {
+			switch rand.Intn(3) {
+			case 0:
+				drops = append(drops, drop{"iron_ingot", 1, 1})
+			case 1:
+				drops = append(drops, drop{"carrot", 1, 1})
+			case 2:
+				drops = append(drops, drop{"potato", 1, 1})
+			}
+		}
 	case MobTypeSkeleton:
 		drops = []drop{{"bone", 0, 2}, {"arrow", 0, 2}}
+		// 8.5% chance to drop a bow (+ 1% per looting level)
+		if rand.Float64() < 0.085+float64(lootingLevel)*0.01 {
+			drops = append(drops, drop{"bow", 1, 1})
+		}
+	case MobTypeSpider:
+		drops = []drop{{"string", 0, 2}}
+		// Spider eye only drops when killed by player (always true here)
+		if rand.Float64() < 0.33+float64(lootingLevel)*0.015 {
+			drops = append(drops, drop{"spider_eye", 1, 1})
+		}
+	case MobTypeCreeper:
+		drops = []drop{{"gunpowder", 0, 2}}
 	case MobTypeEnderman:
 		drops = []drop{{"ender_pearl", 0, 1}}
 	case MobTypeBlaze:
@@ -1705,35 +2087,126 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		}
 	case MobTypeGuardian:
 		drops = []drop{{"prismarine_shard", 0, 2}}
+		if rand.Float64() < 0.4 {
+			drops = append(drops, drop{"cod", 0, 1})
+		}
+	case MobTypeElderGuardian:
+		drops = []drop{{"prismarine_shard", 0, 2}, {"wet_sponge", 1, 1}}
+		if rand.Float64() < 0.5 {
+			drops = append(drops, drop{"cod", 0, 2})
+		}
 	case MobTypeDrowned:
 		drops = []drop{{"rotten_flesh", 0, 2}}
+		// Rare drop: copper ingot (5% + 2% per looting)
+		if rand.Float64() < 0.05+float64(lootingLevel)*0.02 {
+			drops = append(drops, drop{"copper_ingot", 1, 1})
+		}
 	case MobTypeHusk:
 		drops = []drop{{"rotten_flesh", 0, 2}}
+		// Same rare drops as zombie
+		rareChance := 0.025 + float64(lootingLevel)*0.01
+		if rand.Float64() < rareChance {
+			switch rand.Intn(3) {
+			case 0:
+				drops = append(drops, drop{"iron_ingot", 1, 1})
+			case 1:
+				drops = append(drops, drop{"carrot", 1, 1})
+			case 2:
+				drops = append(drops, drop{"potato", 1, 1})
+			}
+		}
 	case MobTypeStray:
 		drops = []drop{{"bone", 0, 2}, {"arrow", 0, 2}}
+		// Stray drops tipped arrows of slowness (50% + looting)
+		if rand.Float64() < 0.5+float64(lootingLevel)*0.05 {
+			drops = append(drops, drop{"tipped_arrow", 1, 1})
+		}
 	case MobTypeCaveSpider:
-		drops = []drop{{"string", 0, 2}, {"spider_eye", 0, 1}}
+		drops = []drop{{"string", 0, 2}}
+		if rand.Float64() < 0.33+float64(lootingLevel)*0.015 {
+			drops = append(drops, drop{"spider_eye", 1, 1})
+		}
 	case MobTypeMagmaCube:
 		drops = []drop{{"magma_cream", 0, 1}}
+	case MobTypeGhast:
+		drops = []drop{{"ghast_tear", 0, 1}, {"gunpowder", 0, 2}}
 	case MobTypePiglin:
 		drops = []drop{{"gold_ingot", 0, 1}}
+	case MobTypeZombifiedPiglin:
+		drops = []drop{{"rotten_flesh", 0, 1}, {"gold_nugget", 0, 1}}
+		// Rare drop: gold ingot (2.5% + looting)
+		if rand.Float64() < 0.025+float64(lootingLevel)*0.01 {
+			drops = append(drops, drop{"gold_ingot", 1, 1})
+		}
 	case MobTypeHoglin:
-		drops = []drop{{"porkchop", 2, 4}, {"leather", 0, 2}}
+		drops = []drop{{"porkchop", 2, 4}, {"leather", 1, 3}}
+	case MobTypeStrider:
+		drops = []drop{{"string", 2, 5}}
 	case MobTypePillager:
 		drops = []drop{{"arrow", 0, 2}}
+		// Rare: crossbow (8.5% + looting)
+		if rand.Float64() < 0.085+float64(lootingLevel)*0.01 {
+			drops = append(drops, drop{"crossbow", 1, 1})
+		}
 	case MobTypeVindicator:
 		drops = []drop{{"emerald", 0, 1}}
+		// Rare: iron axe (8.5% + looting)
+		if rand.Float64() < 0.085+float64(lootingLevel)*0.01 {
+			drops = append(drops, drop{"iron_axe", 1, 1})
+		}
 	case MobTypeEvoker:
-		drops = []drop{{"totem_of_undying", 1, 1}}
+		drops = []drop{{"totem_of_undying", 1, 1}, {"emerald", 0, 1}}
+	case MobTypeRavager:
+		drops = []drop{{"saddle", 1, 1}}
+	case MobTypeShulker:
+		// 50% chance + 6.25% per looting level
+		if rand.Float64() < 0.5+float64(lootingLevel)*0.0625 {
+			drops = []drop{{"shulker_shell", 1, 1}}
+		}
 	case MobTypeRabbit:
 		drops = []drop{{"rabbit", 0, 1}, {"rabbit_hide", 0, 1}}
+		// Rare: rabbit's foot (10% + looting)
+		if rand.Float64() < 0.1+float64(lootingLevel)*0.03 {
+			drops = append(drops, drop{"rabbit_foot", 1, 1})
+		}
 	case MobTypeIronGolem:
 		drops = []drop{{"iron_ingot", 3, 5}, {"poppy", 0, 2}}
 	case MobTypeSnowGolem:
 		drops = []drop{{"snowball", 0, 15}}
-	default:
-		m.dropMobLoot(mob)
-		return
+	case MobTypeVillager:
+		// Villagers don't drop items in vanilla
+	case MobTypeWitch:
+		// Witch drops 1-3 of these categories randomly
+		witchItems := []drop{
+			{"glass_bottle", 0, 2},
+			{"redstone", 0, 2},
+			{"glowstone_dust", 0, 2},
+			{"gunpowder", 0, 2},
+			{"sugar", 0, 2},
+			{"spider_eye", 0, 2},
+			{"stick", 0, 2},
+		}
+		count := 1 + rand.Intn(3) // drop 1-3 categories
+		for i := 0; i < count && i < len(witchItems); i++ {
+			idx := rand.Intn(len(witchItems))
+			drops = append(drops, witchItems[idx])
+		}
+	case MobTypeSlime:
+		if mob.SlimeSize <= 1 {
+			drops = []drop{{"slime_ball", 0, 2}}
+		}
+	case MobTypePhantom:
+		drops = []drop{{"phantom_membrane", 0, 1}}
+	case MobTypeCat:
+		if rand.Float64() < 0.5 {
+			drops = []drop{{"string", 0, 2}}
+		}
+	case MobTypeHorse:
+		drops = []drop{{"leather", 0, 2}}
+	case MobTypeParrot:
+		drops = []drop{{"feather", 1, 2}}
+	case MobTypeBee:
+		// Bees drop nothing in vanilla
 	}
 
 	for _, d := range drops {
@@ -1748,7 +2221,14 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		if count <= 0 {
 			continue
 		}
-		itemID := itemIDByName(d.name)
+		// Cook meat if mob died while on fire
+		itemName := d.name
+		if mob.FireTicks > 0 {
+			if cooked, ok := cookedMeats[itemName]; ok {
+				itemName = cooked
+			}
+		}
+		itemID := itemIDByName(itemName)
 		if itemID <= 0 {
 			continue
 		}
@@ -1756,31 +2236,46 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 	}
 }
 
-// despawnFarMobs removes mobs too far from any player.
+// despawnFarMobs removes hostile mobs using vanilla-like tiered despawn rules.
+// Passive mobs never naturally despawn. Named and tamed mobs never despawn.
 func (m *MobManager) despawnFarMobs() {
 	var toRemove []int32
 	for eid, mob := range m.Mobs {
-		if mob.Health <= 0 {
+		if mob.Health <= 0 || mob.DeathTick > 0 {
 			continue
 		}
 		// Never despawn tamed mobs
 		if mob.TameData != nil && mob.TameData.Tamed {
 			continue
 		}
-		nearPlayer := false
+		// Never despawn named mobs (nametag)
+		if mob.CustomName != "" {
+			continue
+		}
+		// Passive mobs never naturally despawn (vanilla behavior)
+		if !mob.Hostile {
+			continue
+		}
+
+		// Find squared distance to nearest player
+		minDistSq := math.MaxFloat64
 		m.Manager.ForEach(func(p *game.Player) {
-			if nearPlayer {
-				return
-			}
-			px, py, pz := p.Position()
+			px, _, pz := p.Position()
 			dx := px - mob.X
-			dy := py - mob.Y
 			dz := pz - mob.Z
-			if dx*dx+dy*dy+dz*dz < 128*128 {
-				nearPlayer = true
+			distSq := dx*dx + dz*dz
+			if distSq < minDistSq {
+				minDistSq = distSq
 			}
 		})
-		if !nearPlayer {
+
+		// Tiered despawn:
+		// > 128 blocks: instant despawn
+		// 32-128 blocks: ~22% chance per check (approximates vanilla 1/800 per tick over 200 ticks)
+		// < 32 blocks: never despawn
+		if minDistSq > 128*128 {
+			toRemove = append(toRemove, eid)
+		} else if minDistSq > 32*32 && rand.Float64() < 0.22 {
 			toRemove = append(toRemove, eid)
 		}
 	}
@@ -1874,9 +2369,34 @@ func (m *MobManager) broadcastSpawn(mob *Mob) {
 		})
 	}
 
+	// Send baby metadata (AgeableMob index 16, Boolean)
+	if mob.Baby && !isSlimeType(mob.TypeID) {
+		var w MetadataWriter
+		w.WriteBoolean(16, true) // isBaby = true
+		data := w.Bytes()
+		m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+			SendEntityMetadata(p, mob.EID, data)
+		})
+	}
+
 	// Send tameable metadata
 	if mob.TameData != nil && mob.TameData.Tamed {
 		m.broadcastTameableMetadata(mob)
+	}
+
+	// Send custom name metadata
+	if mob.CustomName != "" {
+		m.broadcastCustomName(mob)
+	}
+
+	// Send villager data metadata (profession, type, level)
+	if mob.TypeID == MobTypeVillager && mob.VillagerData != nil {
+		var w MetadataWriter
+		w.WriteVillagerData(18, 0, villagerProfessionID(mob.VillagerData.Profession), 1)
+		data := w.Bytes()
+		m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+			SendEntityMetadata(p, mob.EID, data)
+		})
 	}
 }
 
@@ -1916,6 +2436,18 @@ func (m *MobManager) broadcastMobMove(mob *Mob) {
 	mob.PrevY = mob.Y
 	mob.PrevZ = mob.Z
 	mob.PrevYaw = mob.Yaw
+}
+
+// broadcastArmSwing broadcasts an arm swing animation for a mob's melee attack.
+func (m *MobManager) broadcastArmSwing(mob *Mob) {
+	pkt := pk.Marshal(
+		packetid.ClientboundAnimate,
+		pk.VarInt(mob.EID),
+		pk.UnsignedByte(0), // 0 = swing main arm
+	)
+	m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
 }
 
 // broadcastMobTeleport sends an absolute teleport for a mob.
@@ -1996,6 +2528,20 @@ func (m *MobManager) SendExistingMobs(player *game.Player) {
 			var w MetadataWriter
 			w.writeIndex(16, metaSerializerInt)
 			writeVarIntBuf(&w.buf, mob.SlimeSize)
+			SendEntityMetadata(player, mob.EID, w.Bytes())
+		}
+
+		// Send baby metadata
+		if mob.Baby && !isSlimeType(mob.TypeID) {
+			var w MetadataWriter
+			w.WriteBoolean(16, true)
+			SendEntityMetadata(player, mob.EID, w.Bytes())
+		}
+
+		// Send villager data metadata
+		if mob.TypeID == MobTypeVillager && mob.VillagerData != nil {
+			var w MetadataWriter
+			w.WriteVillagerData(18, 0, villagerProfessionID(mob.VillagerData.Profession), 1)
 			SendEntityMetadata(player, mob.EID, w.Bytes())
 		}
 	}
@@ -2083,7 +2629,8 @@ func (m *MobManager) tickEnderman(mob *Mob, tick int64) {
 		if totalDist <= 1.5 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
 			mob.AttackCooldown = 30
 			mob.Target.LastDamageMessage = mob.Target.Name + " was slain by Enderman"
-			m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.AttackDamageTypeID)
+			m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.MobDamageTypeID)
+			m.broadcastArmSwing(mob)
 		}
 
 		m.broadcastMobMove(mob)
@@ -2206,7 +2753,7 @@ func (m *MobManager) tickWitch(mob *Mob, tick int64) {
 	if nearestDist <= 10.0 && mob.ShootCooldown <= 0 {
 		mob.ShootCooldown = 60 // 3 seconds
 		nearest.LastDamageMessage = nearest.Name + " was killed by Witch"
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 		BroadcastSound(m.Manager, SoundWitchAmbient, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
 	}
 }
@@ -2264,7 +2811,7 @@ func (m *MobManager) tickSlime(mob *Mob, tick int64) {
 		if nearestDist <= 1.5 && mob.AttackCooldown <= 0 && mob.Damage > 0 {
 			mob.AttackCooldown = 30
 			nearest.LastDamageMessage = nearest.Name + " was squished by Slime"
-			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 		}
 	} else {
 		mob.Target = nil
@@ -2340,15 +2887,6 @@ func (m *MobManager) trySpawnSlime() {
 	if rand.Float64() > 0.01 {
 		return
 	}
-	hostileCount := 0
-	for _, mob := range m.Mobs {
-		if mob.Hostile {
-			hostileCount++
-		}
-	}
-	if hostileCount >= m.maxMobs {
-		return
-	}
 
 	var players []*game.Player
 	m.Manager.ForEach(func(p *game.Player) {
@@ -2362,6 +2900,11 @@ func (m *MobManager) trySpawnSlime() {
 
 	player := players[rand.Intn(len(players))]
 	px, _, pz := player.Position()
+
+	// Per-player cap check
+	if m.countMobsNear(px, pz, 128*128, true) >= hostileCapPerPlayer {
+		return
+	}
 
 	angle := rand.Float64() * 2 * math.Pi
 	dist := 24 + rand.Float64()*24
@@ -2496,7 +3039,7 @@ func (m *MobManager) tickPhantom(mob *Mob, tick int64) {
 		if dist <= 2.0 && mob.AttackCooldown <= 0 {
 			mob.AttackCooldown = 20
 			nearest.LastDamageMessage = nearest.Name + " was slain by Phantom"
-			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 			BroadcastSound(m.Manager, SoundPhantomBite, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
 		}
 
@@ -2517,20 +3060,12 @@ func (m *MobManager) trySpawnPhantom(tick int64) {
 	if !m.TimeMgr.IsNight() {
 		return
 	}
-	hostileCount := 0
-	for _, mob := range m.Mobs {
-		if mob.Hostile {
-			hostileCount++
-		}
-	}
-	if hostileCount >= m.maxMobs {
-		return
-	}
 
 	m.Manager.ForEach(func(p *game.Player) {
 		if p.Dead || p.GameMode != 0 {
 			return
 		}
+
 		// Check if player hasn't slept for 3+ in-game days (72000 ticks)
 		if tick-p.LastSleepTick < 72000 {
 			return
@@ -2541,6 +3076,11 @@ func (m *MobManager) trySpawnPhantom(tick int64) {
 		}
 
 		px, py, pz := p.Position()
+
+		// Per-player cap check
+		if m.countMobsNear(px, pz, 128*128, true) >= hostileCapPerPlayer {
+			return
+		}
 		spawnY := py + 20 + rand.Float64()*20
 		spawnAngle := rand.Float64() * 2 * math.Pi
 		spawnDist := 5 + rand.Float64()*10

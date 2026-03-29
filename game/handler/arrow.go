@@ -2,6 +2,7 @@ package handler
 
 import (
 	"math"
+	"math/rand"
 	"sync"
 
 	"github.com/Tnze/go-mc/data/packetid"
@@ -9,6 +10,17 @@ import (
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/google/uuid"
 )
+
+// musicDiscs is the list of music disc item names for skeleton-kills-creeper drops.
+var musicDiscs = []string{
+	"music_disc_13", "music_disc_cat", "music_disc_blocks", "music_disc_chirp",
+	"music_disc_far", "music_disc_mall", "music_disc_mellohi", "music_disc_stal",
+	"music_disc_strad", "music_disc_ward", "music_disc_11", "music_disc_wait",
+}
+
+func randomMusicDisc() string {
+	return musicDiscs[rand.Intn(len(musicDiscs))]
+}
 
 // Arrow entity type ID for AddEntity (26.1-snapshot-2 registry).
 const arrowEntityType int32 = 6
@@ -22,15 +34,19 @@ type Arrow struct {
 	Damage               float32
 	LifeTick             int64
 	Stuck                bool
+	PunchLevel           int32 // Punch enchantment: extra knockback on hit
+	OnFire               bool  // Flame enchantment: sets target on fire
 }
 
 // ArrowManager manages arrow projectiles.
 type ArrowManager struct {
-	Manager  *game.PlayerManager
-	Survival *SurvivalHandler
-	World    game.World
-	mu       sync.Mutex
-	Arrows   map[int32]*Arrow
+	Manager      *game.PlayerManager
+	Survival     *SurvivalHandler
+	World        game.World
+	MobMgr       *MobManager
+	ItemEntities *ItemEntityManager
+	mu           sync.Mutex
+	Arrows       map[int32]*Arrow
 }
 
 // NewArrowManager creates a new ArrowManager.
@@ -98,7 +114,7 @@ func (am *ArrowManager) SpawnArrow(shooterEID int32, sx, sy, sz, tx, ty, tz floa
 }
 
 // SpawnPlayerArrow creates and broadcasts an arrow shot by a player with a given direction and damage.
-func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64) {
+func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, dirZ, damage float64, punchLevel int32, onFire bool) {
 	speed := 3.0
 	velX := dirX * speed
 	velY := dirY * speed
@@ -115,6 +131,8 @@ func (am *ArrowManager) SpawnPlayerArrow(shooterEID int32, x, y, z, dirX, dirY, 
 		VelY:       velY,
 		VelZ:       velZ,
 		Damage:     float32(damage),
+		PunchLevel: punchLevel,
+		OnFire:     onFire,
 	}
 
 	am.mu.Lock()
@@ -247,7 +265,36 @@ func (am *ArrowManager) Tick(tick int64) {
 					}
 				}
 				p.LastDamageMessage = p.Name + " was shot by " + shooterName
-				am.Survival.ApplyDamage(am.Manager, p, damage, am.Survival.AttackDamageTypeID)
+				dmgType := am.Survival.AttackDamageTypeID
+				if shooter == nil {
+					dmgType = am.Survival.MobDamageTypeID // mob arrows scale with difficulty
+				}
+				am.Survival.ApplyDamage(am.Manager, p, damage, dmgType)
+
+				// Punch enchantment: extra knockback away from arrow direction
+				if arrow.PunchLevel > 0 {
+					kbStr := 0.6 * float64(arrow.PunchLevel)
+					arrowSpeed := math.Sqrt(arrow.VelX*arrow.VelX + arrow.VelZ*arrow.VelZ)
+					if arrowSpeed > 0.001 {
+						kbX := arrow.VelX / arrowSpeed * kbStr
+						kbZ := arrow.VelZ / arrowSpeed * kbStr
+						pkt := pk.Marshal(
+							packetid.ClientboundSetEntityMotion,
+							pk.VarInt(p.EID),
+							pk.Short(int16(kbX*8000)),
+							pk.Short(4000), // upward boost
+							pk.Short(int16(kbZ*8000)),
+						)
+						p.WritePacket(pkt)
+					}
+				}
+
+				// Flame enchantment: set target on fire (4 seconds = 80 ticks)
+				if arrow.OnFire && p.FireTicks <= 0 {
+					p.FireTicks = 80
+					broadcastFireMetadata(am.Manager, p.EID, true)
+				}
+
 				hitPlayer = true
 			}
 		})
@@ -257,6 +304,36 @@ func (am *ArrowManager) Tick(tick int64) {
 		}
 		if deflected {
 			continue // arrow was deflected, keep it alive for next tick
+		}
+
+		// Check mob collision
+		if am.MobMgr != nil {
+			mobEID := am.MobMgr.FindMobNear(arrow.X, arrow.Y, arrow.Z, 1.0, arrow.ShooterEID)
+			if mobEID >= 0 {
+				damage := arrow.Damage
+				if damage < 2 {
+					damage = 2
+				}
+				// Mob arrows cap at 5 damage
+				shooter := am.Manager.GetByEID(arrow.ShooterEID)
+				if shooter == nil && damage > 5 {
+					damage = 5
+				}
+				killed, mobTypeID := am.MobMgr.DamageMobByArrow(arrow.ShooterEID, mobEID, damage)
+				// Music disc drop: skeleton arrow kills creeper
+				if killed && mobTypeID == MobTypeCreeper && am.MobMgr.IsMobOfType(arrow.ShooterEID, MobTypeSkeleton) {
+					if am.ItemEntities != nil {
+						mx, my, mz := am.MobMgr.GetMobPos(mobEID)
+						discName := randomMusicDisc()
+						discID := itemIDByName(discName)
+						if discID > 0 {
+							am.ItemEntities.SpawnItem(am.Manager, mx, my+0.5, mz, discID, 1, 10)
+						}
+					}
+				}
+				toRemove = append(toRemove, eid)
+				continue
+			}
 		}
 
 		// Broadcast position update

@@ -36,6 +36,29 @@ const (
 	EffectSlowFalling    int32 = 28
 )
 
+// effectNameToID maps effect names to IDs for /effect command.
+var effectNameToID = map[string]int32{
+	"speed": EffectSpeed, "slowness": EffectSlowness, "haste": EffectHaste,
+	"mining_fatigue": EffectMiningFatigue, "strength": EffectStrength,
+	"instant_health": EffectInstantHealth, "instant_damage": EffectInstantDamage,
+	"jump_boost": EffectJumpBoost, "nausea": EffectNausea,
+	"regeneration": EffectRegeneration, "resistance": EffectResistance,
+	"fire_resistance": EffectFireResistance, "water_breathing": EffectWaterBreathing,
+	"invisibility": EffectInvisibility, "blindness": EffectBlindness,
+	"night_vision": EffectNightVision, "hunger": EffectHunger,
+	"weakness": EffectWeakness, "poison": EffectPoison, "wither": EffectWither,
+	"absorption": EffectAbsorption, "glowing": EffectGlowing,
+	"levitation": EffectLevitation, "slow_falling": EffectSlowFalling,
+}
+
+// EffectIDByName returns the effect ID for a name, or -1 if unknown.
+func EffectIDByName(name string) int32 {
+	if id, ok := effectNameToID[name]; ok {
+		return id
+	}
+	return -1
+}
+
 // EffectManager manages status effects for all players.
 type EffectManager struct {
 	Manager  *game.PlayerManager

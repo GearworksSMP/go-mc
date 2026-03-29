@@ -11,12 +11,19 @@ import (
 	"github.com/google/uuid"
 )
 
+// LodestoneTarget stores the position a lodestone compass points at.
+type LodestoneTarget struct {
+	Dimension string // e.g. "minecraft:overworld"
+	X, Y, Z   int
+}
+
 // Slot261 is a 26.1 wire-format inventory slot.
 type Slot261 struct {
 	Count         int32
 	ItemID        int32
-	Durability    int32 // remaining durability (0 = no durability info)
-	MaxDurability int32 // max durability (0 = not a tool)
+	Durability    int32            // remaining durability (0 = no durability info)
+	MaxDurability int32            // max durability (0 = not a tool)
+	Lodestone     *LodestoneTarget // non-nil if this is a lodestone compass
 }
 
 // WriteTo implements pk.FieldEncoder for the 26.1 slot format:
@@ -33,26 +40,64 @@ func (s Slot261) WriteTo(w io.Writer) (n int64, err error) {
 		return
 	}
 
-	// Send damage component if the item has durability and has taken damage
+	// Count how many components to add
 	damageUsed := s.MaxDurability - s.Durability
-	if s.MaxDurability > 0 && damageUsed > 0 {
-		nn, err = pk.VarInt(1).WriteTo(w) // 1 added component
-		n += nn
-		if err != nil {
-			return
-		}
+	hasDamage := s.MaxDurability > 0 && damageUsed > 0
+	hasLodestone := s.Lodestone != nil
+
+	var compCount int32
+	if hasDamage {
+		compCount++
+	}
+	if hasLodestone {
+		compCount++
+	}
+
+	nn, err = pk.VarInt(compCount).WriteTo(w)
+	n += nn
+	if err != nil {
+		return
+	}
+
+	if hasDamage {
 		nn, err = pk.VarInt(3).WriteTo(w) // minecraft:damage = index 3
 		n += nn
 		if err != nil {
 			return
 		}
-		nn, err = pk.VarInt(damageUsed).WriteTo(w) // damage value
+		nn, err = pk.VarInt(damageUsed).WriteTo(w)
 		n += nn
 		if err != nil {
 			return
 		}
-	} else {
-		nn, err = pk.VarInt(0).WriteTo(w) // no added components
+	}
+
+	if hasLodestone {
+		nn, err = pk.VarInt(44).WriteTo(w) // minecraft:lodestone_tracker = index 44
+		n += nn
+		if err != nil {
+			return
+		}
+		// HasGlobalPosition = true
+		nn, err = pk.Boolean(true).WriteTo(w)
+		n += nn
+		if err != nil {
+			return
+		}
+		// Dimension identifier
+		nn, err = pk.Identifier(s.Lodestone.Dimension).WriteTo(w)
+		n += nn
+		if err != nil {
+			return
+		}
+		// Position
+		nn, err = pk.Position{X: s.Lodestone.X, Y: s.Lodestone.Y, Z: s.Lodestone.Z}.WriteTo(w)
+		n += nn
+		if err != nil {
+			return
+		}
+		// Tracked = true
+		nn, err = pk.Boolean(true).WriteTo(w)
 		n += nn
 		if err != nil {
 			return
@@ -95,10 +140,43 @@ func (s *Slot261) ReadFrom(r io.Reader) (n int64, err error) {
 		if err != nil {
 			return
 		}
-		// For minecraft:damage (type 3), read VarInt value
-		if typeID == 3 {
+		switch typeID {
+		case 3: // minecraft:damage — VarInt value
 			var val pk.VarInt
 			nn, err = val.ReadFrom(r)
+			n += nn
+			if err != nil {
+				return
+			}
+		case 44: // minecraft:lodestone_tracker
+			var hasPos pk.Boolean
+			nn, err = hasPos.ReadFrom(r)
+			n += nn
+			if err != nil {
+				return
+			}
+			if hasPos {
+				var dim pk.Identifier
+				var pos pk.Position
+				nn, err = dim.ReadFrom(r)
+				n += nn
+				if err != nil {
+					return
+				}
+				nn, err = pos.ReadFrom(r)
+				n += nn
+				if err != nil {
+					return
+				}
+				s.Lodestone = &LodestoneTarget{
+					Dimension: string(dim),
+					X:         pos.X,
+					Y:         pos.Y,
+					Z:         pos.Z,
+				}
+			}
+			var tracked pk.Boolean
+			nn, err = tracked.ReadFrom(r)
 			n += nn
 			if err != nil {
 				return
@@ -149,6 +227,9 @@ type ItemStack struct {
 	Durability    int32            // remaining durability (tools only)
 	MaxDurability int32            // max durability (tools only; 0 = not a tool)
 	Enchantments  map[string]int32 `json:"enchantments,omitempty"` // server-side only
+	DisplayName   string           `json:"display_name,omitempty"` // custom name (from anvil rename)
+	PotionType    string           `json:"potion_type,omitempty"`  // e.g. "healing", "strength"
+	Lodestone     *LodestoneTarget `json:"lodestone,omitempty"`    // lodestone compass target
 }
 
 // ToSlot converts an ItemStack to a Slot261 for wire encoding.
@@ -161,6 +242,7 @@ func (s ItemStack) ToSlot() Slot261 {
 		ItemID:        s.ID,
 		Durability:    s.Durability,
 		MaxDurability: s.MaxDurability,
+		Lodestone:     s.Lodestone,
 	}
 }
 
@@ -224,10 +306,12 @@ type SessionEvents interface {
 
 // Player represents a connected player with their state.
 type Player struct {
-	Name       string
-	UUID       uuid.UUID
-	EID        int32 // entity ID
-	Properties []user.Property
+	Name           string
+	UUID           uuid.UUID
+	EID            int32 // entity ID
+	Properties     []user.Property
+	ProfileKey     *user.PublicKey // Mojang profile public key (online mode)
+	ChatSessionID  uuid.UUID      // random session ID for chat signing
 
 	mu   sync.Mutex
 	X, Y, Z    float64
@@ -266,9 +350,18 @@ type Player struct {
 	// Fall damage tracking
 	FallStartY float64
 
+	// Fire ticks remaining (0 = not on fire). Decrements each tick, deals 1 damage every 20 ticks.
+	FireTicks int32
+
+	// Drowning — air supply remaining. Max 300 (15s). When <= 0, take 2 drowning damage per second.
+	AirTicks int32
+
 	// Entity state
 	Sneaking  bool
 	Sprinting bool
+	Swimming  bool
+	InWater   bool // true when player's feet are in water
+	OnLadder  bool // true when player is on a ladder/vine (cancels fall damage)
 	SkinParts uint8
 
 	// Block breaking state (survival)
@@ -278,8 +371,9 @@ type Player struct {
 
 	// Survival inventory
 	Inventory  Inventory
-	CursorItem ItemStack // item held on cursor during inventory interaction
-	StateID    int32     // container state ID, incremented per server update
+	EnderItems [27]ItemStack // per-player ender chest storage
+	CursorItem ItemStack     // item held on cursor during inventory interaction
+	StateID    int32         // container state ID, incremented per server update
 
 	// Eating animation state
 	EatingStart time.Time // zero = not eating
@@ -331,6 +425,7 @@ type Player struct {
 	OpenBrewingStandPos [3]int        // world position of open brewing stand
 	OpenHopperPos       [3]int        // world position of open hopper
 	OpenDispenserPos    [3]int        // world position of open dispenser/dropper
+	OpenBeaconPos       [3]int        // world position of open beacon
 	EnchantSession *EnchantSessionData // active enchanting table session
 	AnvilSession   *AnvilSessionData   // active anvil UI session
 
@@ -347,6 +442,14 @@ type Player struct {
 
 	// Chat message index (per-player counter for ClientboundPlayerChat, 1.21.5+)
 	ChatIndex int32
+
+	// Movement validation (anti-cheat)
+	TeleportPending    bool    // skip validation after server-initiated teleport
+	ViolationCount     int     // consecutive movement violations
+	LastValidX         float64 // last accepted position
+	LastValidY         float64
+	LastValidZ         float64
+	AirTicks_AC        int64   // ticks spent airborne (anti-cheat tracker, separate from AirTicks)
 
 	// SessionEvents receives tracing events (nil when tracing is disabled).
 	SessionEvents SessionEvents
@@ -367,6 +470,7 @@ func NewPlayer(name string, id uuid.UUID, eid int32, conn *net.Conn) *Player {
 		Food:           20,
 		Saturation:     5,
 		FallStartY:     -999,
+		AirTicks:       300,
 		SkinParts:      0x7F,
 		Dimension:      "minecraft:overworld",
 	}

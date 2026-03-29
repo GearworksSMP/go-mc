@@ -214,7 +214,7 @@ func (m *MobManager) tickGuardian(mob *Mob, tick int64) {
 			damage = 8
 		}
 		nearest.LastDamageMessage = nearest.Name + " was zapped by Guardian"
-		m.Survival.ApplyDamage(m.Manager, nearest, damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, damage, m.Survival.MobDamageTypeID)
 	}
 }
 
@@ -318,7 +318,8 @@ func (m *MobManager) tickPiglin(mob *Mob, tick int64) {
 
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	m.broadcastMobMove(mob)
@@ -378,7 +379,8 @@ func (m *MobManager) tickZombifiedPiglin(mob *Mob, tick int64) {
 	targetDist := math.Sqrt(sqDist3(px-mob.X, mob.Target.Y-mob.Y, pz-mob.Z))
 	if targetDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
-		m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, mob.Target, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	m.broadcastMobMove(mob)
@@ -482,7 +484,7 @@ func (m *MobManager) tickMagmaCube(mob *Mob, tick int64) {
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
 		nearest.LastDamageMessage = nearest.Name + " was squished by Magma Cube"
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 	}
 
 	m.broadcastMobMove(mob)
@@ -594,7 +596,8 @@ func (m *MobManager) tickVindicator(mob *Mob, tick int64) {
 	// Heavy axe attack: 13 damage on hard
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	m.broadcastMobMove(mob)
@@ -665,7 +668,7 @@ func (m *MobManager) tickEvoker(mob *Mob, tick int64) {
 			pdz := pz - fz
 			if pdx*pdx+pdz*pdz < 1.5 {
 				nearest.LastDamageMessage = nearest.Name + " was killed by Evoker Fangs"
-				m.Survival.ApplyDamage(m.Manager, nearest, 6, m.Survival.AttackDamageTypeID)
+				m.Survival.ApplyDamage(m.Manager, nearest, 6, m.Survival.MobDamageTypeID)
 				break
 			}
 		}
@@ -721,7 +724,8 @@ func (m *MobManager) tickVex(mob *Mob, tick int64) {
 	// Melee attack
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	m.broadcastMobMove(mob)
@@ -766,7 +770,8 @@ func (m *MobManager) tickRavager(mob *Mob, tick int64) {
 	if nearestDist <= 2.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 30
 		nearest.LastDamageMessage = nearest.Name + " was trampled by Ravager"
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	m.broadcastMobMove(mob)
@@ -810,7 +815,7 @@ func (m *MobManager) tickHoglin(mob *Mob, tick int64) {
 	// Hoglin attacks with knockup
 	if nearestDist <= 2.0 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 	}
 
 	m.broadcastMobMove(mob)
@@ -855,7 +860,8 @@ func (m *MobManager) tickWitherSkeleton(mob *Mob, tick int64) {
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 20
 		nearest.LastDamageMessage = nearest.Name + " withered away"
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 		// Apply wither effect (10 seconds of damage over time)
 		if m.Survival.EffectMgr != nil {
 			m.Survival.EffectMgr.ApplyEffect(nearest, 20, 0, 200, false) // wither = 20
@@ -908,7 +914,8 @@ func (m *MobManager) tickDrowned(mob *Mob, tick int64) {
 	// Melee attack when close
 	if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 		mob.AttackCooldown = 30
-		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+		m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+		m.broadcastArmSwing(mob)
 	}
 
 	// Some drowned throw tridents (30% chance to be a trident drowned)
@@ -935,13 +942,14 @@ func (m *MobManager) tickHusk(mob *Mob, tick int64) {
 
 	var nearest *game.Player
 	nearestDist := 32.0
+	mobEyeY := mob.Y + 1.5
 	m.Manager.ForEach(func(p *game.Player) {
 		if p.Dead || p.GameMode != 0 {
 			return
 		}
 		ppx, ppy, ppz := p.Position()
 		d := math.Sqrt(sqDist3(ppx-mob.X, ppy-mob.Y, ppz-mob.Z))
-		if d < nearestDist {
+		if d < nearestDist && m.hasLineOfSight(mob.X, mobEyeY, mob.Z, ppx, ppy+1.62, ppz) {
 			nearestDist = d
 			nearest = p
 		}
@@ -960,7 +968,8 @@ func (m *MobManager) tickHusk(mob *Mob, tick int64) {
 
 		if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 			mob.AttackCooldown = 30
-			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+			m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
+			m.broadcastArmSwing(mob)
 			// Apply hunger effect
 			if m.Survival.EffectMgr != nil {
 				m.Survival.EffectMgr.ApplyEffect(nearest, 17, 0, 140, false) // hunger = 17, 7 seconds
@@ -1020,7 +1029,7 @@ func (m *MobManager) tickBee(mob *Mob, tick int64) {
 
 			if nearestDist <= 1.5 && mob.AttackCooldown <= 0 {
 				mob.AttackCooldown = 20
-				m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.AttackDamageTypeID)
+				m.Survival.ApplyDamage(m.Manager, nearest, mob.Damage, m.Survival.MobDamageTypeID)
 				// Bee dies after stinging (like real bee)
 				mob.Health = 0
 				m.killMob(mob, nil)

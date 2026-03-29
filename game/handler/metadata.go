@@ -19,8 +19,9 @@ const (
 	metaSerializerInt     = 1
 	metaSerializerFloat   = 3
 	metaSerializerOptChat = 6
-	metaSerializerBoolean = 8
-	metaSerializerPose    = 20
+	metaSerializerBoolean     = 8
+	metaSerializerPose        = 20
+	metaSerializerVillagerData = 22
 )
 
 // MetadataWriter builds entity metadata entries.
@@ -74,6 +75,14 @@ func (w *MetadataWriter) WriteOptChat(index uint8, msg chat.Message) {
 func (w *MetadataWriter) WritePose(index uint8, pose int32) {
 	w.writeIndex(index, metaSerializerPose)
 	writeVarIntBuf(&w.buf, pose)
+}
+
+// WriteVillagerData writes a VILLAGER_DATA metadata entry (type, profession, level as VarInts).
+func (w *MetadataWriter) WriteVillagerData(index uint8, villagerType, profession, level int32) {
+	w.writeIndex(index, metaSerializerVillagerData)
+	writeVarIntBuf(&w.buf, villagerType)
+	writeVarIntBuf(&w.buf, profession)
+	writeVarIntBuf(&w.buf, level)
 }
 
 // Bytes returns the metadata bytes with the 0xFF terminator appended.

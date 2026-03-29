@@ -25,10 +25,21 @@ type ChunkStore interface {
 
 // ItemSlot represents a single inventory slot for persistence.
 type ItemSlot struct {
-	ID            int32 `json:"id"`
-	Count         int32 `json:"count"`
-	Durability    int32 `json:"durability,omitempty"`
-	MaxDurability int32 `json:"max_durability,omitempty"`
+	ID            int32            `json:"id"`
+	Count         int32            `json:"count"`
+	Durability    int32            `json:"durability,omitempty"`
+	MaxDurability int32            `json:"max_durability,omitempty"`
+	Enchantments  map[string]int32 `json:"enchantments,omitempty"`
+	DisplayName   string           `json:"display_name,omitempty"`
+	PotionType    string           `json:"potion_type,omitempty"`
+}
+
+// EffectData represents an active status effect for persistence.
+type EffectData struct {
+	ID       int32 `json:"id"`
+	Level    int32 `json:"level"`
+	Duration int32 `json:"duration"`
+	Ambient  bool  `json:"ambient,omitempty"`
 }
 
 // PlayerState holds the persistent state of a player.
@@ -43,7 +54,10 @@ type PlayerState struct {
 	Health          float32
 	Food            int32
 	Saturation      float32
+	Exhaustion      float32
 	Inventory       []ItemSlot
+	EnderChest      []ItemSlot
+	Effects         []EffectData
 	Experience      float32
 	ExperienceLevel int32
 	ExperienceTotal int32

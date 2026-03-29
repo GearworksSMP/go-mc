@@ -45,6 +45,12 @@ type PowerSource struct {
 	PlateType string // e.g. "stone_pressure_plate", "oak_pressure_plate"
 }
 
+// observerPulse tracks a pending observer output pulse.
+type observerPulse struct {
+	X, Y, Z    int
+	TicksLeft  int
+}
+
 // RedstoneManager handles basic redstone mechanics: levers, buttons, pressure plates,
 // and their effects on iron doors, iron trapdoors, and redstone lamps.
 type RedstoneManager struct {
@@ -57,15 +63,19 @@ type RedstoneManager struct {
 	TNTMgr       *TNTManager
 	mu           sync.Mutex
 	sources      map[[3]int]*PowerSource
+	TimeMgr      *TimeManager
+	observerPulses []observerPulse
+	daylightDetectors map[[3]int]bool // tracked daylight detector positions
 }
 
 // NewRedstoneManager creates a new RedstoneManager.
 func NewRedstoneManager(mgr *game.PlayerManager, world game.World, logger *log.Logger) *RedstoneManager {
 	return &RedstoneManager{
-		Manager: mgr,
-		World:   world,
-		Logger:  logger,
-		sources: make(map[[3]int]*PowerSource),
+		Manager:           mgr,
+		World:             world,
+		Logger:            logger,
+		sources:           make(map[[3]int]*PowerSource),
+		daylightDetectors: make(map[[3]int]bool),
 	}
 }
 
@@ -505,6 +515,14 @@ func (r *RedstoneManager) Tick(tick int64) {
 			r.UpdatePressurePlate(x, y, z, false)
 		}
 	}
+
+	// Tick observer pulses
+	r.tickObservers()
+
+	// Tick daylight detectors every 20 ticks (1 second)
+	if tick%20 == 0 {
+		r.tickDaylightDetectors()
+	}
 }
 
 // anyPlayerOnPlate returns true if any player is standing on the pressure plate at (x, y, z).
@@ -777,14 +795,54 @@ func (r *RedstoneManager) PlayNoteBlockPowered(x, y, z int) {
 	r.playNoteBlock(x, y, z, nb)
 }
 
+// noteBlockSoundID maps a NoteBlockInstrument to the correct sound ID.
+func noteBlockSoundID(inst block.NoteBlockInstrument) int32 {
+	switch inst {
+	case block.NoteBlockInstrumentHarp:
+		return 692
+	case block.NoteBlockInstrumentBasedrum:
+		return 686
+	case block.NoteBlockInstrumentSnare:
+		return 695
+	case block.NoteBlockInstrumentHat:
+		return 693
+	case block.NoteBlockInstrumentBass:
+		return 687
+	case block.NoteBlockInstrumentFlute:
+		return 690
+	case block.NoteBlockInstrumentBell:
+		return 688
+	case block.NoteBlockInstrumentGuitar:
+		return 691
+	case block.NoteBlockInstrumentChime:
+		return 689
+	case block.NoteBlockInstrumentXylophone:
+		return 696
+	case block.NoteBlockInstrumentIronXylophone:
+		return 697
+	case block.NoteBlockInstrumentCowBell:
+		return 698
+	case block.NoteBlockInstrumentDidgeridoo:
+		return 699
+	case block.NoteBlockInstrumentBit:
+		return 700
+	case block.NoteBlockInstrumentBanjo:
+		return 701
+	case block.NoteBlockInstrumentPling:
+		return 694
+	default:
+		return 692 // harp fallback for mob head instruments
+	}
+}
+
 // playNoteBlock plays the note sound with correct pitch.
 // Pitch: 2^((note - 12) / 12), so note 0 = F#3, note 12 = F#4, note 24 = F#5.
 func (r *RedstoneManager) playNoteBlock(x, y, z int, nb block.NoteBlock) {
 	note := int(nb.Note)
 	pitch := float32(math.Pow(2.0, float64(note-12)/12.0))
 
-	// Instrument determines the sound — simplified to base note block sound
-	BroadcastSound(r.Manager, SoundNoteBlock, SoundCategoryBlock,
+	soundID := noteBlockSoundID(nb.Instrument)
+	BroadcastSound(r.Manager, soundID, SoundCategoryBlock,
 		float64(x)+0.5, float64(y)+1.0, float64(z)+0.5, 3.0, pitch)
 
 	// Send block event (action 0 = play note) for note particle
@@ -1050,5 +1108,205 @@ func (r *RedstoneManager) setFenceGate(x, y, z int, gate block.Block, opened boo
 		}
 		BroadcastSound(r.Manager, soundID, SoundCategoryBlock,
 			float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Observer block-change detection
+// ---------------------------------------------------------------------------
+
+// oppositeDirection returns the opposite facing direction.
+func oppositeDirection(d block.Direction) block.Direction {
+	switch d {
+	case block.Down:
+		return block.Up
+	case block.Up:
+		return block.Down
+	case block.North:
+		return block.South
+	case block.South:
+		return block.North
+	case block.West:
+		return block.East
+	case block.East:
+		return block.West
+	}
+	return d
+}
+
+// NotifyBlockChange should be called whenever a block is placed, broken, or changed
+// at (x, y, z). It checks all 6 neighbors for observer blocks facing this position
+// and schedules a 2-tick redstone pulse from the observer's back face.
+func (r *RedstoneManager) NotifyBlockChange(x, y, z int) {
+	for _, off := range adjacentOffsets {
+		ox, oy, oz := x+off[0], y+off[1], z+off[2]
+		stateID, err := r.World.GetBlock(ox, oy, oz)
+		if err != nil {
+			continue
+		}
+		if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+			continue
+		}
+		obs, ok := block.StateList[stateID].(block.Observer)
+		if !ok {
+			continue
+		}
+		// Check if the observer's face points toward the changed block
+		fdx, fdy, fdz := directionOffset(block.Direction(obs.Facing))
+		if ox+fdx == x && oy+fdy == y && oz+fdz == z {
+			// Already powered? Skip to avoid retriggering
+			if bool(obs.Powered) {
+				continue
+			}
+			// Schedule a 2-tick pulse
+			r.mu.Lock()
+			r.observerPulses = append(r.observerPulses, observerPulse{
+				X: ox, Y: oy, Z: oz,
+				TicksLeft: 2,
+			})
+			r.mu.Unlock()
+
+			// Set observer to powered state
+			obs.Powered = true
+			if newID, ok2 := block.ToStateID[obs]; ok2 {
+				r.World.SetBlock(ox, oy, oz, newID)
+				broadcastBlockUpdateDirect(r.Manager, ox, oy, oz, int32(newID))
+			}
+		}
+	}
+
+	// Also notify repeaters/comparators adjacent to the changed block
+	if r.WireMgr != nil {
+		r.WireMgr.notifyNeighborComponents(x, y, z)
+	}
+}
+
+// tickObservers processes observer pulse countdowns.
+func (r *RedstoneManager) tickObservers() {
+	r.mu.Lock()
+	var remaining []observerPulse
+	var expired []observerPulse
+	for i := range r.observerPulses {
+		r.observerPulses[i].TicksLeft--
+		if r.observerPulses[i].TicksLeft <= 0 {
+			expired = append(expired, r.observerPulses[i])
+		} else {
+			remaining = append(remaining, r.observerPulses[i])
+		}
+	}
+	r.observerPulses = remaining
+	r.mu.Unlock()
+
+	for _, p := range expired {
+		stateID, err := r.World.GetBlock(p.X, p.Y, p.Z)
+		if err != nil {
+			continue
+		}
+		if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+			continue
+		}
+		obs, ok := block.StateList[stateID].(block.Observer)
+		if !ok {
+			continue
+		}
+		// Reset observer to unpowered
+		obs.Powered = false
+		if newID, ok2 := block.ToStateID[obs]; ok2 {
+			r.World.SetBlock(p.X, p.Y, p.Z, newID)
+			broadcastBlockUpdateDirect(r.Manager, p.X, p.Y, p.Z, int32(newID))
+		}
+
+		// Emit pulse from the back face (opposite of facing)
+		bdx, bdy, bdz := directionOffset(oppositeDirection(block.Direction(obs.Facing)))
+		bx, by, bz := p.X+bdx, p.Y+bdy, p.Z+bdz
+		r.updatePoweredBlock(bx, by, bz)
+		if r.WireMgr != nil {
+			r.WireMgr.UpdateFromSource(p.X, p.Y, p.Z, false)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Daylight detector time-based power
+// ---------------------------------------------------------------------------
+
+// TrackDaylightDetector registers a daylight detector position for tick updates.
+func (r *RedstoneManager) TrackDaylightDetector(x, y, z int) {
+	r.mu.Lock()
+	r.daylightDetectors[[3]int{x, y, z}] = true
+	r.mu.Unlock()
+}
+
+// UntrackDaylightDetector removes a daylight detector from tick updates.
+func (r *RedstoneManager) UntrackDaylightDetector(x, y, z int) {
+	r.mu.Lock()
+	delete(r.daylightDetectors, [3]int{x, y, z})
+	r.mu.Unlock()
+}
+
+// tickDaylightDetectors updates daylight detector power levels based on world time.
+func (r *RedstoneManager) tickDaylightDetectors() {
+	r.mu.Lock()
+	detectors := make([][3]int, 0, len(r.daylightDetectors))
+	for pos := range r.daylightDetectors {
+		detectors = append(detectors, pos)
+	}
+	r.mu.Unlock()
+
+	if r.TimeMgr == nil {
+		return
+	}
+	dayTime := r.TimeMgr.GetDayTime()
+	// Calculate base power: strongest at noon (6000), zero at night
+	// Day: 0-12000 ticks. Night: 12000-24000.
+	var basePower int
+	if dayTime <= 12000 {
+		// Distance from noon
+		dist := dayTime - 6000
+		if dist < 0 {
+			dist = -dist
+		}
+		basePower = 15 - int(dist/400)
+		if basePower < 0 {
+			basePower = 0
+		}
+	}
+
+	for _, pos := range detectors {
+		stateID, err := r.World.GetBlock(pos[0], pos[1], pos[2])
+		if err != nil {
+			r.mu.Lock()
+			delete(r.daylightDetectors, pos)
+			r.mu.Unlock()
+			continue
+		}
+		if int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+			continue
+		}
+		det, ok := block.StateList[stateID].(block.DaylightDetector)
+		if !ok {
+			r.mu.Lock()
+			delete(r.daylightDetectors, pos)
+			r.mu.Unlock()
+			continue
+		}
+
+		power := basePower
+		if bool(det.Inverted) {
+			power = 15 - basePower
+		}
+		if power < 0 {
+			power = 0
+		}
+
+		if int(det.Power) != power {
+			det.Power = block.Integer(power)
+			if newID, ok2 := block.ToStateID[det]; ok2 {
+				r.World.SetBlock(pos[0], pos[1], pos[2], newID)
+				broadcastBlockUpdateDirect(r.Manager, pos[0], pos[1], pos[2], int32(newID))
+			}
+			// Update adjacent powered blocks
+			r.updateAdjacentPowered(pos[0], pos[1], pos[2])
+		}
 	}
 }

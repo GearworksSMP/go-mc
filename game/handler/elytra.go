@@ -7,6 +7,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -156,10 +157,7 @@ func (em *ElytraManager) Tick(tick int64) {
 			chestItem := &player.Inventory[6]
 			if chestItem.ID > 0 && chestItem.MaxDurability > 0 {
 				// Unbreaking enchant check
-				unbreakLvl := int32(0)
-				if chestItem.Enchantments != nil {
-					unbreakLvl = chestItem.Enchantments["unbreaking"]
-				}
+				unbreakLvl := enchant.GetLevel(chestItem.Enchantments, enchant.Unbreaking)
 				shouldReduce := true
 				if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 					shouldReduce = false

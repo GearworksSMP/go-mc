@@ -13,8 +13,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// Minecart entity type ID (26.1-snapshot-2 registry).
-const minecartEntityType int32 = 85
+// Minecart entity type IDs (26.1-snapshot-2 registry).
+const (
+	minecartEntityType      int32 = 85
+	chestMinecartEntityType int32 = 25
+	furnaceMinecartEntityType int32 = 56
+	hopperMinecartEntityType int32 = 65
+)
+
+// Minecart variant constants.
+const (
+	MinecartNormal  = 0
+	MinecartChest   = 1
+	MinecartHopper  = 2
+	MinecartFurnace = 3
+)
+
+// Chest minecart window ID.
+const ChestMinecartWindowID = 22
 
 // Sound IDs for minecarts (from data/soundid/soundid.go).
 const (
@@ -40,6 +56,9 @@ type Minecart struct {
 	Health    float32
 	TickAge   int64
 	OnRail    bool
+	Variant   int                 // MinecartNormal, MinecartChest, MinecartHopper, MinecartFurnace
+	Items     [27]game.ItemStack  // chest minecart inventory
+	FuelTicks int64               // furnace minecart fuel remaining
 }
 
 // MinecartManager manages minecart entities in the world.
@@ -65,17 +84,51 @@ func NewMinecartManager(mgr *game.PlayerManager, world game.World, redstoneMgr *
 	}
 }
 
+// minecartEntityTypeForVariant returns the entity type ID for a minecart variant.
+func minecartEntityTypeForVariant(variant int) int32 {
+	switch variant {
+	case MinecartChest:
+		return chestMinecartEntityType
+	case MinecartFurnace:
+		return furnaceMinecartEntityType
+	case MinecartHopper:
+		return hopperMinecartEntityType
+	default:
+		return minecartEntityType
+	}
+}
+
+// minecartItemForVariant returns the item name dropped when a minecart variant is destroyed.
+func minecartItemForVariant(variant int) string {
+	switch variant {
+	case MinecartChest:
+		return "chest_minecart"
+	case MinecartFurnace:
+		return "furnace_minecart"
+	case MinecartHopper:
+		return "hopper_minecart"
+	default:
+		return "minecart"
+	}
+}
+
 // SpawnMinecart creates a new minecart entity at the given position and broadcasts it.
 // The minecart is centered on the block (x+0.5, y, z+0.5).
 // Returns the entity ID.
 func (mm *MinecartManager) SpawnMinecart(x, y, z float64) int32 {
+	return mm.SpawnMinecartVariant(x, y, z, MinecartNormal)
+}
+
+// SpawnMinecartVariant creates a new minecart of the given variant.
+func (mm *MinecartManager) SpawnMinecartVariant(x, y, z float64, variant int) int32 {
 	eid := mm.Manager.NextEntityID()
 	cart := &Minecart{
-		EID:    eid,
-		X:      math.Floor(x) + 0.5,
-		Y:      y,
-		Z:      math.Floor(z) + 0.5,
-		Health: 40,
+		EID:     eid,
+		X:       math.Floor(x) + 0.5,
+		Y:       y,
+		Z:       math.Floor(z) + 0.5,
+		Health:  40,
+		Variant: variant,
 	}
 
 	mm.mu.Lock()
@@ -88,7 +141,7 @@ func (mm *MinecartManager) SpawnMinecart(x, y, z float64) int32 {
 		packetid.ClientboundAddEntity,
 		pk.VarInt(eid),
 		pk.UUID(entityUUID),
-		pk.VarInt(minecartEntityType),
+		pk.VarInt(minecartEntityTypeForVariant(variant)),
 		pk.Double(cart.X),
 		pk.Double(cart.Y),
 		pk.Double(cart.Z),
@@ -102,7 +155,7 @@ func (mm *MinecartManager) SpawnMinecart(x, y, z float64) int32 {
 		p.WritePacket(pkt)
 	})
 
-	mm.logf("Spawned minecart EID=%d at (%.1f, %.1f, %.1f)", eid, cart.X, cart.Y, cart.Z)
+	mm.logf("Spawned %s EID=%d at (%.1f, %.1f, %.1f)", minecartItemForVariant(variant), eid, cart.X, cart.Y, cart.Z)
 	return eid
 }
 
@@ -113,6 +166,11 @@ func (mm *MinecartManager) MountMinecart(player *game.Player, cartEID int32) boo
 
 	cart, ok := mm.carts[cartEID]
 	if !ok {
+		return false
+	}
+
+	// Variant minecarts can't be ridden — interact instead
+	if cart.Variant != MinecartNormal {
 		return false
 	}
 
@@ -176,6 +234,7 @@ func (mm *MinecartManager) DismountMinecart(player *game.Player) {
 		newY := cart.Y + 0.7
 		newZ := cart.Z
 		player.SetPosition(newX, newY, newZ)
+		player.TeleportPending = true
 
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundPlayerPosition,
@@ -227,6 +286,7 @@ func (mm *MinecartManager) DamageMinecart(attackerEID, cartEID int32, damage flo
 				p.WritePacket(emptyPkt)
 			})
 			rider.SetPosition(cx, cy+0.7, cz)
+			rider.TeleportPending = true
 			rider.WritePacket(pk.Marshal(
 				packetid.ClientboundPlayerPosition,
 				pk.VarInt(0),
@@ -251,9 +311,18 @@ func (mm *MinecartManager) DamageMinecart(attackerEID, cartEID int32, damage flo
 
 		// Drop minecart item
 		if mm.ItemEntities != nil {
-			minecartItemID := itemIDByName("minecart")
-			if minecartItemID > 0 {
-				mm.ItemEntities.SpawnItem(mm.Manager, cx, cy+0.5, cz, minecartItemID, 1, 10)
+			dropItemName := minecartItemForVariant(cart.Variant)
+			dropItemID := itemIDByName(dropItemName)
+			if dropItemID > 0 {
+				mm.ItemEntities.SpawnItem(mm.Manager, cx, cy+0.5, cz, dropItemID, 1, 10)
+			}
+			// Drop chest minecart contents
+			if cart.Variant == MinecartChest {
+				for _, item := range cart.Items {
+					if item.ID > 0 && item.Count > 0 {
+						mm.ItemEntities.SpawnItem(mm.Manager, cx, cy+0.5, cz, item.ID, item.Count, 10)
+					}
+				}
 			}
 		}
 
@@ -386,6 +455,14 @@ func (mm *MinecartManager) Tick(tick int64) {
 					cart.Y = float64(by)
 				}
 			}
+		}
+
+		// Variant-specific tick behavior
+		switch cart.Variant {
+		case MinecartFurnace:
+			mm.tickFurnaceMinecart(cart)
+		case MinecartHopper:
+			mm.tickHopperMinecart(cart)
 		}
 
 		// Sync rider position
@@ -580,7 +657,7 @@ func (mm *MinecartManager) SendExistingMinecarts(player *game.Player) {
 			packetid.ClientboundAddEntity,
 			pk.VarInt(cart.EID),
 			pk.UUID(entityUUID),
-			pk.VarInt(minecartEntityType),
+			pk.VarInt(minecartEntityTypeForVariant(cart.Variant)),
 			pk.Double(cart.X),
 			pk.Double(cart.Y),
 			pk.Double(cart.Z),
@@ -678,9 +755,27 @@ func yawToMinecartDirection(yaw float32) int {
 	}
 }
 
-// isMinecartItem returns true if the item name is "minecart".
+// isMinecartItem returns true if the item name is a placeable minecart.
 func isMinecartItem(name string) bool {
-	return name == "minecart"
+	switch name {
+	case "minecart", "chest_minecart", "hopper_minecart", "furnace_minecart":
+		return true
+	}
+	return false
+}
+
+// minecartVariantForItem returns the variant for a minecart item name.
+func minecartVariantForItem(name string) int {
+	switch name {
+	case "chest_minecart":
+		return MinecartChest
+	case "hopper_minecart":
+		return MinecartHopper
+	case "furnace_minecart":
+		return MinecartFurnace
+	default:
+		return MinecartNormal
+	}
 }
 
 // isRailBlock returns true if the block name is a rail type.
@@ -834,6 +929,155 @@ func (mm *MinecartManager) PlayerPushMinecart(player *game.Player, oldX, oldZ fl
 		if cart.Speed < 0.1 {
 			cart.Speed = 0.1
 			cart.Direction = dir
+		}
+	}
+}
+
+// InteractMinecart handles right-click on a variant minecart. Returns true if handled.
+func (mm *MinecartManager) InteractMinecart(player *game.Player, cartEID int32) bool {
+	mm.mu.Lock()
+	cart, ok := mm.carts[cartEID]
+	if !ok {
+		mm.mu.Unlock()
+		return false
+	}
+	variant := cart.Variant
+	mm.mu.Unlock()
+
+	switch variant {
+	case MinecartChest:
+		mm.openChestMinecart(player, cartEID)
+		return true
+	case MinecartFurnace:
+		mm.fuelFurnaceMinecart(player, cartEID)
+		return true
+	}
+	return false
+}
+
+// openChestMinecart opens the chest minecart inventory for the player.
+func (mm *MinecartManager) openChestMinecart(player *game.Player, cartEID int32) {
+	player.OpenWindowID = ChestMinecartWindowID
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundOpenScreen,
+		pk.VarInt(ChestMinecartWindowID),
+		pk.VarInt(2), // menu type: generic_9x3
+		pk.String(`{"text":"Minecart with Chest"}`),
+	))
+
+	mm.mu.Lock()
+	cart, ok := mm.carts[cartEID]
+	if !ok {
+		mm.mu.Unlock()
+		return
+	}
+
+	// Build container slots (27 chest + 27 main inv + 9 hotbar = 63)
+	slots := make(game.Slot261Array, 63)
+	for i := 0; i < 27; i++ {
+		slots[i] = cart.Items[i].ToSlot()
+	}
+	mm.mu.Unlock()
+
+	// Fill player inventory
+	for i := 9; i <= 35; i++ {
+		slots[27+(i-9)] = player.Inventory[i].ToSlot()
+	}
+	for i := 36; i <= 44; i++ {
+		slots[54+(i-36)] = player.Inventory[i].ToSlot()
+	}
+
+	cursor := player.CursorItem.ToSlot()
+	stateID := player.NextStateID()
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundContainerSetContent,
+		pk.UnsignedByte(ChestMinecartWindowID),
+		pk.VarInt(stateID),
+		slots,
+		cursor,
+	))
+}
+
+// fuelFurnaceMinecart adds fuel if the player is holding coal/charcoal.
+func (mm *MinecartManager) fuelFurnaceMinecart(player *game.Player, cartEID int32) {
+	slot := player.HeldSlot
+	held := &player.Inventory[36+slot]
+	if held.ID == 0 || held.Count == 0 {
+		return
+	}
+	itemName := ItemNameByID(held.ID)
+	if itemName != "coal" && itemName != "charcoal" {
+		return
+	}
+
+	mm.mu.Lock()
+	cart, ok := mm.carts[cartEID]
+	if !ok {
+		mm.mu.Unlock()
+		return
+	}
+	cart.FuelTicks += 200 // 10 seconds of fuel per item
+	mm.mu.Unlock()
+
+	// Consume fuel item
+	held.Count--
+	if held.Count <= 0 {
+		*held = game.ItemStack{}
+	}
+	SendSlotUpdate(player, 36+int(slot))
+
+	// Play fuel sound
+	BroadcastSound(mm.Manager, SoundMinecartRiding, SoundCategoryNeutral,
+		cart.X, cart.Y, cart.Z, 0.5, 1.0)
+}
+
+// tickFurnaceMinecart handles furnace minecart self-propulsion.
+func (mm *MinecartManager) tickFurnaceMinecart(cart *Minecart) {
+	if cart.FuelTicks <= 0 {
+		return
+	}
+	cart.FuelTicks--
+
+	// Self-propel at 0.4 blocks/tick while fueled
+	if cart.Speed < 0.4 {
+		cart.Speed = 0.4
+	}
+}
+
+// tickHopperMinecart handles hopper minecart item pickup.
+func (mm *MinecartManager) tickHopperMinecart(cart *Minecart) {
+	if mm.ItemEntities == nil {
+		return
+	}
+
+	// Only pick up every 8 ticks
+	if cart.TickAge%8 != 0 {
+		return
+	}
+
+	// Find first empty or stackable slot
+	items := mm.ItemEntities.FindItemsNear(cart.X, cart.Y+0.5, cart.Z, 1.0)
+	for _, ie := range items {
+		// Try to add to existing stack first
+		added := false
+		for i := 0; i < 5; i++ { // hopper minecart has 5 slots
+			if cart.Items[i].ID == ie.ItemID && cart.Items[i].Count < 64 {
+				cart.Items[i].Count++
+				mm.ItemEntities.RemoveItem(ie.EID)
+				added = true
+				break
+			}
+		}
+		if added {
+			continue
+		}
+		// Try empty slot
+		for i := 0; i < 5; i++ {
+			if cart.Items[i].ID == 0 || cart.Items[i].Count == 0 {
+				cart.Items[i] = game.ItemStack{ID: ie.ItemID, Count: 1}
+				mm.ItemEntities.RemoveItem(ie.EID)
+				break
+			}
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/Tnze/go-mc/data/item"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	"github.com/Tnze/go-mc/level"
 	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
@@ -60,7 +61,21 @@ type BlockHandler struct {
 	BlastFurnaceMgr *BlastFurnaceManager                // optional; handles blast furnace interactions
 	ShulkerBoxMgr   *ShulkerBoxManager                  // optional; handles shulker box interactions
 	SmithingMgr     *SmithingTableManager               // optional; handles smithing table interactions
-	OnBlockBreak    func(blockName string, x, y, z int) // called when a block is broken
+	XPOrbMgr        *XPOrbManager                       // optional; spawns XP orbs for ore mining
+	ComposterMgr    *ComposterManager                   // optional; handles composter interactions
+	CauldronMgr     *CauldronManager                    // optional; handles cauldron interactions
+	BeaconMgr       *BeaconManager                      // optional; handles beacon effects
+	WitherMgr       *WitherManager                      // optional; handles wither summoning
+	ArmorStandMgr   *ArmorStandManager                  // optional; handles armor stand placement
+	ItemFrameMgr    *ItemFrameManager                   // optional; handles item frame placement
+	PaintingMgr     *PaintingManager                    // optional; handles painting placement
+	LeashMgr        *LeashManager                       // optional; handles leash tie to fence
+	JukeboxMgr      *JukeboxManager                     // optional; handles jukebox interactions
+	LecternMgr      *LecternManager                     // optional; handles lectern interactions
+	BannerMgr        *BannerManager                      // optional; handles banner patterns
+	RespawnAnchorMgr *RespawnAnchorManager               // optional; handles respawn anchor interactions
+	CopperMgr        *CopperManager                      // optional; handles copper waxing/scraping
+	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
 // worldForPlayer returns the world for the player's current dimension.
@@ -247,6 +262,10 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 					h.sendAck(player, int32(sequence))
 					return
 				}
+			case "ender_chest":
+				OpenEnderChest(player)
+				h.sendAck(player, int32(sequence))
+				return
 			case "enchanting_table":
 				if h.EnchantMgr != nil {
 					h.EnchantMgr.OpenEnchantingTable(player, pos.X, pos.Y, pos.Z)
@@ -340,6 +359,49 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 		}
 	}
 
+	// Check for leash tie to fence post (player holding leashed mobs + right-clicking fence)
+	if h.LeashMgr != nil && h.LeashMgr.PlayerHasLeashes(player.UUID) {
+		clickedState, err := h.World.GetBlock(pos.X, pos.Y, pos.Z)
+		if err == nil {
+			clickedName := BlockNameFromState(int(clickedState))
+			if IsFenceBlock(clickedName) {
+				h.LeashMgr.TieToFencePost(player, pos.X, pos.Y, pos.Z)
+				h.sendAck(player, int32(sequence))
+				return
+			}
+		}
+	}
+
+	// Copper waxing (honeycomb) and scraping (axe) interactions
+	if h.CopperMgr != nil {
+		heldID := player.HeldItemID()
+		if heldID > 0 {
+			held := ItemNameByID(heldID)
+			if held == "honeycomb" {
+				if h.CopperMgr.WaxCopper(player, pos.X, pos.Y, pos.Z) {
+					if player.GameMode == 0 {
+						slot := int(player.HeldSlot) + 36
+						player.Inventory[slot].Count--
+						if player.Inventory[slot].Count <= 0 {
+							player.Inventory[slot] = game.ItemStack{}
+						}
+						SendSlotUpdate(player, slot)
+					}
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			} else if IsAxeItem(held) {
+				if h.CopperMgr.ScrapeCopper(player, pos.X, pos.Y, pos.Z) {
+					if player.GameMode == 0 {
+						h.decrementToolDurability(player)
+					}
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			}
+		}
+	}
+
 	offset := faceOffsets[face]
 	placeX := pos.X + offset[0]
 	placeY := pos.Y + offset[1]
@@ -368,7 +430,54 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 		}
 		// Minecart placement: place minecart on a rail
 		if isMinecartItem(heldName) && h.MinecartMgr != nil {
-			h.placeMinecart(player, pos.X, pos.Y, pos.Z, int(face), int32(sequence))
+			h.placeMinecart(player, pos.X, pos.Y, pos.Z, int(face), int32(sequence), heldName)
+			return
+		}
+		// Armor stand placement
+		if heldName == "armor_stand" && h.ArmorStandMgr != nil {
+			spawnX := float64(placeX) + 0.5
+			spawnY := float64(placeY)
+			spawnZ := float64(placeZ) + 0.5
+			yaw := player.Yaw + 180 // face toward placer
+			h.ArmorStandMgr.PlaceArmorStand(player, spawnX, spawnY, spawnZ, yaw)
+			if player.GameMode == 0 {
+				slot := int(player.HeldSlot) + 36
+				player.Inventory[slot].Count--
+				if player.Inventory[slot].Count <= 0 {
+					player.Inventory[slot] = game.ItemStack{}
+				}
+				SendSlotUpdate(player, slot)
+			}
+			h.sendAck(player, int32(sequence))
+			return
+		}
+		// Painting placement (on wall face)
+		if heldName == "painting" && h.PaintingMgr != nil {
+			if h.PaintingMgr.PlacePainting(player, pos.X, pos.Y, pos.Z, int32(face)) {
+				if player.GameMode == 0 {
+					slot := int(player.HeldSlot) + 36
+					player.Inventory[slot].Count--
+					if player.Inventory[slot].Count <= 0 {
+						player.Inventory[slot] = game.ItemStack{}
+					}
+					SendSlotUpdate(player, slot)
+				}
+			}
+			h.sendAck(player, int32(sequence))
+			return
+		}
+		// Item frame placement (on block face)
+		if (heldName == "item_frame" || heldName == "glow_item_frame") && h.ItemFrameMgr != nil {
+			h.ItemFrameMgr.PlaceItemFrame(player, pos.X, pos.Y, pos.Z, int32(face), heldName == "glow_item_frame")
+			if player.GameMode == 0 {
+				slot := int(player.HeldSlot) + 36
+				player.Inventory[slot].Count--
+				if player.Inventory[slot].Count <= 0 {
+					player.Inventory[slot] = game.ItemStack{}
+				}
+				SendSlotUpdate(player, slot)
+			}
+			h.sendAck(player, int32(sequence))
 			return
 		}
 		// Rail placement: use MinecartManager for auto-curving
@@ -640,10 +749,15 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 		h.dropBlockItem(player, int(oldState), x, y, z)
 		// Decrement tool durability
 		h.decrementToolDurability(player)
-		// Award ore XP
+		// Award ore XP (suppressed by Silk Touch)
 		blockName := BlockNameFromState(int(oldState))
-		if xp := GetOreXP(blockName); xp > 0 {
-			AddExperience(player, xp)
+		heldSlot := &player.Inventory[player.HeldSlot+36]
+		if xp := GetOreXP(blockName); xp > 0 && !enchant.HasEnchant(heldSlot.Enchantments, enchant.SilkTouch) {
+			if h.XPOrbMgr != nil {
+				h.XPOrbMgr.SpawnXPOrbs(float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, xp)
+			} else {
+				AddExperience(player, xp)
+			}
 		}
 		// Mining exhaustion
 		player.Exhaustion += 0.005
@@ -732,9 +846,42 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 		h.SignMgr.RemoveSign(x, y, z)
 	}
 
+	// Remove banner data if breaking a banner
+	if h.BannerMgr != nil {
+		h.BannerMgr.RemoveBanner(x, y, z)
+	}
+
+	// Eject disc if breaking a jukebox
+	if h.JukeboxMgr != nil {
+		h.JukeboxMgr.OnJukeboxBreak(x, y, z)
+	}
+
+	// Drop book if breaking a lectern
+	if h.LecternMgr != nil {
+		h.LecternMgr.OnLecternBreak(x, y, z)
+	}
+
 	// Clean up redstone power source if breaking a lever, button, or pressure plate
 	if h.RedstoneMgr != nil {
 		h.RedstoneMgr.CleanupSource(x, y, z)
+		// Notify observers of block change
+		h.RedstoneMgr.NotifyBlockChange(x, y, z)
+	}
+
+	// Untrack daylight detector if broken
+	if h.RedstoneMgr != nil && oldState > 0 {
+		oldBlockName := BlockNameFromState(int(oldState))
+		if oldBlockName == "daylight_detector" {
+			h.RedstoneMgr.UntrackDaylightDetector(x, y, z)
+		}
+	}
+
+	// Untrack beacon if broken
+	if h.BeaconMgr != nil && oldState > 0 {
+		oldBlockName := BlockNameFromState(int(oldState))
+		if oldBlockName == "beacon" {
+			h.BeaconMgr.UntrackBeacon(x, y, z)
+		}
 	}
 
 	h.logf("Player %s broke block at (%d, %d, %d)", player.Name, x, y, z)
@@ -748,23 +895,50 @@ func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int, x, y, z i
 		return
 	}
 
+	// Read held item enchantments
+	heldSlot := &player.Inventory[player.HeldSlot+36]
+	hasSilkTouch := enchant.HasEnchant(heldSlot.Enchantments, enchant.SilkTouch)
+	fortuneLevel := enchant.GetLevel(heldSlot.Enchantments, enchant.Fortune)
+
+	// Silk Touch: drop the block itself instead of the processed item
+	if hasSilkTouch {
+		if id := itemIDByName(blockName); id > 0 {
+			if h.ItemEntities != nil {
+				h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, id, 1, 10)
+			} else {
+				slot := player.Inventory.AddItem(id, 1)
+				if slot >= 0 {
+					SendSlotUpdate(player, slot)
+				}
+			}
+			return
+		}
+		// If the block has no matching item, fall through to normal logic
+	}
+
 	// Crop blocks have special drop logic based on age
 	if isCropBlock(blockName) {
 		h.dropCropItems(stateID, x, y, z)
 		return
 	}
 
-	// Melon drops 3-7 melon_slices
+	// Melon drops 3-7 melon_slices, Fortune adds up to fortuneLevel*2 (cap 9)
 	if blockName == "melon" && h.ItemEntities != nil {
 		if id := itemIDByName("melon_slice"); id > 0 {
 			count := int32(3 + rand.Intn(5)) // 3-7
+			if fortuneLevel > 0 {
+				count += int32(rand.Intn(int(fortuneLevel)*2 + 1))
+				if count > 9 {
+					count = 9
+				}
+			}
 			h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, id, count, 10)
 		}
 		return
 	}
 
 	// Check tool requirements
-	heldName := ItemNameByID(player.Inventory[player.HeldSlot+36].ID)
+	heldName := ItemNameByID(heldSlot.ID)
 	if !CanHarvestBlock(blockName, heldName) {
 		return // wrong tool — no drop
 	}
@@ -780,14 +954,52 @@ func (h *BlockHandler) dropBlockItem(player *game.Player, stateID int, x, y, z i
 		return
 	}
 
+	// Fortune: multiply drop count for ores
+	dropCount := int32(1)
+	if fortuneLevel > 0 {
+		dropCount = fortuneDropCount(blockName, fortuneLevel)
+	}
+
 	if h.ItemEntities != nil {
-		h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, itemID, 1, 10)
+		h.ItemEntities.SpawnItem(h.Manager, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, itemID, dropCount, 10)
 	} else {
-		slot := player.Inventory.AddItem(itemID, 1)
+		slot := player.Inventory.AddItem(itemID, dropCount)
 		if slot < 0 {
 			return
 		}
 		SendSlotUpdate(player, slot)
+	}
+}
+
+// fortuneDropCount returns the number of items to drop with the given Fortune level.
+func fortuneDropCount(blockName string, fortuneLevel int32) int32 {
+	switch blockName {
+	case "diamond_ore", "deepslate_diamond_ore",
+		"emerald_ore", "deepslate_emerald_ore",
+		"coal_ore", "deepslate_coal_ore",
+		"nether_quartz_ore":
+		// 1 + random(0, fortuneLevel)
+		return 1 + int32(rand.Intn(int(fortuneLevel)+1))
+
+	case "lapis_ore", "deepslate_lapis_ore":
+		// Base 4-9, multiply by (1 + random(0, fortuneLevel))
+		base := int32(4 + rand.Intn(6))
+		multiplier := int32(1 + rand.Intn(int(fortuneLevel)+1))
+		return base * multiplier
+
+	case "redstone_ore", "deepslate_redstone_ore":
+		// Base 4-5, add random(0, fortuneLevel) extra
+		base := int32(4 + rand.Intn(2))
+		return base + int32(rand.Intn(int(fortuneLevel)+1))
+
+	case "copper_ore", "deepslate_copper_ore":
+		// 2-5 raw copper, with fortune: multiply by (1 + random(0, fortuneLevel))
+		base := int32(2 + rand.Intn(4))
+		multiplier := int32(1 + rand.Intn(int(fortuneLevel)+1))
+		return base * multiplier
+
+	default:
+		return 1
 	}
 }
 
@@ -812,10 +1024,8 @@ func (h *BlockHandler) validateBreakTime(player *game.Player, x, y, z int) bool 
 		return false // unbreakable
 	}
 	// Efficiency enchantment: multiply speed by (1 + level^2)
-	if heldSlot.Enchantments != nil {
-		if effLvl := heldSlot.Enchantments["efficiency"]; effLvl > 0 {
-			expected /= float64(1 + effLvl*effLvl)
-		}
+	if effLvl := enchant.GetLevel(heldSlot.Enchantments, enchant.Efficiency); effLvl > 0 {
+		expected /= float64(1 + effLvl*effLvl)
 	}
 	elapsed := time.Since(player.DigStartTime).Seconds()
 	// 20% tolerance for network latency
@@ -1169,6 +1379,35 @@ func (h *BlockHandler) placeBlock(player *game.Player, x, y, z int, state level.
 		}
 	}
 
+	// Notify observers of block change
+	if h.RedstoneMgr != nil {
+		h.RedstoneMgr.NotifyBlockChange(x, y, z)
+	}
+
+	// Track daylight detector placement
+	if h.RedstoneMgr != nil {
+		placedName := BlockNameFromState(int(state))
+		if placedName == "daylight_detector" {
+			h.RedstoneMgr.TrackDaylightDetector(x, y, z)
+		}
+	}
+
+	// Track beacon placement
+	if h.BeaconMgr != nil {
+		placedName := BlockNameFromState(int(state))
+		if placedName == "beacon" {
+			h.BeaconMgr.TrackBeacon(x, y, z)
+		}
+	}
+
+	// Check wither summoning when placing wither_skeleton_skull
+	if h.WitherMgr != nil {
+		placedName := BlockNameFromState(int(state))
+		if placedName == "wither_skeleton_skull" || placedName == "wither_skeleton_wall_skull" {
+			h.WitherMgr.CheckWitherSummon(x, y, z)
+		}
+	}
+
 	h.logf("Player %s placed block at (%d, %d, %d) state=%d", player.Name, x, y, z, state)
 }
 
@@ -1215,11 +1454,9 @@ func (h *BlockHandler) decrementToolDurability(player *game.Player) {
 	if invItem.MaxDurability <= 0 {
 		return // not a tool
 	}
-	if invItem.Enchantments != nil {
-		if unbreakLvl := invItem.Enchantments["unbreaking"]; unbreakLvl > 0 {
-			if rand.Int31n(unbreakLvl+1) > 0 {
-				return // unbreaking saved this durability point
-			}
+	if unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking); unbreakLvl > 0 {
+		if rand.Int31n(unbreakLvl+1) > 0 {
+			return // unbreaking saved this durability point
 		}
 	}
 	invItem.Durability--
@@ -1576,14 +1813,76 @@ func (h *BlockHandler) handleBlockInteraction(player *game.Player, x, y, z int, 
 			h.WireMgr.ToggleComparatorMode(x, y, z)
 		}
 		return true
+	case block.Jukebox:
+		if h.JukeboxMgr != nil {
+			return h.JukeboxMgr.InteractJukebox(player, x, y, z)
+		}
+	case block.Lectern:
+		if h.LecternMgr != nil {
+			return h.LecternMgr.InteractLectern(player, x, y, z)
+		}
 	case block.NoteBlock:
 		if h.RedstoneMgr != nil {
 			h.RedstoneMgr.CycleNoteBlock(x, y, z)
 		}
 		return true
+	case block.Bell:
+		RingBell(h.Manager, x, y, z)
+		return true
+	case block.Composter:
+		if h.ComposterMgr != nil {
+			return h.ComposterMgr.UseComposter(player, x, y, z)
+		}
+	case block.Cauldron:
+		if h.CauldronMgr != nil {
+			return h.CauldronMgr.UseCauldron(player, x, y, z)
+		}
+	case block.WaterCauldron:
+		if h.CauldronMgr != nil {
+			return h.CauldronMgr.UseCauldron(player, x, y, z)
+		}
+	case block.DaylightDetector:
+		// Toggle inverted state on right-click
+		door.Inverted = !door.Inverted
+		if newID, ok := block.ToStateID[door]; ok {
+			h.World.SetBlock(x, y, z, newID)
+			h.broadcastBlockUpdate(x, y, z, int32(newID))
+		}
+		return true
+	case block.Lodestone:
+		return h.interactLodestone(player, x, y, z)
+	case block.Beacon:
+		if h.BeaconMgr != nil {
+			h.BeaconMgr.OpenBeaconUI(player, x, y, z)
+			return true
+		}
+	case block.RespawnAnchor:
+		if h.RespawnAnchorMgr != nil {
+			return h.RespawnAnchorMgr.UseRespawnAnchor(player, x, y, z)
+		}
 	}
 
 	return false
+}
+
+// interactLodestone handles right-clicking a lodestone with a compass to create a lodestone compass.
+func (h *BlockHandler) interactLodestone(player *game.Player, x, y, z int) bool {
+	slot := int(player.HeldSlot) + 36
+	held := &player.Inventory[slot]
+	if ItemNameByID(held.ID) != "compass" {
+		return false
+	}
+
+	held.Lodestone = &game.LodestoneTarget{
+		Dimension: "minecraft:overworld",
+		X:         x,
+		Y:         y,
+		Z:         z,
+	}
+
+	SendSlotUpdate(player, slot)
+	BroadcastSound(h.Manager, 574, SoundCategoryBlock, float64(x)+0.5, float64(y)+0.5, float64(z)+0.5, 1.0, 1.0)
+	return true
 }
 
 // toggleDoor updates both halves of a door.
@@ -2581,7 +2880,7 @@ func (h *BlockHandler) placeBoat(player *game.Player, clickX, clickY, clickZ, fa
 }
 
 // placeMinecart places a minecart entity on the clicked rail block.
-func (h *BlockHandler) placeMinecart(player *game.Player, clickX, clickY, clickZ, face int, sequence int32) {
+func (h *BlockHandler) placeMinecart(player *game.Player, clickX, clickY, clickZ, face int, sequence int32, itemName string) {
 	// The minecart should be placed on top of the clicked block
 	spawnX := float64(clickX) + 0.5
 	spawnY := float64(clickY) + 0.0625 // slightly above the block
@@ -2619,7 +2918,7 @@ func (h *BlockHandler) placeMinecart(player *game.Player, clickX, clickY, clickZ
 		return
 	}
 
-	h.MinecartMgr.SpawnMinecart(spawnX, spawnY, spawnZ)
+	h.MinecartMgr.SpawnMinecartVariant(spawnX, spawnY, spawnZ, minecartVariantForItem(itemName))
 
 	// Consume item in survival mode
 	if player.GameMode == 0 {

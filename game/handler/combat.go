@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -21,6 +22,12 @@ type CombatHandler struct {
 	MinecartMgr     *MinecartManager
 	EffectMgr       *EffectManager
 	DragonMgr       *EnderDragonManager
+	WitherMgr       *WitherManager
+	ArmorStandMgr   *ArmorStandManager
+	ItemFrameMgr    *ItemFrameManager
+	PaintingMgr     *PaintingManager
+	LeashMgr        *LeashManager
+	Rules           *GameRules
 	Logger          *log.Logger
 }
 
@@ -56,10 +63,42 @@ func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 		return
 	}
 
-	// Check for minecart interaction (right-click to mount)
+	// Check for minecart interaction (right-click to mount or interact with variant)
 	if h.MinecartMgr != nil && h.MinecartMgr.IsMinecart(targetEID) {
-		h.MinecartMgr.MountMinecart(player, targetEID)
+		if !h.MinecartMgr.MountMinecart(player, targetEID) {
+			h.MinecartMgr.InteractMinecart(player, targetEID)
+		}
 		return
+	}
+
+	// Check for armor stand interaction (right-click to equip)
+	if h.ArmorStandMgr != nil && h.ArmorStandMgr.IsArmorStand(targetEID) {
+		h.ArmorStandMgr.HandleInteract(player, targetEID)
+		return
+	}
+
+	// Check for item frame interaction (right-click to place item/rotate)
+	if h.ItemFrameMgr != nil && h.ItemFrameMgr.IsItemFrame(targetEID) {
+		h.ItemFrameMgr.HandleInteract(player, targetEID)
+		return
+	}
+
+	// Check for leash knot interaction (right-click to attach leashed mobs)
+	if h.LeashMgr != nil && h.LeashMgr.IsLeashKnot(targetEID) {
+		h.LeashMgr.HandleKnotInteract(player, targetEID)
+		return
+	}
+
+	// Check if player is using a lead on a mob
+	if h.LeashMgr != nil && h.MobManager != nil {
+		heldSlot := int(player.HeldSlot) + 36
+		heldItem := &player.Inventory[heldSlot]
+		if heldItem.ID > 0 && ItemNameByID(heldItem.ID) == "lead" {
+			if h.MobManager.IsMob(targetEID) {
+				h.LeashMgr.AttachLeash(player, targetEID)
+				return
+			}
+		}
 	}
 
 	// Check for villager interaction (right-click to trade)
@@ -71,6 +110,24 @@ func (h *CombatHandler) handleInteract(player *game.Player, targetEID int32) {
 	// Check for tameable mob interaction (taming, sit toggle, horse mount)
 	if h.MobManager != nil && h.MobManager.TryTame(player, targetEID) {
 		return
+	}
+
+	// Check for nametag use on mob
+	if h.MobManager != nil {
+		heldSlot := int(player.HeldSlot) + 36
+		heldItem := &player.Inventory[heldSlot]
+		if heldItem.ID > 0 && ItemNameByID(heldItem.ID) == "name_tag" && heldItem.DisplayName != "" {
+			if h.MobManager.NameMob(targetEID, heldItem.DisplayName) {
+				if player.GameMode == 0 {
+					heldItem.Count--
+					if heldItem.Count <= 0 {
+						*heldItem = game.ItemStack{}
+					}
+					SendSlotUpdate(player, heldSlot)
+				}
+				return
+			}
+		}
 	}
 
 	// Check for passive mob feeding
@@ -121,6 +178,30 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		return
 	}
 
+	// Check for armor stand attack (destroy it)
+	if h.ArmorStandMgr != nil && h.ArmorStandMgr.IsArmorStand(targetEID) {
+		h.ArmorStandMgr.RemoveArmorStand(targetEID)
+		return
+	}
+
+	// Check for item frame attack (pop item or break frame)
+	if h.ItemFrameMgr != nil && h.ItemFrameMgr.IsItemFrame(targetEID) {
+		h.ItemFrameMgr.HandleAttack(attacker, targetEID)
+		return
+	}
+
+	// Check for painting attack (break it)
+	if h.PaintingMgr != nil && h.PaintingMgr.IsPainting(targetEID) {
+		h.PaintingMgr.RemovePainting(targetEID)
+		return
+	}
+
+	// Check for leash knot attack (break it)
+	if h.LeashMgr != nil && h.LeashMgr.IsLeashKnot(targetEID) {
+		h.LeashMgr.BreakKnot(targetEID)
+		return
+	}
+
 	// Look up weapon damage from held item
 	heldName := ItemNameByID(attacker.Inventory[attacker.HeldSlot+36].ID)
 	baseDamage := GetWeaponDamage(heldName)
@@ -138,10 +219,8 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 
 	// Sharpness enchantment: +0.5*level + 0.5 damage
 	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
-	if heldItem.Enchantments != nil {
-		if sharpLvl := heldItem.Enchantments["sharpness"]; sharpLvl > 0 {
-			baseDamage += float32(sharpLvl)*0.5 + 0.5
-		}
+	if sharpLvl := enchant.GetLevel(heldItem.Enchantments, enchant.Sharpness); sharpLvl > 0 {
+		baseDamage += float32(sharpLvl)*0.5 + 0.5
 	}
 
 	// Strength/Weakness effect modifiers
@@ -170,37 +249,28 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	}
 
 	// Smite: +2.5 * level vs undead mobs
-	if heldItem.Enchantments != nil && targetMobType > 0 {
-		if smiteLvl := heldItem.Enchantments["smite"]; smiteLvl > 0 && isUndeadMob(targetMobType) {
+	if targetMobType > 0 {
+		if smiteLvl := enchant.GetLevel(heldItem.Enchantments, enchant.Smite); smiteLvl > 0 && isUndeadMob(targetMobType) {
 			damage += float32(smiteLvl) * 2.5
 		}
 		// Bane of Arthropods: +2.5 * level vs arthropods
-		if baneLvl := heldItem.Enchantments["bane_of_arthropods"]; baneLvl > 0 && isArthropodMob(targetMobType) {
+		if baneLvl := enchant.GetLevel(heldItem.Enchantments, enchant.BaneOfArthropods); baneLvl > 0 && isArthropodMob(targetMobType) {
 			damage += float32(baneLvl) * 2.5
 		}
 	}
 
 	// Knockback enchantment level (adds to base knockback)
-	knockbackLevel := int32(0)
-	if heldItem.Enchantments != nil {
-		knockbackLevel = heldItem.Enchantments["knockback"]
-	}
+	knockbackLevel := enchant.GetLevel(heldItem.Enchantments, enchant.Knockback)
 	// Sprinting adds +1 knockback level equivalent
 	if attacker.Sprinting {
 		knockbackLevel++
 	}
 
 	// Fire Aspect: levels for setting targets on fire
-	fireAspectLevel := int32(0)
-	if heldItem.Enchantments != nil {
-		fireAspectLevel = heldItem.Enchantments["fire_aspect"]
-	}
+	fireAspectLevel := enchant.GetLevel(heldItem.Enchantments, enchant.FireAspect)
 
 	// Looting enchantment level (used for mob drops)
-	lootingLevel := int32(0)
-	if heldItem.Enchantments != nil {
-		lootingLevel = heldItem.Enchantments["looting"]
-	}
+	lootingLevel := enchant.GetLevel(heldItem.Enchantments, enchant.Looting)
 
 	// Broadcast critical hit particle effect
 	if isCritical {
@@ -240,6 +310,15 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		return
 	}
 
+	// Try wither target
+	if h.WitherMgr != nil && h.WitherMgr.IsWitherEID(targetEID) {
+		h.WitherMgr.DamageWither(targetEID, attacker, damage)
+		attacker.Exhaustion += 0.1
+		h.applyDurabilityLoss(attacker, heldName, strength)
+		h.logf("Player %s attacked Wither (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, strength, damage, isCritical)
+		return
+	}
+
 	// Try mob target
 	if h.MobManager != nil && h.MobManager.DamageMobEx(attacker, targetEID, damage, knockbackLevel, fireAspectLevel, lootingLevel) {
 		attacker.Exhaustion += 0.1
@@ -258,6 +337,11 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	// Try player target
 	target := h.Manager.GetByEID(targetEID)
 	if target == nil || target.Dead {
+		return
+	}
+
+	// PvP check: if pvp is disabled, don't allow player-vs-player damage
+	if h.Rules != nil && !h.Rules.GetPvP() {
 		return
 	}
 
@@ -283,6 +367,14 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	// Sweep attack for PvP
 	if strength >= 1.0 && IsSword(heldName) && !attacker.Sprinting {
 		h.applySweepAttackPvP(attacker, target, baseDamage)
+	}
+
+	// Axe disables shield for 5 seconds
+	if IsAxe(heldName) && target.Blocking {
+		target.Blocking = false
+		target.ShieldCooldownUntil = time.Now().Add(5 * time.Second)
+		tx, ty, tz := target.Position()
+		BroadcastSound(h.Manager, SoundShieldBlock, SoundCategoryPlayer, tx, ty, tz, 1.0, 1.0)
 	}
 
 	h.applyDurabilityLoss(attacker, heldName, strength)
@@ -333,25 +425,28 @@ func (h *CombatHandler) applyKnockbackToPlayer(attacker, target *game.Player, kb
 	))
 }
 
-// setPlayerOnFire sets a player's visual fire state via entity metadata.
+// setPlayerOnFire sets fire ticks on a player and broadcasts the visual fire state.
 func (h *CombatHandler) setPlayerOnFire(target *game.Player, fireTicks int32) {
-	_ = fireTicks
-	// Set entity on fire flag (metadata index 0, bit 0x01)
-	h.Manager.ForEach(func(p *game.Player) {
+	target.FireTicks = fireTicks
+	broadcastFireMetadata(h.Manager, target.EID, true)
+}
+
+// broadcastFireMetadata sends the on-fire entity flag to all players.
+func broadcastFireMetadata(manager *game.PlayerManager, eid int32, onFire bool) {
+	flags := byte(0)
+	if onFire {
+		flags = 0x01
+	}
+	manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pk.Marshal(
 			packetid.ClientboundSetEntityData,
-			pk.VarInt(target.EID),
+			pk.VarInt(eid),
 			pk.UnsignedByte(0), // index 0: base entity flags
 			pk.VarInt(0),       // type: byte
-			pk.Byte(0x01),      // on fire
-			pk.UnsignedByte(0xFF), // end of metadata
+			pk.Byte(flags),
+			pk.UnsignedByte(0xFF),
 		))
 	})
-	// Apply 1 damage per second (simplified: apply once immediately)
-	if h.SurvivalHandler != nil {
-		target.LastDamageMessage = target.Name + " burned to death"
-		h.SurvivalHandler.ApplyDamage(h.Manager, target, 1.0, h.SurvivalHandler.AttackDamageTypeID)
-	}
 }
 
 // applySweepAttack deals reduced damage to mobs near the primary target.
@@ -363,10 +458,8 @@ func (h *CombatHandler) applySweepAttack(attacker *game.Player, primaryEID int32
 
 	sweepDamage := float32(1.0)
 	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
-	if heldItem.Enchantments != nil {
-		if seLvl := heldItem.Enchantments["sweeping_edge"]; seLvl > 0 {
-			sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
-		}
+	if seLvl := enchant.GetLevel(heldItem.Enchantments, enchant.SweepingEdge); seLvl > 0 {
+		sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
 	}
 
 	h.MobManager.DamageMobsNearExcept(attacker, primaryEID, sweepDamage, 1.5)
@@ -390,10 +483,8 @@ func (h *CombatHandler) applySweepAttack(attacker *game.Player, primaryEID int32
 func (h *CombatHandler) applySweepAttackPvP(attacker, primaryTarget *game.Player, baseDamage float32) {
 	sweepDamage := float32(1.0)
 	heldItem := &attacker.Inventory[attacker.HeldSlot+36]
-	if heldItem.Enchantments != nil {
-		if seLvl := heldItem.Enchantments["sweeping_edge"]; seLvl > 0 {
-			sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
-		}
+	if seLvl := enchant.GetLevel(heldItem.Enchantments, enchant.SweepingEdge); seLvl > 0 {
+		sweepDamage += baseDamage * float32(seLvl) / float32(seLvl+1)
 	}
 
 	tx, ty, tz := primaryTarget.Position()
@@ -446,10 +537,10 @@ func (h *CombatHandler) applyThorns(attacker, target *game.Player) {
 	triggered := false
 	for _, slot := range []int{5, 6, 7, 8} {
 		item := &target.Inventory[slot]
-		if item.ID <= 0 || item.Enchantments == nil {
+		if item.ID <= 0 {
 			continue
 		}
-		thornsLvl := item.Enchantments["thorns"]
+		thornsLvl := enchant.GetLevel(item.Enchantments, enchant.Thorns)
 		if thornsLvl <= 0 {
 			continue
 		}

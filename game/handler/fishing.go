@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/google/uuid"
 )
@@ -72,11 +73,8 @@ func (fm *FishingManager) CastRod(player *game.Player) {
 	// Get rod enchantments from the held item
 	slot := int(player.HeldSlot) + 36
 	invItem := &player.Inventory[slot]
-	var lureLevel, luckLevel int32
-	if invItem.Enchantments != nil {
-		lureLevel = invItem.Enchantments["lure"]
-		luckLevel = invItem.Enchantments["luck_of_the_sea"]
-	}
+	lureLevel := enchant.GetLevel(invItem.Enchantments, enchant.Lure)
+	luckLevel := enchant.GetLevel(invItem.Enchantments, enchant.LuckOfTheSea)
 
 	// Calculate cast direction from player yaw/pitch
 	px, py, pz := player.Position()
@@ -278,10 +276,7 @@ func (fm *FishingManager) reduceRodDurability(player *game.Player) {
 	}
 
 	// Check unbreaking enchantment: skip with probability level/(level+1)
-	unbreakLvl := int32(0)
-	if invItem.Enchantments != nil {
-		unbreakLvl = invItem.Enchantments["unbreaking"]
-	}
+	unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking)
 	if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 		return // unbreaking saved this durability point
 	}

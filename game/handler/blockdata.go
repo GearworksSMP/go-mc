@@ -427,6 +427,11 @@ func IsSword(itemName string) bool {
 	return strings.HasSuffix(itemName, "_sword")
 }
 
+// IsAxe returns true if the item is an axe.
+func IsAxe(itemName string) bool {
+	return strings.HasSuffix(itemName, "_axe")
+}
+
 // GetWeaponDamage returns the attack damage for a weapon item name.
 // Returns 1.0 (bare hand) for non-weapon items.
 func GetWeaponDamage(itemName string) float32 {
@@ -676,6 +681,15 @@ var armorProtection = map[string]int{
 	"iron_helmet": 2, "iron_chestplate": 6, "iron_leggings": 5, "iron_boots": 2,
 	"diamond_helmet": 3, "diamond_chestplate": 8, "diamond_leggings": 6, "diamond_boots": 3,
 	"netherite_helmet": 3, "netherite_chestplate": 8, "netherite_leggings": 6, "netherite_boots": 3,
+}
+
+var armorToughness = map[string]float32{
+	"diamond_helmet": 2, "diamond_chestplate": 2, "diamond_leggings": 2, "diamond_boots": 2,
+	"netherite_helmet": 3, "netherite_chestplate": 3, "netherite_leggings": 3, "netherite_boots": 3,
+}
+
+func GetArmorToughness(itemName string) float32 {
+	return armorToughness[itemName]
 }
 
 var armorMaxDurability = map[string]int32{

@@ -10,28 +10,48 @@ import (
 	"github.com/Tnze/go-mc/yggdrasil/user"
 )
 
-// SendPlayerInfo sends ClientboundPlayerInfoUpdate (add_player + gamemode + listed)
+// SendPlayerInfo sends ClientboundPlayerInfoUpdate (add_player + initialize_chat + gamemode + listed)
 // for 'about' to 'target'.
 func SendPlayerInfo(target, about *game.Player) {
-	// Actions bitset: bit 0 = add_player, bit 2 = gamemode, bit 3 = listed
+	// Actions bitset: bit 0 = add_player, bit 1 = init_chat, bit 2 = gamemode, bit 3 = listed
 	actions := pk.NewFixedBitSet(6)
 	actions.Set(0, true) // add player
+	actions.Set(1, true) // initialize chat
 	actions.Set(2, true) // update gamemode
 	actions.Set(3, true) // update listed
 
 	props := make([]user.Property, len(about.Properties))
 	copy(props, about.Properties)
 
-	target.WritePacket(pk.Marshal(
-		packetid.ClientboundPlayerInfoUpdate,
-		actions,
-		pk.VarInt(1),              // count = 1
-		pk.UUID(about.UUID),       // player UUID
-		pk.String(about.Name),     // player name
-		pk.Array(props),           // properties (skin textures)
-		pk.VarInt(about.GameMode), // gamemode
-		pk.Boolean(true),          // listed = true
-	))
+	// Build packet manually since initialize_chat has conditional fields
+	var buf bytes.Buffer
+	actions.WriteTo(&buf)
+	pk.VarInt(1).WriteTo(&buf)          // count = 1
+	pk.UUID(about.UUID).WriteTo(&buf)   // player UUID
+
+	// Action 0: add_player
+	pk.String(about.Name).WriteTo(&buf) // player name
+	pk.Array(props).WriteTo(&buf)       // properties (skin textures)
+
+	// Action 1: initialize_chat
+	if about.ProfileKey != nil {
+		pk.Boolean(true).WriteTo(&buf)                // has session
+		pk.UUID(about.ChatSessionID).WriteTo(&buf)    // session UUID
+		about.ProfileKey.WriteTo(&buf)                // public key (expiry + key + sig)
+	} else {
+		pk.Boolean(false).WriteTo(&buf) // no session (offline mode)
+	}
+
+	// Action 2: update gamemode
+	pk.VarInt(about.GameMode).WriteTo(&buf)
+
+	// Action 3: update listed
+	pk.Boolean(true).WriteTo(&buf)
+
+	target.WritePacket(pk.Packet{
+		ID:   int32(packetid.ClientboundPlayerInfoUpdate),
+		Data: buf.Bytes(),
+	})
 }
 
 // SendSpawnPlayer sends ClientboundAddEntity (type=124, Player) for 'about' to 'target'.

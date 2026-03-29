@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -132,15 +133,21 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 
 	// Check bow enchantments
 	hasInfinity := false
-	if invItem.Enchantments != nil {
-		// Power enchantment: damage *= (1 + 0.25*level)
-		if powerLvl := invItem.Enchantments["power"]; powerLvl > 0 {
-			damage *= 1.0 + 0.25*float64(powerLvl)
-		}
-		// Infinity enchantment: don't consume arrows
-		if invItem.Enchantments["infinity"] > 0 {
-			hasInfinity = true
-		}
+	punchLevel := int32(0)
+	onFire := false
+	// Power enchantment: damage *= (1 + 0.25*level)
+	if powerLvl := enchant.GetLevel(invItem.Enchantments, enchant.Power); powerLvl > 0 {
+		damage *= 1.0 + 0.25*float64(powerLvl)
+	}
+	// Infinity enchantment: don't consume arrows
+	if enchant.HasEnchant(invItem.Enchantments, enchant.Infinity) {
+		hasInfinity = true
+	}
+	// Punch enchantment: extra knockback on hit
+	punchLevel = enchant.GetLevel(invItem.Enchantments, enchant.Punch)
+	// Flame enchantment: arrow sets target on fire
+	if enchant.HasEnchant(invItem.Enchantments, enchant.Flame) {
+		onFire = true
 	}
 
 	// Consume one arrow (unless infinity)
@@ -162,15 +169,12 @@ func (bm *BowManager) HandlePlayerAction(player *game.Player, p pk.Packet) bool 
 
 	// Spawn arrow at eye level
 	px, py, pz := player.Position()
-	bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage)
+	bm.ArrowMgr.SpawnPlayerArrow(player.EID, px, py+1.62, pz, dirX, dirY, dirZ, damage, punchLevel, onFire)
 
 	// Reduce bow durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {
 		// Unbreaking enchant: skip durability loss with probability level/(level+1)
-		unbreakLvl := int32(0)
-		if invItem.Enchantments != nil {
-			unbreakLvl = invItem.Enchantments["unbreaking"]
-		}
+		unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking)
 		shouldReduce := true
 		if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 			shouldReduce = false

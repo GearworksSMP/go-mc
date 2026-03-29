@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -126,12 +127,10 @@ func (cm *CrossbowManager) HandlePlayerAction(player *game.Player, p pk.Packet) 
 
 	// Calculate load time with Quick Charge enchantment
 	loadTime := crossbowLoadTime
-	if invItem.Enchantments != nil {
-		if qcLvl := invItem.Enchantments["quick_charge"]; qcLvl > 0 {
-			loadTime -= 0.25 * float64(qcLvl)
-			if loadTime < 0 {
-				loadTime = 0
-			}
+	if qcLvl := enchant.GetLevel(invItem.Enchantments, enchant.QuickCharge); qcLvl > 0 {
+		loadTime -= 0.25 * float64(qcLvl)
+		if loadTime < 0 {
+			loadTime = 0
 		}
 	}
 
@@ -179,7 +178,7 @@ func (cm *CrossbowManager) fireCrossbow(player *game.Player, invItem *game.ItemS
 
 	// Check for Multishot enchantment
 	multishotCount := 1
-	if invItem.Enchantments != nil && invItem.Enchantments["multishot"] > 0 {
+	if enchant.HasEnchant(invItem.Enchantments, enchant.Multishot) {
 		multishotCount = 3
 	}
 
@@ -207,15 +206,12 @@ func (cm *CrossbowManager) fireCrossbow(player *game.Player, invItem *game.ItemS
 			dx = dirX*cos - dirZ*sin
 			dz = dirX*sin + dirZ*cos
 		}
-		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage)
+		cm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dx, dy, dz, damage, 0, false)
 	}
 
 	// Reduce crossbow durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {
-		unbreakLvl := int32(0)
-		if invItem.Enchantments != nil {
-			unbreakLvl = invItem.Enchantments["unbreaking"]
-		}
+		unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking)
 		shouldReduce := true
 		if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 			shouldReduce = false

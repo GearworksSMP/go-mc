@@ -25,10 +25,7 @@ import (
 	"github.com/Tnze/go-mc/game/dbworld"
 	"github.com/Tnze/go-mc/game/gen"
 	"github.com/Tnze/go-mc/game/handler"
-	// chatheads broadcaster disabled: authenticated clients reject unsigned
-	// PlayerChat messages (REJECT_ALL validator). Chat Heads mod uses name
-	// matching with DisguisedChat as fallback.
-	// "github.com/Tnze/go-mc/mods/chatheads"
+	"github.com/Tnze/go-mc/mods/chatheads"
 	"github.com/Tnze/go-mc/game/mem"
 	"github.com/Tnze/go-mc/game/pgstore"
 	"github.com/Tnze/go-mc/game/store"
@@ -113,7 +110,7 @@ func main() {
 		world = mem.NewWorld(worldGen, sections, minY)
 	}
 
-	// Create Nether world (in-memory only for now)
+	// Create Nether and End worlds (persistent if DB available, otherwise in-memory)
 	var overworldSeed int64 = 12345
 	if s := os.Getenv("WORLD_SEED"); s != "" {
 		overworldSeed = 12345
@@ -122,13 +119,28 @@ func main() {
 		}
 	}
 	netherGen := gen.NewNetherGenerator(overworldSeed)
-	netherWorld := mem.NewWorld(netherGen, netherGen.Sections, netherGen.MinY)
-	logger.Printf("Nether world initialized (sections=%d, minY=%d)", netherGen.Sections, netherGen.MinY)
+	var netherWorld game.World
+	var netherDBW *dbworld.World
+	if pg != nil {
+		netherDBW = dbworld.NewWorld(pg, netherGen, netherGen.Sections, netherGen.MinY, "the_nether", logger)
+		netherWorld = netherDBW
+		logger.Printf("Nether world initialized with DB persistence (sections=%d, minY=%d)", netherGen.Sections, netherGen.MinY)
+	} else {
+		netherWorld = mem.NewWorld(netherGen, netherGen.Sections, netherGen.MinY)
+		logger.Printf("Nether world initialized in-memory (sections=%d, minY=%d)", netherGen.Sections, netherGen.MinY)
+	}
 
-	// Create End world (in-memory)
 	endGen := gen.NewEndGenerator(overworldSeed)
-	endWorld := mem.NewWorld(endGen, endGen.Sections, endGen.MinY)
-	logger.Printf("End world initialized (sections=%d, minY=%d)", endGen.Sections, endGen.MinY)
+	var endWorld game.World
+	var endDBW *dbworld.World
+	if pg != nil {
+		endDBW = dbworld.NewWorld(pg, endGen, endGen.Sections, endGen.MinY, "the_end", logger)
+		endWorld = endDBW
+		logger.Printf("End world initialized with DB persistence (sections=%d, minY=%d)", endGen.Sections, endGen.MinY)
+	} else {
+		endWorld = mem.NewWorld(endGen, endGen.Sections, endGen.MinY)
+		logger.Printf("End world initialized in-memory (sections=%d, minY=%d)", endGen.Sections, endGen.MinY)
+	}
 
 	// Build minimal registries for 26.1-snapshot-2
 	regs := buildRegistries()
@@ -137,20 +149,27 @@ func main() {
 		Logger:             logger,
 		FallDamageTypeID:   2, // minecraft:fall (3rd registered)
 		AttackDamageTypeID: 3, // minecraft:player_attack (4th registered)
+		MobDamageTypeID:    7, // minecraft:mob_attack (8th registered)
 		VoidDamageTypeID:   4, // minecraft:out_of_world (5th registered)
+		FireDamageTypeID:   5, // minecraft:on_fire (6th registered)
+		DrownDamageTypeID:  6, // minecraft:drown (7th registered)
 	}
 
-	keepInventory := false
+	gameRules := handler.NewGameRules()
 
 	chestMgr := handler.NewChestManager()
 	chestMgr.Manager = players
 	itemEntities := handler.NewItemEntityManager(players)
+	xpOrbMgr := handler.NewXPOrbManager(players)
 	furnaceMgr := handler.NewFurnaceManager(players)
 	brewingMgr := handler.NewBrewingStandManager(players)
-	timeMgr := &handler.TimeManager{}
+	timeMgr := &handler.TimeManager{Rules: gameRules}
 	arrowMgr := handler.NewArrowManager(players, survHandler, world)
 	mobMgr := handler.NewMobManager(players, timeMgr, world, minY, survHandler, itemEntities)
+	arrowMgr.MobMgr = mobMgr
+	arrowMgr.ItemEntities = itemEntities
 	mobMgr.ArrowMgr = arrowMgr
+	mobMgr.XPOrbMgr = xpOrbMgr
 	mobMgr.Logger = logger
 	if pg != nil {
 		mobMgr.MobStore = pg
@@ -174,7 +193,9 @@ func main() {
 	treeMgr := handler.NewTreeGrowthManager(world, players)
 	cropMgr := handler.NewCropManager(world, players)
 	weatherMgr := handler.NewWeatherManager(players)
+	weatherMgr.Rules = gameRules
 	mobMgr.WeatherMgr = weatherMgr
+	mobMgr.Rules = gameRules
 
 	bedMgr := &handler.BedManager{
 		Manager:    players,
@@ -200,11 +221,14 @@ func main() {
 		Logger:   logger,
 	}
 
+	lightningMgr := handler.NewLightningManager(players, weatherMgr, mobMgr, survHandler, logger)
+
 	tridentMgr := &handler.TridentManager{
 		Manager:    players,
 		ArrowMgr:   arrowMgr,
 		Survival:   survHandler,
 		WeatherMgr: weatherMgr,
+		World:      world,
 		Logger:     logger,
 	}
 
@@ -219,6 +243,7 @@ func main() {
 	boatMgr := handler.NewBoatManager(players, world, itemEntities, logger)
 	tntMgr := handler.NewTNTManager(players, world, survHandler, itemEntities, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
+	fireMgr.Rules = gameRules
 	redstoneMgr := handler.NewRedstoneManager(players, world, logger)
 	wireMgr := handler.NewWireManager(players, world)
 	pistonMgr := handler.NewPistonManager(players, world)
@@ -230,6 +255,7 @@ func main() {
 	redstoneMgr.PistonMgr = pistonMgr
 	redstoneMgr.DispenserMgr = dispenserMgr
 	redstoneMgr.TNTMgr = tntMgr
+	redstoneMgr.TimeMgr = timeMgr
 	hopperMgr.Chests = chestMgr
 	hopperMgr.Furnaces = furnaceMgr
 	dispenserMgr.ArrowMgr = arrowMgr
@@ -238,10 +264,30 @@ func main() {
 
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
+	jukeboxMgr := handler.NewJukeboxManager(players, world, itemEntities)
+	lecternMgr := handler.NewLecternManager(players, world, itemEntities)
+	bannerMgr := handler.NewBannerManager(players, world)
+	mapMgr := handler.NewMapManager(players, world)
+	composterMgr := handler.NewComposterManager(players, world, logger)
+	cauldronMgr := handler.NewCauldronManager(players, world, logger)
+	beaconMgr := handler.NewBeaconManager(players, world, effectMgr, logger)
+	witherMgr := handler.NewWitherManager(world, players, survHandler, effectMgr, itemEntities, logger)
+	armorStandMgr := handler.NewArmorStandManager(players, itemEntities, logger)
+	itemFrameMgr := handler.NewItemFrameManager(players, itemEntities, logger)
+	paintingMgr := handler.NewPaintingManager(players, world, itemEntities, logger)
+	leashMgr := handler.NewLeashManager(players, mobMgr, itemEntities, logger)
+	respawnAnchorMgr := &handler.RespawnAnchorManager{
+		Manager:  players,
+		World:    world,
+		Survival: survHandler,
+		Logger:   logger,
+	}
 
 	survHandler.ItemEntities = itemEntities
-	survHandler.KeepInventory = &keepInventory
+	survHandler.Rules = gameRules
 	survHandler.EffectMgr = effectMgr
+
+	permMgr := handler.NewPermissionManager("ops.json", "whitelist.json")
 
 	gp := &gamePlay{
 		logger:          logger,
@@ -262,6 +308,7 @@ func main() {
 		timeMgr:         timeMgr,
 		mobMgr:          mobMgr,
 		arrowMgr:        arrowMgr,
+		xpOrbMgr:        xpOrbMgr,
 		fluidMgr:        fluidMgr,
 		fallingMgr:      fallingMgr,
 		treeMgr:         treeMgr,
@@ -295,8 +342,22 @@ func main() {
 		blastFurnaceMgr: blastFurnaceMgr,
 		shulkerBoxMgr:   shulkerBoxMgr,
 		smithingMgr:     smithingMgr,
-		advancementMgr:  advancementMgr,
-		keepInventory:   &keepInventory,
+		jukeboxMgr:      jukeboxMgr,
+		lecternMgr:      lecternMgr,
+		bannerMgr:       bannerMgr,
+		mapMgr:          mapMgr,
+		composterMgr:    composterMgr,
+		cauldronMgr:     cauldronMgr,
+		beaconMgr:       beaconMgr,
+		witherMgr:       witherMgr,
+		armorStandMgr:   armorStandMgr,
+		itemFrameMgr:    itemFrameMgr,
+		paintingMgr:     paintingMgr,
+		leashMgr:           leashMgr,
+		respawnAnchorMgr:   respawnAnchorMgr,
+		advancementMgr:     advancementMgr,
+		permMgr:         permMgr,
+		gameRules:       gameRules,
 		tracer:          tp.Tracer("gearworks-mc"),
 	}
 
@@ -375,13 +436,16 @@ func main() {
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	foodHandler := &handler.FoodHandler{Logger: logger, FishingMgr: fishingMgr, PotionMgr: potionMgr}
+	foodHandler := &handler.FoodHandler{Logger: logger, FishingMgr: fishingMgr, PotionMgr: potionMgr, EffectMgr: effectMgr}
 	gp.foodHandler = foodHandler
 	tickLoop := game.NewTickLoop(
 		game.TickHandlerFunc(func(tick int64) {
 			gp.keepalive.Tick(tick, players)
 			survHandler.HungerTick(players, tick)
 			survHandler.VoidDamageTick(players, minY)
+			survHandler.FireTick(players)
+			survHandler.WaterTick(players, world)
+			survHandler.EnvironmentDamageTick(players, world, tick)
 			foodHandler.Tick(players)
 			itemEntities.Tick(tick)
 			furnaceMgr.Tick()
@@ -392,12 +456,14 @@ func main() {
 			mobMgr.Tick(tick)
 			spawnerMgr.Tick(tick)
 			arrowMgr.Tick(tick)
+			xpOrbMgr.Tick(tick)
 			fishingMgr.Tick(tick)
 			fluidMgr.Tick(tick)
 			fallingMgr.Tick(tick)
 			treeMgr.Tick(tick)
 			cropMgr.Tick(tick)
 			weatherMgr.Tick(tick)
+			lightningMgr.Tick(tick)
 			bedMgr.Tick(tick)
 			boatMgr.Tick(tick)
 			minecartMgr.Tick(tick)
@@ -412,12 +478,37 @@ func main() {
 			elytraMgr.Tick(tick)
 			dimensionMgr.Tick(tick)
 			dragonMgr.Tick(tick)
+			beaconMgr.Tick(tick)
+			witherMgr.Tick(tick)
+			leashMgr.Tick(tick)
 		}),
 	)
 
-	// Add dirty-chunk flush handler (every 30s = 600 ticks)
+	// Add dirty-chunk flush handlers (every 30s = 600 ticks)
 	if dbw != nil {
 		tickLoop.AddHandler(dbw.FlushTick(600))
+	}
+	if netherDBW != nil {
+		tickLoop.AddHandler(netherDBW.FlushTick(600))
+	}
+	if endDBW != nil {
+		tickLoop.AddHandler(endDBW.FlushTick(600))
+	}
+
+	// Auto-save all online players every 5 minutes (6000 ticks)
+	if playerStore != nil {
+		tickLoop.AddHandler(game.TickHandlerFunc(func(tick int64) {
+			if tick%6000 != 0 || tick == 0 {
+				return
+			}
+			players.ForEach(func(p *game.Player) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := playerStore.SavePlayer(ctx, buildPlayerState(p)); err != nil {
+					logger.Printf("Auto-save failed for %s: %v", p.Name, err)
+				}
+				cancel()
+			})
+		}))
 	}
 
 	go tickLoop.Run(ctx)
@@ -429,15 +520,34 @@ func main() {
 		<-sigCh
 		logger.Printf("Shutting down...")
 		tracerShutdown()
+
+		// Save all online players
+		if playerStore != nil {
+			players.ForEach(func(p *game.Player) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := playerStore.SavePlayer(ctx, buildPlayerState(p)); err != nil {
+					logger.Printf("Shutdown save failed for %s: %v", p.Name, err)
+				}
+				cancel()
+			})
+			logger.Printf("Shutdown: saved all online players")
+		}
+
+		// Save mobs for all dimensions
 		mobMgr.SaveAllMobs("overworld")
-		if dbw != nil {
-			n, err := dbw.FlushDirty(context.Background())
-			if err != nil {
-				logger.Printf("Shutdown flush error: %v", err)
-			} else if n > 0 {
-				logger.Printf("Shutdown: flushed %d dirty chunks", n)
+
+		// Flush dirty chunks for all dimensions
+		for _, dw := range []*dbworld.World{dbw, netherDBW, endDBW} {
+			if dw != nil {
+				n, err := dw.FlushDirty(context.Background())
+				if err != nil {
+					logger.Printf("Shutdown flush error: %v", err)
+				} else if n > 0 {
+					logger.Printf("Shutdown: flushed %d dirty chunks", n)
+				}
 			}
 		}
+
 		cancel()
 		os.Exit(0)
 	}()
@@ -494,6 +604,7 @@ type gamePlay struct {
 	timeMgr         *handler.TimeManager
 	mobMgr          *handler.MobManager
 	arrowMgr        *handler.ArrowManager
+	xpOrbMgr        *handler.XPOrbManager
 	fluidMgr        *handler.FluidManager
 	fallingMgr      *handler.FallingBlockManager
 	treeMgr         *handler.TreeGrowthManager
@@ -530,8 +641,22 @@ type gamePlay struct {
 	blastFurnaceMgr *handler.BlastFurnaceManager
 	shulkerBoxMgr   *handler.ShulkerBoxManager
 	smithingMgr     *handler.SmithingTableManager
-	keepInventory   *bool
+	jukeboxMgr      *handler.JukeboxManager
+	lecternMgr      *handler.LecternManager
+	bannerMgr       *handler.BannerManager
+	mapMgr          *handler.MapManager
+	composterMgr    *handler.ComposterManager
+	cauldronMgr     *handler.CauldronManager
+	beaconMgr       *handler.BeaconManager
+	witherMgr       *handler.WitherManager
+	armorStandMgr   *handler.ArmorStandManager
+	itemFrameMgr    *handler.ItemFrameManager
+	paintingMgr     *handler.PaintingManager
+	leashMgr           *handler.LeashManager
+	respawnAnchorMgr   *handler.RespawnAnchorManager
+	gameRules          *handler.GameRules
 	advancementMgr  *handler.AdvancementManager
+	permMgr         *handler.PermissionManager
 	tracer          trace.Tracer
 }
 
@@ -626,6 +751,16 @@ func (g *gamePlay) loadBlockEntities() {
 }
 
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
+	// Whitelist enforcement
+	if g.permMgr != nil && !g.permMgr.IsWhitelisted(id) {
+		disconnectPkt := pk.Marshal(
+			packetid.ClientboundDisconnect,
+			chat.Text("You are not whitelisted on this server."),
+		)
+		_ = conn.WritePacket(disconnectPkt)
+		return
+	}
+
 	eid := g.players.NextEntityID()
 
 	// Start root session span (gives each player session a unique trace ID)
@@ -648,6 +783,8 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	}
 	_ = ctx // used for child spans below
 	player.Properties = properties
+	player.ProfileKey = profilePubKey
+	player.ChatSessionID = uuid.New()
 	spawnX, spawnYVal, spawnZ := 0.5, g.spawnY, 0.5
 	var spawnYaw, spawnPitch float32
 
@@ -664,6 +801,8 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 			player.Health = ps.Health
 			player.Food = ps.Food
 			player.Saturation = ps.Saturation
+			player.Exhaustion = ps.Exhaustion
+			player.GameMode = int32(ps.GameMode)
 			player.Experience = ps.Experience
 			player.ExperienceLevel = ps.ExperienceLevel
 			player.ExperienceTotal = ps.ExperienceTotal
@@ -677,14 +816,28 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 				if i >= len(player.Inventory) {
 					break
 				}
-				player.Inventory[i] = game.ItemStack{
-					ID:            slot.ID,
-					Count:         slot.Count,
-					Durability:    slot.Durability,
-					MaxDurability: slot.MaxDurability,
+				player.Inventory[i] = slotToItemStack(slot)
+			}
+			// Restore ender chest
+			for i, slot := range ps.EnderChest {
+				if i >= len(player.EnderItems) {
+					break
+				}
+				player.EnderItems[i] = slotToItemStack(slot)
+			}
+			// Restore effects
+			if len(ps.Effects) > 0 {
+				player.Effects = make(map[int32]*game.ActiveEffect)
+				for _, e := range ps.Effects {
+					player.Effects[e.ID] = &game.ActiveEffect{
+						ID:       e.ID,
+						Level:    e.Level,
+						Duration: e.Duration,
+						Ambient:  e.Ambient,
+					}
 				}
 			}
-			g.logf("Loaded saved position for %s: (%.1f, %.1f, %.1f)", name, spawnX, spawnYVal, spawnZ)
+			g.logf("Loaded saved state for %s: pos=(%.1f, %.1f, %.1f) gm=%d", name, spawnX, spawnYVal, spawnZ, ps.GameMode)
 		}
 	}
 
@@ -709,6 +862,11 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 			g.dragonMgr.RemoveBossBarFromPlayer(player)
 		}
 
+		// Release leashes on disconnect
+		if g.leashMgr != nil {
+			g.leashMgr.OnPlayerDisconnect(player.UUID)
+		}
+
 		// Dismount vehicle if riding one
 		if player.RidingEntityEID != 0 {
 			if g.minecartMgr != nil && g.minecartMgr.IsMinecart(player.RidingEntityEID) {
@@ -726,46 +884,14 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 
 		// Save player state on disconnect
 		if g.playerStore != nil {
-			px, py, pz := player.Position()
-			pyaw, ppitch := player.Rotation()
-			// Convert inventory to store format
-			invSlots := make([]store.ItemSlot, len(player.Inventory))
-			for i, s := range player.Inventory {
-				invSlots[i] = store.ItemSlot{
-					ID:            s.ID,
-					Count:         s.Count,
-					Durability:    s.Durability,
-					MaxDurability: s.MaxDurability,
-				}
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := g.playerStore.SavePlayer(ctx, &store.PlayerState{
-				UUID:            id,
-				Name:            name,
-				Dimension:       player.Dimension,
-				X:               px,
-				Y:               py,
-				Z:               pz,
-				Yaw:             pyaw,
-				Pitch:           ppitch,
-				GameMode:        int(player.GameMode),
-				Health:          player.Health,
-				Food:            player.Food,
-				Saturation:      player.Saturation,
-				Inventory:       invSlots,
-				Experience:      player.Experience,
-				ExperienceLevel: player.ExperienceLevel,
-				ExperienceTotal: player.ExperienceTotal,
-				SpawnX:          player.SpawnX,
-				SpawnY:          player.SpawnY,
-				SpawnZ:          player.SpawnZ,
-				HasSpawnPoint:   player.HasSpawnPoint,
-			})
+			err := g.playerStore.SavePlayer(ctx, buildPlayerState(player))
 			cancel()
 			if err != nil {
 				g.logf("Warning: failed to save player %s state: %v", name, err)
 			} else {
-				g.logf("Saved position for %s: (%.1f, %.1f, %.1f)", name, px, py, pz)
+				sx, sy, sz := player.Position()
+				g.logf("Saved state for %s: (%.1f, %.1f, %.1f)", name, sx, sy, sz)
 			}
 		}
 		// Record disconnect position on the session span
@@ -824,6 +950,7 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 		g.logf("Error sending PlayerPosition to %s: %v", name, err)
 		return
 	}
+	player.TeleportPending = true
 
 	if err := g.sendSpawnSequence(player); err != nil {
 		g.logf("Error sending spawn sequence to %s: %v", name, err)
@@ -900,6 +1027,10 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	g.minecartMgr.SendExistingMinecarts(player)
 	g.tntMgr.SendExistingTNTs(player)
 	g.potionMgr.SendExistingPotions(player)
+	g.armorStandMgr.SendExistingStands(player)
+	g.itemFrameMgr.SendExistingFrames(player)
+	g.paintingMgr.SendExistingPaintings(player)
+	g.leashMgr.SendExistingKnots(player)
 
 	// Scoreboard: health below names
 	handler.SendScoreboard(g.players, player)
@@ -1010,6 +1141,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		Manager:      g.players,
 		Logger:       g.logger,
 		ItemEntities: g.itemEntities,
+		XPOrbMgr:     g.xpOrbMgr,
 		Chests:       g.chests,
 		Furnaces:     g.furnaces,
 		BrewingMgr:   g.brewingMgr,
@@ -1040,6 +1172,18 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BlastFurnaceMgr: g.blastFurnaceMgr,
 		ShulkerBoxMgr:   g.shulkerBoxMgr,
 		SmithingMgr:     g.smithingMgr,
+		ComposterMgr:    g.composterMgr,
+		CauldronMgr:     g.cauldronMgr,
+		BeaconMgr:       g.beaconMgr,
+		WitherMgr:       g.witherMgr,
+		ArmorStandMgr:   g.armorStandMgr,
+		ItemFrameMgr:    g.itemFrameMgr,
+		PaintingMgr:     g.paintingMgr,
+		LeashMgr:        g.leashMgr,
+		JukeboxMgr:      g.jukeboxMgr,
+		LecternMgr:      g.lecternMgr,
+		BannerMgr:          g.bannerMgr,
+		RespawnAnchorMgr:   g.respawnAnchorMgr,
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {
@@ -1065,6 +1209,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BlastFurnaceMgr: g.blastFurnaceMgr,
 		ShulkerBoxMgr:   g.shulkerBoxMgr,
 		SmithingMgr:     g.smithingMgr,
+		BeaconMgr:       g.beaconMgr,
 	}
 	if g.pgStore != nil {
 		invHandler.OnContainerClose = func(containerType string, pos [3]int) {
@@ -1077,13 +1222,17 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		SurvivalHandler: g.survivalHandler,
 		TimeMgr:         g.timeMgr,
 		WeatherMgr:      g.weatherMgr,
-		KeepInventory:   g.keepInventory,
+		Rules:           g.gameRules,
+		PermMgr:         g.permMgr,
+		World:           g.world,
+		MobMgr:          g.mobMgr,
+		EffectMgr:       g.effectMgr,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:     g.players,
 		Logger:      g.logger,
 		Commands:    cmdExecutor,
-		// Broadcaster: disabled, using default DisguisedChat (see import comment)
+		Broadcaster: &chatheads.ChatBroadcaster{Manager: g.players},
 	}
 	animHandler := &handler.AnimationHandler{
 		Manager:   g.players,
@@ -1099,6 +1248,12 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		MinecartMgr:     g.minecartMgr,
 		EffectMgr:       g.effectMgr,
 		DragonMgr:       g.dragonMgr,
+		WitherMgr:       g.witherMgr,
+		ArmorStandMgr:   g.armorStandMgr,
+		ItemFrameMgr:    g.itemFrameMgr,
+		PaintingMgr:     g.paintingMgr,
+		LeashMgr:        g.leashMgr,
+		Rules:           g.gameRules,
 		Logger:          g.logger,
 	}
 	respawnHandler := &handler.RespawnHandler{
@@ -1292,6 +1447,21 @@ func buildRegistries() registry.Registries {
 		Scaling:    "never",
 		Exhaustion: 0.0,
 	})
+	regs.DamageType.Put("minecraft:on_fire", registry.DamageType{
+		MessageID:  "onFire",
+		Scaling:    "never",
+		Exhaustion: 0.0,
+	})
+	regs.DamageType.Put("minecraft:drown", registry.DamageType{
+		MessageID:  "drown",
+		Scaling:    "never",
+		Exhaustion: 0.0,
+	})
+	regs.DamageType.Put("minecraft:mob_attack", registry.DamageType{
+		MessageID:  "mob",
+		Scaling:    "when_caused_by_living_non_player",
+		Exhaustion: 0.1,
+	})
 
 	return regs
 }
@@ -1364,5 +1534,94 @@ func writeLongArray(buf *bytes.Buffer, longs []int64) {
 		buf.WriteByte(byte(l >> 16))
 		buf.WriteByte(byte(l >> 8))
 		buf.WriteByte(byte(l))
+	}
+}
+
+// slotToItemStack converts a store.ItemSlot to a game.ItemStack.
+func slotToItemStack(slot store.ItemSlot) game.ItemStack {
+	return game.ItemStack{
+		ID:            slot.ID,
+		Count:         slot.Count,
+		Durability:    slot.Durability,
+		MaxDurability: slot.MaxDurability,
+		Enchantments:  slot.Enchantments,
+		DisplayName:   slot.DisplayName,
+		PotionType:    slot.PotionType,
+	}
+}
+
+// itemStackToSlot converts a game.ItemStack to a store.ItemSlot.
+func itemStackToSlot(s game.ItemStack) store.ItemSlot {
+	return store.ItemSlot{
+		ID:            s.ID,
+		Count:         s.Count,
+		Durability:    s.Durability,
+		MaxDurability: s.MaxDurability,
+		Enchantments:  s.Enchantments,
+		DisplayName:   s.DisplayName,
+		PotionType:    s.PotionType,
+	}
+}
+
+// buildPlayerState creates a store.PlayerState from a live player.
+func buildPlayerState(player *game.Player) *store.PlayerState {
+	px, py, pz := player.Position()
+	pyaw, ppitch := player.Rotation()
+
+	invSlots := make([]store.ItemSlot, len(player.Inventory))
+	for i, s := range player.Inventory {
+		invSlots[i] = itemStackToSlot(s)
+	}
+
+	var enderSlots []store.ItemSlot
+	for _, s := range player.EnderItems {
+		if s.ID != 0 {
+			enderSlots = append(enderSlots, itemStackToSlot(s))
+		}
+	}
+	// Preserve index-based storage for ender chest
+	if len(enderSlots) > 0 {
+		enderSlots = make([]store.ItemSlot, len(player.EnderItems))
+		for i, s := range player.EnderItems {
+			enderSlots[i] = itemStackToSlot(s)
+		}
+	}
+
+	var effects []store.EffectData
+	for _, e := range player.Effects {
+		if e != nil {
+			effects = append(effects, store.EffectData{
+				ID:       e.ID,
+				Level:    e.Level,
+				Duration: e.Duration,
+				Ambient:  e.Ambient,
+			})
+		}
+	}
+
+	return &store.PlayerState{
+		UUID:            player.UUID,
+		Name:            player.Name,
+		Dimension:       player.Dimension,
+		X:               px,
+		Y:               py,
+		Z:               pz,
+		Yaw:             pyaw,
+		Pitch:           ppitch,
+		GameMode:        int(player.GameMode),
+		Health:          player.Health,
+		Food:            player.Food,
+		Saturation:      player.Saturation,
+		Exhaustion:      player.Exhaustion,
+		Inventory:       invSlots,
+		EnderChest:      enderSlots,
+		Effects:         effects,
+		Experience:      player.Experience,
+		ExperienceLevel: player.ExperienceLevel,
+		ExperienceTotal: player.ExperienceTotal,
+		SpawnX:          player.SpawnX,
+		SpawnY:          player.SpawnY,
+		SpawnZ:          player.SpawnZ,
+		HasSpawnPoint:   player.HasSpawnPoint,
 	}
 }

@@ -7,9 +7,14 @@ import (
 	"strconv"
 	"strings"
 
+	"math"
+
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
+	"github.com/Tnze/go-mc/level"
+	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 	"github.com/Tnze/go-mc/server/command"
 )
@@ -21,8 +26,11 @@ type CommandExecutor struct {
 	SurvivalHandler *SurvivalHandler
 	TimeMgr         *TimeManager
 	WeatherMgr      *WeatherManager
-	KeepInventory   *bool
+	Rules           *GameRules
 	PermMgr         *PermissionManager
+	World           game.World
+	MobMgr          *MobManager
+	EffectMgr       *EffectManager
 }
 
 // Execute parses and dispatches a command line (without the leading /).
@@ -43,12 +51,13 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 	if pm := c.PermMgr; pm != nil {
 		switch cmd {
 		case "gamemode", "gm", "tp", "teleport", "give", "kill", "time",
-			"clear", "difficulty", "weather", "xp", "experience", "enchant", "gamerule":
+			"clear", "difficulty", "weather", "xp", "experience", "enchant", "gamerule",
+			"summon", "setblock", "fill", "effect":
 			if pm.OpLevel(player.UUID) < 2 {
 				c.sendSystemMsg(player, "You don't have permission to use this command", "red")
 				return
 			}
-		case "op", "deop", "whitelist":
+		case "op", "deop", "whitelist", "kick":
 			if pm.OpLevel(player.UUID) < 3 {
 				c.sendSystemMsg(player, "You don't have permission to use this command", "red")
 				return
@@ -89,6 +98,16 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		c.cmdDeop(player, args)
 	case "whitelist":
 		c.cmdWhitelist(player, args)
+	case "summon":
+		c.cmdSummon(player, args)
+	case "setblock":
+		c.cmdSetblock(player, args)
+	case "fill":
+		c.cmdFill(player, args)
+	case "effect":
+		c.cmdEffect(player, args)
+	case "kick":
+		c.cmdKick(player, args)
 	default:
 		c.sendSystemMsg(player, fmt.Sprintf("Unknown command: /%s. Type /help for a list of commands.", cmd), "red")
 	}
@@ -157,6 +176,7 @@ func (c *CommandExecutor) cmdTeleport(player *game.Player, args []string) {
 			return
 		}
 		player.SetPosition(x, y, z)
+		player.TeleportPending = true
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundPlayerPosition,
 			pk.VarInt(99),  // teleport ID
@@ -181,6 +201,7 @@ func (c *CommandExecutor) cmdTeleport(player *game.Player, args []string) {
 		}
 		tx, ty, tz := target.Position()
 		player.SetPosition(tx, ty, tz)
+		player.TeleportPending = true
 		player.WritePacket(pk.Marshal(
 			packetid.ClientboundPlayerPosition,
 			pk.VarInt(99),  // teleport ID
@@ -357,6 +378,9 @@ func (c *CommandExecutor) cmdDifficulty(player *game.Player, args []string) {
 		pk.UnsignedByte(level),
 		pk.Boolean(false), // not locked
 	)
+	if c.Rules != nil {
+		c.Rules.SetDifficulty(level)
+	}
 	c.Manager.ForEach(func(p *game.Player) {
 		p.WritePacket(pkt)
 	})
@@ -481,19 +505,14 @@ func (c *CommandExecutor) cmdXP(player *game.Player, args []string) {
 }
 
 func (c *CommandExecutor) cmdEnchant(player *game.Player, args []string) {
-	validEnchants := map[string]bool{
-		"sharpness": true, "protection": true, "efficiency": true,
-		"unbreaking": true, "knockback": true,
-	}
-
 	if len(args) < 1 {
 		c.sendSystemMsg(player, "Usage: /enchant <enchantment> [level]", "red")
-		c.sendSystemMsg(player, "  Valid: sharpness, protection, efficiency, unbreaking, knockback", "")
+		c.sendSystemMsg(player, "  Valid: any enchantment from the registry (e.g. sharpness, protection, efficiency)", "")
 		return
 	}
 
 	enchName := strings.ToLower(args[0])
-	if !validEnchants[enchName] {
+	if enchant.MaxLevel(enchName) == 0 {
 		c.sendSystemMsg(player, fmt.Sprintf("Unknown enchantment: %s", args[0]), "red")
 		return
 	}
@@ -501,8 +520,8 @@ func (c *CommandExecutor) cmdEnchant(player *game.Player, args []string) {
 	level := int32(1)
 	if len(args) >= 2 {
 		n, err := strconv.Atoi(args[1])
-		if err != nil || n < 1 || n > 5 {
-			c.sendSystemMsg(player, "Level must be between 1 and 5", "red")
+		if err != nil || n < 1 || int32(n) > enchant.MaxLevel(enchName) {
+			c.sendSystemMsg(player, fmt.Sprintf("Level must be between 1 and %d", enchant.MaxLevel(enchName)), "red")
 			return
 		}
 		level = int32(n)
@@ -515,49 +534,53 @@ func (c *CommandExecutor) cmdEnchant(player *game.Player, args []string) {
 		return
 	}
 
-	if invItem.Enchantments == nil {
-		invItem.Enchantments = make(map[string]int32)
-	}
-	invItem.Enchantments[enchName] = level
+	invItem.Enchantments = enchant.ApplyToItem(invItem.Enchantments, enchName, level)
 
 	c.sendSystemMsg(player, fmt.Sprintf("Applied %s %d to held item", enchName, level), "green")
 	c.Logger.Printf("%s enchanted held item with %s %d", player.Name, enchName, level)
 }
 
 func (c *CommandExecutor) cmdGamerule(player *game.Player, args []string) {
-	if len(args) < 1 {
-		c.sendSystemMsg(player, "Usage: /gamerule <rule> [value]", "red")
-		c.sendSystemMsg(player, "  Available rules: keepInventory", "")
+	if c.Rules == nil {
+		c.sendSystemMsg(player, "Game rules not available", "red")
 		return
 	}
 
-	rule := strings.ToLower(args[0])
-	switch rule {
-	case "keepinventory":
-		if len(args) < 2 {
-			val := "false"
-			if c.KeepInventory != nil && *c.KeepInventory {
-				val = "true"
-			}
-			c.sendSystemMsg(player, fmt.Sprintf("keepInventory = %s", val), "green")
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /gamerule <rule> [true|false]", "red")
+		c.sendSystemMsg(player, "Rules: "+strings.Join(RuleNames, ", "), "")
+		return
+	}
+
+	ruleName := strings.ToLower(args[0])
+
+	// Query mode
+	if len(args) < 2 {
+		val, ok := c.Rules.GetRule(ruleName)
+		if !ok {
+			c.sendSystemMsg(player, fmt.Sprintf("Unknown gamerule: %s", args[0]), "red")
 			return
 		}
-		switch strings.ToLower(args[1]) {
-		case "true":
-			if c.KeepInventory != nil {
-				*c.KeepInventory = true
-			}
-			c.sendSystemMsg(player, "Set keepInventory to true", "green")
-		case "false":
-			if c.KeepInventory != nil {
-				*c.KeepInventory = false
-			}
-			c.sendSystemMsg(player, "Set keepInventory to false", "green")
-		default:
-			c.sendSystemMsg(player, "Value must be true or false", "red")
+		c.sendSystemMsg(player, fmt.Sprintf("%s = %v", args[0], val), "green")
+		return
+	}
+
+	// Set mode
+	switch strings.ToLower(args[1]) {
+	case "true":
+		if !c.Rules.SetRule(ruleName, true) {
+			c.sendSystemMsg(player, fmt.Sprintf("Unknown gamerule: %s", args[0]), "red")
+			return
 		}
+		c.sendSystemMsg(player, fmt.Sprintf("Set %s to true", args[0]), "green")
+	case "false":
+		if !c.Rules.SetRule(ruleName, false) {
+			c.sendSystemMsg(player, fmt.Sprintf("Unknown gamerule: %s", args[0]), "red")
+			return
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Set %s to false", args[0]), "green")
 	default:
-		c.sendSystemMsg(player, fmt.Sprintf("Unknown gamerule: %s", rule), "red")
+		c.sendSystemMsg(player, "Value must be true or false", "red")
 	}
 }
 
@@ -580,6 +603,11 @@ func (c *CommandExecutor) cmdHelp(player *game.Player) {
 		"  /op <player> — Make a player a server operator",
 		"  /deop <player> — Remove a player's operator status",
 		"  /whitelist <add|remove|on|off|list> [player] — Manage whitelist",
+		"  /summon <entity> [x y z] — Summon an entity",
+		"  /setblock <x> <y> <z> <block> — Set a block",
+		"  /fill <x1 y1 z1> <x2 y2 z2> <block> [mode] — Fill region with blocks",
+		"  /effect <give|clear> <player> [effect] [duration] [amplifier] — Manage effects",
+		"  /kick <player> [reason] — Kick a player",
 		"  /help — Show this help message",
 	}
 	for _, line := range lines {
@@ -691,6 +719,301 @@ func (c *CommandExecutor) sendSystemMsg(player *game.Player, text, color string)
 		msg,
 		pk.Boolean(false), // not action bar
 	))
+}
+
+// blockStateFromName returns the default block state ID for a block name (without minecraft: prefix).
+// Returns -1 if the block is unknown.
+func blockStateFromName(name string) int {
+	b, ok := block.FromID["minecraft:"+name]
+	if !ok {
+		return -1
+	}
+	sid, ok := block.ToStateID[b]
+	if !ok {
+		return -1
+	}
+	return int(sid)
+}
+
+// parseCoordRelative parses a coordinate that may be relative (~offset from player pos).
+func parseCoordRelative(s string, playerPos float64) (float64, error) {
+	if strings.HasPrefix(s, "~") {
+		if s == "~" {
+			return playerPos, nil
+		}
+		offset, err := strconv.ParseFloat(s[1:], 64)
+		if err != nil {
+			return 0, err
+		}
+		return playerPos + offset, nil
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+func (c *CommandExecutor) cmdSummon(player *game.Player, args []string) {
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /summon <entity_type> [x y z]", "red")
+		return
+	}
+
+	if c.MobMgr == nil {
+		c.sendSystemMsg(player, "Mob spawning not available", "red")
+		return
+	}
+
+	entityName := strings.ToLower(args[0])
+	px, py, pz := player.Position()
+
+	var x, y, z float64
+	if len(args) >= 4 {
+		var err1, err2, err3 error
+		x, err1 = parseCoordRelative(args[1], px)
+		y, err2 = parseCoordRelative(args[2], py)
+		z, err3 = parseCoordRelative(args[3], pz)
+		if err1 != nil || err2 != nil || err3 != nil {
+			c.sendSystemMsg(player, "Invalid coordinates", "red")
+			return
+		}
+	} else {
+		x, y, z = px, py, pz
+	}
+
+	// Look up mob type by name
+	typeID := MobTypeByName(entityName)
+	if typeID < 0 {
+		c.sendSystemMsg(player, fmt.Sprintf("Unknown entity: %s", entityName), "red")
+		return
+	}
+
+	c.MobMgr.SpawnMobAt(typeID, x, y, z)
+	c.sendSystemMsg(player, fmt.Sprintf("Summoned %s at %.1f %.1f %.1f", entityName, x, y, z), "green")
+	c.Logger.Printf("%s summoned %s at %.1f %.1f %.1f", player.Name, entityName, x, y, z)
+}
+
+func (c *CommandExecutor) cmdSetblock(player *game.Player, args []string) {
+	if len(args) < 4 {
+		c.sendSystemMsg(player, "Usage: /setblock <x> <y> <z> <block>", "red")
+		return
+	}
+
+	if c.World == nil {
+		c.sendSystemMsg(player, "World not available", "red")
+		return
+	}
+
+	px, py, pz := player.Position()
+	x, err1 := parseCoordRelative(args[0], px)
+	y, err2 := parseCoordRelative(args[1], py)
+	z, err3 := parseCoordRelative(args[2], pz)
+	if err1 != nil || err2 != nil || err3 != nil {
+		c.sendSystemMsg(player, "Invalid coordinates", "red")
+		return
+	}
+
+	blockName := strings.ToLower(args[3])
+	stateID := blockStateFromName(blockName)
+	if stateID < 0 {
+		c.sendSystemMsg(player, fmt.Sprintf("Unknown block: %s", blockName), "red")
+		return
+	}
+
+	bx, by, bz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+	c.World.SetBlock(bx, by, bz, level.BlocksState(stateID))
+	broadcastBlockUpdateDirect(c.Manager, bx, by, bz, int32(stateID))
+	c.sendSystemMsg(player, fmt.Sprintf("Set block at %d %d %d to %s", bx, by, bz, blockName), "green")
+}
+
+func (c *CommandExecutor) cmdFill(player *game.Player, args []string) {
+	if len(args) < 7 {
+		c.sendSystemMsg(player, "Usage: /fill <x1> <y1> <z1> <x2> <y2> <z2> <block> [replace|hollow|outline]", "red")
+		return
+	}
+
+	if c.World == nil {
+		c.sendSystemMsg(player, "World not available", "red")
+		return
+	}
+
+	px, py, pz := player.Position()
+	x1, err1 := parseCoordRelative(args[0], px)
+	y1, err2 := parseCoordRelative(args[1], py)
+	z1, err3 := parseCoordRelative(args[2], pz)
+	x2, err4 := parseCoordRelative(args[3], px)
+	y2, err5 := parseCoordRelative(args[4], py)
+	z2, err6 := parseCoordRelative(args[5], pz)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil || err6 != nil {
+		c.sendSystemMsg(player, "Invalid coordinates", "red")
+		return
+	}
+
+	blockName := strings.ToLower(args[6])
+	stateID := blockStateFromName(blockName)
+	if stateID < 0 {
+		c.sendSystemMsg(player, fmt.Sprintf("Unknown block: %s", blockName), "red")
+		return
+	}
+
+	ix1, iy1, iz1 := int(math.Floor(x1)), int(math.Floor(y1)), int(math.Floor(z1))
+	ix2, iy2, iz2 := int(math.Floor(x2)), int(math.Floor(y2)), int(math.Floor(z2))
+
+	// Normalize
+	if ix1 > ix2 { ix1, ix2 = ix2, ix1 }
+	if iy1 > iy2 { iy1, iy2 = iy2, iy1 }
+	if iz1 > iz2 { iz1, iz2 = iz2, iz1 }
+
+	total := (ix2-ix1+1) * (iy2-iy1+1) * (iz2-iz1+1)
+	if total > 32768 {
+		c.sendSystemMsg(player, fmt.Sprintf("Too many blocks: %d (max 32768)", total), "red")
+		return
+	}
+
+	mode := "replace"
+	if len(args) >= 8 {
+		mode = strings.ToLower(args[7])
+	}
+
+	count := 0
+	for bx := ix1; bx <= ix2; bx++ {
+		for by := iy1; by <= iy2; by++ {
+			for bz := iz1; bz <= iz2; bz++ {
+				place := true
+				switch mode {
+				case "hollow":
+					isEdge := bx == ix1 || bx == ix2 || by == iy1 || by == iy2 || bz == iz1 || bz == iz2
+					if !isEdge {
+						// Fill interior with air
+						c.World.SetBlock(bx, by, bz, 0)
+						broadcastBlockUpdateDirect(c.Manager, bx, by, bz, 0)
+						count++
+						place = false
+					}
+				case "outline":
+					isEdge := bx == ix1 || bx == ix2 || by == iy1 || by == iy2 || bz == iz1 || bz == iz2
+					if !isEdge {
+						place = false
+					}
+				}
+				if place {
+					c.World.SetBlock(bx, by, bz, level.BlocksState(stateID))
+					broadcastBlockUpdateDirect(c.Manager, bx, by, bz, int32(stateID))
+					count++
+				}
+			}
+		}
+	}
+
+	c.sendSystemMsg(player, fmt.Sprintf("Filled %d blocks with %s", count, blockName), "green")
+	c.Logger.Printf("%s filled %d blocks with %s", player.Name, count, blockName)
+}
+
+func (c *CommandExecutor) cmdEffect(player *game.Player, args []string) {
+	if len(args) < 2 {
+		c.sendSystemMsg(player, "Usage: /effect <give|clear> <player> [effect] [duration] [amplifier]", "red")
+		return
+	}
+
+	if c.EffectMgr == nil {
+		c.sendSystemMsg(player, "Effect system not available", "red")
+		return
+	}
+
+	subCmd := strings.ToLower(args[0])
+	targetName := args[1]
+
+	var target *game.Player
+	if targetName == "@s" {
+		target = player
+	} else {
+		target = c.Manager.GetByName(targetName)
+	}
+	if target == nil {
+		c.sendSystemMsg(player, fmt.Sprintf("Player not found: %s", targetName), "red")
+		return
+	}
+
+	switch subCmd {
+	case "give":
+		if len(args) < 3 {
+			c.sendSystemMsg(player, "Usage: /effect give <player> <effect> [duration] [amplifier]", "red")
+			return
+		}
+		effectName := strings.ToLower(args[2])
+		effectID := EffectIDByName(effectName)
+		if effectID < 0 {
+			c.sendSystemMsg(player, fmt.Sprintf("Unknown effect: %s", effectName), "red")
+			return
+		}
+
+		duration := int32(600) // default 30s = 600 ticks
+		if len(args) >= 4 {
+			d, err := strconv.Atoi(args[3])
+			if err != nil {
+				c.sendSystemMsg(player, "Invalid duration", "red")
+				return
+			}
+			duration = int32(d) * 20 // seconds to ticks
+		}
+
+		amplifier := int32(0)
+		if len(args) >= 5 {
+			a, err := strconv.Atoi(args[4])
+			if err != nil {
+				c.sendSystemMsg(player, "Invalid amplifier", "red")
+				return
+			}
+			amplifier = int32(a)
+		}
+
+		c.EffectMgr.ApplyEffect(target, effectID, amplifier, duration, false)
+		c.sendSystemMsg(player, fmt.Sprintf("Applied %s %d to %s for %ds", effectName, amplifier+1, target.Name, duration/20), "green")
+
+	case "clear":
+		if len(args) >= 3 {
+			effectName := strings.ToLower(args[2])
+			effectID := EffectIDByName(effectName)
+			if effectID < 0 {
+				c.sendSystemMsg(player, fmt.Sprintf("Unknown effect: %s", effectName), "red")
+				return
+			}
+			c.EffectMgr.RemoveEffect(target, effectID)
+			c.sendSystemMsg(player, fmt.Sprintf("Removed %s from %s", effectName, target.Name), "green")
+		} else {
+			c.EffectMgr.ClearAllEffects(target)
+			c.sendSystemMsg(player, fmt.Sprintf("Cleared all effects from %s", target.Name), "green")
+		}
+
+	default:
+		c.sendSystemMsg(player, "Usage: /effect <give|clear> <player> ...", "red")
+	}
+}
+
+func (c *CommandExecutor) cmdKick(player *game.Player, args []string) {
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /kick <player> [reason]", "red")
+		return
+	}
+
+	target := c.Manager.GetByName(args[0])
+	if target == nil {
+		c.sendSystemMsg(player, fmt.Sprintf("Player not found: %s", args[0]), "red")
+		return
+	}
+
+	reason := "Kicked by operator"
+	if len(args) >= 2 {
+		reason = strings.Join(args[1:], " ")
+	}
+
+	// Send disconnect packet
+	kickMsg := chat.Message{Text: reason}
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundDisconnect,
+		kickMsg,
+	))
+	target.Conn.Close()
+
+	c.sendSystemMsg(player, fmt.Sprintf("Kicked %s: %s", target.Name, reason), "green")
+	c.Logger.Printf("%s kicked %s: %s", player.Name, target.Name, reason)
 }
 
 // BuildCommandGraph creates the command tree for tab-completion hints.
@@ -823,16 +1146,17 @@ func BuildCommandGraph() *command.Graph {
 			Unhandle(),
 	)
 
-	// /gamerule <rule> [value]
-	g.AppendLiteral(
-		g.Literal("gamerule").
-			AppendArgument(
-				g.Argument("rule", command.StringParser(0)).
-					AppendArgument(g.Argument("value", command.StringParser(0)).HandleFunc(noop)).
-					HandleFunc(noop),
-			).
-			Unhandle(),
-	)
+	// /gamerule <rule> [true|false]
+	gameruleNode := g.Literal("gamerule")
+	for _, ruleName := range RuleNames {
+		gameruleNode.AppendLiteral(
+			g.Literal(ruleName).
+				AppendLiteral(g.Literal("true").HandleFunc(noop)).
+				AppendLiteral(g.Literal("false").HandleFunc(noop)).
+				HandleFunc(noop),
+		)
+	}
+	g.AppendLiteral(gameruleNode.Unhandle())
 
 	// /experience (alias for /xp)
 	g.AppendLiteral(
@@ -887,6 +1211,86 @@ func BuildCommandGraph() *command.Graph {
 				g.Literal("remove").
 					AppendArgument(g.Argument("player", command.EntityParser{Flags: 0x01}).HandleFunc(noop)).
 					Unhandle(),
+			).
+			Unhandle(),
+	)
+
+	// /summon <entity_type> [x y z]
+	g.AppendLiteral(
+		g.Literal("summon").
+			AppendArgument(
+				g.Argument("entity", command.StringParser(0)).
+					AppendArgument(
+						g.Argument("pos", command.StringParser(2)).HandleFunc(noop),
+					).
+					HandleFunc(noop),
+			).
+			Unhandle(),
+	)
+
+	// /setblock <x> <y> <z> <block>
+	g.AppendLiteral(
+		g.Literal("setblock").
+			AppendArgument(
+				g.Argument("pos", command.StringParser(2)).
+					AppendArgument(g.Argument("block", command.StringParser(0)).HandleFunc(noop)).
+					Unhandle(),
+			).
+			Unhandle(),
+	)
+
+	// /fill <x1> <y1> <z1> <x2> <y2> <z2> <block> [mode]
+	g.AppendLiteral(
+		g.Literal("fill").
+			AppendArgument(
+				g.Argument("from", command.StringParser(2)).
+					AppendArgument(
+						g.Argument("to_and_block", command.StringParser(2)).HandleFunc(noop),
+					).
+					Unhandle(),
+			).
+			Unhandle(),
+	)
+
+	// /effect <give|clear> <player> [effect] [duration] [amplifier]
+	g.AppendLiteral(
+		g.Literal("effect").
+			AppendLiteral(
+				g.Literal("give").
+					AppendArgument(
+						g.Argument("player", command.EntityParser{Flags: 0x01}).
+							AppendArgument(
+								g.Argument("effect", command.StringParser(0)).
+									AppendArgument(
+										g.Argument("duration", command.StringParser(0)).
+											AppendArgument(g.Argument("amplifier", command.StringParser(0)).HandleFunc(noop)).
+											HandleFunc(noop),
+									).
+									HandleFunc(noop),
+							).
+							Unhandle(),
+					).
+					Unhandle(),
+			).
+			AppendLiteral(
+				g.Literal("clear").
+					AppendArgument(
+						g.Argument("player", command.EntityParser{Flags: 0x01}).
+							AppendArgument(g.Argument("effect", command.StringParser(0)).HandleFunc(noop)).
+							HandleFunc(noop),
+					).
+					Unhandle(),
+			).
+			Unhandle(),
+	)
+
+	// /kick <player> [reason]
+	g.AppendLiteral(
+		g.Literal("kick").
+			AppendArgument(
+				g.Argument("player", command.EntityParser{Flags: 0x01}).
+					AppendArgument(g.Argument("reason", command.MessageParser{}).HandleFunc(noop)).
+					HandleFunc(noop),
 			).
 			Unhandle(),
 	)

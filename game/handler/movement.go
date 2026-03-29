@@ -5,8 +5,10 @@ import (
 	"log"
 	"math"
 
+	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
@@ -53,6 +55,9 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		onGround := (int32(flags) & 0x01) != 0
 		wasOnGround := player.OnGround
 		player.OnGround = onGround
+		if !h.validateMovement(player, float64(x), float64(y), float64(z)) {
+			return true
+		}
 		oldX, oldY, oldZ := player.Position()
 		oldChunk := player.ChunkPos()
 		player.SetPosition(float64(x), float64(y), float64(z))
@@ -63,6 +68,7 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		h.handleSneakFlag(player, int32(flags))
 		h.trackFall(player, oldY, float64(y), onGround)
 		AddSprintExhaustion(player, float64(x)-oldX, float64(z)-oldZ)
+		AddSwimExhaustion(player, float64(x)-oldX, float64(y)-oldY, float64(z)-oldZ)
 		// Jump exhaustion
 		if wasOnGround && !onGround && float64(y) > oldY+0.1 {
 			if player.Sprinting {
@@ -91,6 +97,9 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		onGround := (int32(flags) & 0x01) != 0
 		wasOnGround := player.OnGround
 		player.OnGround = onGround
+		if !h.validateMovement(player, float64(x), float64(y), float64(z)) {
+			return true
+		}
 		oldX, oldY, oldZ := player.Position()
 		oldChunk := player.ChunkPos()
 		player.SetPosition(float64(x), float64(y), float64(z))
@@ -102,6 +111,7 @@ func (h *MovementHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 		h.handleSneakFlag(player, int32(flags))
 		h.trackFall(player, oldY, float64(y), onGround)
 		AddSprintExhaustion(player, float64(x)-oldX, float64(z)-oldZ)
+		AddSwimExhaustion(player, float64(x)-oldX, float64(y)-oldY, float64(z)-oldZ)
 		// Jump exhaustion
 		if wasOnGround && !onGround && float64(y) > oldY+0.1 {
 			if player.Sprinting {
@@ -372,6 +382,12 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		return
 	}
 
+	// Cancel fall tracking when entering water or on a climbable block
+	if player.InWater || player.OnLadder {
+		player.FallStartY = -999
+		return
+	}
+
 	if newY < oldY {
 		// Falling — track the start of the fall
 		if player.FallStartY < -900 {
@@ -389,14 +405,12 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 			// Feather Falling enchantment: check boots (slot 8) for reduction.
 			// Each level reduces fall damage by 12% (multiply by 1 - 0.12*level).
 			bootsItem := &player.Inventory[8]
-			if bootsItem.ID > 0 && bootsItem.Enchantments != nil {
-				if ffLvl := bootsItem.Enchantments["feather_falling"]; ffLvl > 0 {
-					reduction := float64(ffLvl) * 0.12
-					if reduction > 1.0 {
-						reduction = 1.0
-					}
-					damage *= float32(1 - reduction)
+			if ffLvl := enchant.GetLevel(bootsItem.Enchantments, enchant.FeatherFalling); ffLvl > 0 {
+				reduction := float64(ffLvl) * 0.12
+				if reduction > 1.0 {
+					reduction = 1.0
 				}
+				damage *= float32(1 - reduction)
 			}
 
 			if damage > 0 && h.SurvivalHandler != nil {
@@ -463,6 +477,164 @@ func (h *MovementHandler) checkSweetBerryBush(player *game.Player, x, y, z float
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Movement Validation (Anti-Cheat)
+// ---------------------------------------------------------------------------
+
+const (
+	maxWalkSpeed    = 0.32 // blocks/tick (4.317 bps * 1.5 tolerance / 20)
+	maxSprintSpeed  = 0.42 // blocks/tick (5.612 bps * 1.5 tolerance / 20)
+	maxVerticalUp   = 0.5  // blocks/tick (jump + tolerance)
+	maxVerticalDown = 4.0  // blocks/tick (terminal velocity + tolerance)
+	maxViolations   = 5    // before rubberband
+	kickViolations  = 20   // before kick
+	maxFlyTicks     = 80   // airborne ticks before flagging as flying
+)
+
+// validateMovement checks if a position update is physically plausible.
+// Returns true if the movement should be accepted.
+func (h *MovementHandler) validateMovement(player *game.Player, newX, newY, newZ float64) bool {
+	// Skip validation after server-initiated teleport
+	if player.TeleportPending {
+		player.TeleportPending = false
+		player.ViolationCount = 0
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		player.AirTicks_AC = 0
+		return true
+	}
+
+	// Skip if creative or spectator — free flight allowed
+	if player.GameMode == 1 || player.GameMode == 3 {
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		return true
+	}
+
+	// Skip if riding an entity
+	if player.RidingEntityEID != 0 {
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		return true
+	}
+
+	// Skip if gliding with elytra
+	if player.Gliding {
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		return true
+	}
+
+	oldX, oldY, oldZ := player.LastValidX, player.LastValidY, player.LastValidZ
+
+	// First movement: no previous position to validate against
+	if oldX == 0 && oldY == 0 && oldZ == 0 {
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		return true
+	}
+
+	// Horizontal speed check
+	dx := newX - oldX
+	dz := newZ - oldZ
+	horizDist := math.Sqrt(dx*dx + dz*dz)
+
+	maxHoriz := maxWalkSpeed
+	if player.Sprinting {
+		maxHoriz = maxSprintSpeed
+	}
+
+	// Speed effect multiplier
+	if player.Effects != nil {
+		if speed, ok := player.Effects[1]; ok && speed != nil { // 1 = Speed effect ID
+			maxHoriz *= 1.0 + 0.2*float64(speed.Level)
+		}
+	}
+
+	// Vertical speed check
+	dy := newY - oldY
+	violation := false
+
+	if horizDist > maxHoriz {
+		violation = true
+	}
+	if dy > maxVerticalUp {
+		violation = true
+	}
+	if dy < -maxVerticalDown {
+		violation = true
+	}
+
+	// Flight detection: track airborne ticks
+	if !player.OnGround {
+		player.AirTicks_AC++
+		if player.AirTicks_AC > maxFlyTicks && dy >= 0 && !player.InWater && !player.OnLadder {
+			violation = true
+		}
+	} else {
+		player.AirTicks_AC = 0
+	}
+
+	if violation {
+		player.ViolationCount++
+		if player.ViolationCount >= kickViolations {
+			h.kickPlayer(player, "Moved too quickly")
+			return false
+		}
+		if player.ViolationCount >= maxViolations {
+			h.rubberBandPlayer(player)
+			return false
+		}
+		// Allow small violations without rubberbanding (tolerance)
+		player.LastValidX = newX
+		player.LastValidY = newY
+		player.LastValidZ = newZ
+		return true
+	}
+
+	player.ViolationCount = 0
+	player.LastValidX = newX
+	player.LastValidY = newY
+	player.LastValidZ = newZ
+	return true
+}
+
+// rubberBandPlayer sends the player back to their last valid position.
+func (h *MovementHandler) rubberBandPlayer(player *game.Player) {
+	x, y, z := player.LastValidX, player.LastValidY, player.LastValidZ
+	player.SetPosition(x, y, z)
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundPlayerPosition,
+		pk.VarInt(100), // teleport ID
+		pk.Double(x),
+		pk.Double(y),
+		pk.Double(z),
+		pk.Double(0), // vel_x
+		pk.Double(0), // vel_y
+		pk.Double(0), // vel_z
+		pk.Float(0),  // yaw (relative)
+		pk.Float(0),  // pitch (relative)
+		pk.Int(0x08|0x10), // flags: yaw+pitch relative, position absolute
+	))
+	player.TeleportPending = true
+}
+
+// kickPlayer disconnects a player for movement violations.
+func (h *MovementHandler) kickPlayer(player *game.Player, reason string) {
+	if h.Logger != nil {
+		h.Logger.Printf("Kicking %s: %s (violations=%d)", player.Name, reason, player.ViolationCount)
+	}
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundDisconnect,
+		chat.Message{Text: reason},
+	))
 }
 
 // sendChunk loads a chunk from the world and sends it to the player.

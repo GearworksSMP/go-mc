@@ -27,6 +27,42 @@ const (
 // Merchant window ID.
 const MerchantWindowID = 20
 
+// villagerProfessionID maps a profession string to its protocol ID.
+func villagerProfessionID(name string) int32 {
+	switch name {
+	case "armorer":
+		return 1
+	case "butcher":
+		return 2
+	case "cartographer":
+		return 3
+	case "cleric":
+		return 4
+	case "farmer":
+		return 5
+	case "fisherman":
+		return 6
+	case "fletcher":
+		return 7
+	case "leatherworker":
+		return 8
+	case "librarian":
+		return 9
+	case "mason":
+		return 10
+	case "nitwit":
+		return 11
+	case "shepherd":
+		return 12
+	case "toolsmith":
+		return 13
+	case "weaponsmith":
+		return 14
+	default:
+		return 0 // none
+	}
+}
+
 // VillagerData holds the profession and trade list for a villager mob.
 type VillagerData struct {
 	Profession string
@@ -70,7 +106,11 @@ func NewVillagerManager(mobMgr *MobManager, manager *game.PlayerManager) *Villag
 }
 
 // professions lists the available villager professions.
-var professions = []string{"farmer", "librarian", "armorer", "butcher", "cleric"}
+var professions = []string{
+	"farmer", "librarian", "armorer", "butcher", "cleric",
+	"cartographer", "fisherman", "fletcher", "leatherworker",
+	"mason", "shepherd", "toolsmith", "weaponsmith",
+}
 
 // RandomProfession picks a random villager profession.
 func RandomProfession() string {
@@ -118,6 +158,54 @@ func tradesForProfession(profession string) []Trade {
 			makeTrade("rotten_flesh", 32, "", 0, "emerald", 1, 16, 2, 0.05),
 			makeTrade("gold_ingot", 3, "", 0, "emerald", 1, 12, 2, 0.05),
 			makeTrade("emerald", 5, "", 0, "ender_pearl", 1, 12, 1, 0.05),
+		}
+	case "cartographer":
+		return []Trade{
+			makeTrade("paper", 24, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 7, "", 0, "glass_pane", 16, 12, 1, 0.05),
+			makeTrade("emerald", 13, "compass", 1, "filled_map", 1, 12, 1, 0.05),
+		}
+	case "fisherman":
+		return []Trade{
+			makeTrade("string", 20, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("cod", 15, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 3, "", 0, "cooked_cod", 6, 12, 1, 0.05),
+		}
+	case "fletcher":
+		return []Trade{
+			makeTrade("stick", 32, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 1, "", 0, "arrow", 16, 12, 1, 0.05),
+			makeTrade("emerald", 2, "", 0, "bow", 1, 12, 1, 0.05),
+		}
+	case "leatherworker":
+		return []Trade{
+			makeTrade("leather", 6, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("rabbit_hide", 10, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 7, "", 0, "leather_leggings", 1, 12, 1, 0.05),
+		}
+	case "mason":
+		return []Trade{
+			makeTrade("clay_ball", 10, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 1, "", 0, "brick", 10, 16, 1, 0.05),
+			makeTrade("emerald", 1, "", 0, "stone", 16, 16, 1, 0.05),
+		}
+	case "shepherd":
+		return []Trade{
+			makeTrade("white_wool", 18, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 2, "", 0, "shears", 1, 12, 1, 0.05),
+			makeTrade("emerald", 1, "", 0, "white_bed", 1, 12, 1, 0.05),
+		}
+	case "toolsmith":
+		return []Trade{
+			makeTrade("iron_ingot", 4, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 1, "", 0, "stone_axe", 1, 12, 1, 0.05),
+			makeTrade("emerald", 3, "", 0, "iron_pickaxe", 1, 12, 1, 0.05),
+		}
+	case "weaponsmith":
+		return []Trade{
+			makeTrade("iron_ingot", 4, "", 0, "emerald", 1, 16, 2, 0.05),
+			makeTrade("emerald", 2, "", 0, "iron_sword", 1, 12, 1, 0.05),
+			makeTrade("diamond", 3, "emerald", 8, "diamond_sword", 1, 3, 5, 0.2),
 		}
 	}
 	return nil

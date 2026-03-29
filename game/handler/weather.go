@@ -21,6 +21,7 @@ const (
 // WeatherManager handles weather state transitions and broadcasts.
 type WeatherManager struct {
 	Manager *game.PlayerManager
+	Rules   *GameRules
 	mu      sync.Mutex
 	state   WeatherState
 	ticks   int64 // countdown until next state change
@@ -37,6 +38,11 @@ func NewWeatherManager(manager *game.PlayerManager) *WeatherManager {
 
 // Tick advances the weather state machine by one tick.
 func (w *WeatherManager) Tick(tick int64) {
+	// Skip weather cycling if doWeatherCycle is false
+	if w.Rules != nil && !w.Rules.GetDoWeatherCycle() {
+		return
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 

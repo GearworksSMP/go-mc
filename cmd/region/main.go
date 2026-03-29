@@ -20,6 +20,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -158,7 +159,7 @@ func main() {
 		VoidDamageTypeID:   4,
 	}
 
-	keepInventory := false
+	gameRules := handler.NewGameRules()
 	chestMgr := handler.NewChestManager()
 	chestMgr.Manager = players
 	itemEntities := handler.NewItemEntityManager(players)
@@ -205,7 +206,7 @@ func main() {
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
 
 	survHandler.ItemEntities = itemEntities
-	survHandler.KeepInventory = &keepInventory
+	survHandler.Rules = gameRules
 	survHandler.EffectMgr = effectMgr
 
 	bowMgr := &handler.BowManager{
@@ -296,6 +297,9 @@ func main() {
 		GamePlay: gp,
 	}
 
+	// Ghost entity manager for border sync (initialized below if Redis available)
+	var ghostMgr *ghostEntityManager
+
 	// Start tick loop
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -329,6 +333,12 @@ func main() {
 			redstoneMgr.Tick(tick)
 			tridentMgr.Tick(tick)
 			elytraMgr.Tick(tick)
+			if rdb != nil {
+				publishBorderEntities(tick, serverID, cfg, players, rdb)
+			}
+			if ghostMgr != nil && tick%100 == 0 {
+				ghostMgr.cleanup()
+			}
 		}),
 	)
 
@@ -338,10 +348,15 @@ func main() {
 
 	go tickLoop.Run(ctx)
 
-	// Subscribe to Redis chat channel if available
+	// Subscribe to Redis channels if available
 	if rdb != nil {
 		go subscribeChatChannel(rdb, players, logger)
+
+		ghostMgr = newGhostEntityManager(players, logger)
+		go subscribeBorderChannel(rdb, serverID, ghostMgr, logger)
+		logger.Printf("Border entity sync enabled for channel %s", cluster.BorderChannel(serverID))
 	}
+	gp.ghostMgr = ghostMgr
 
 	// Graceful shutdown
 	go func() {
@@ -440,6 +455,7 @@ type regionGamePlay struct {
 	tntMgr          *handler.TNTManager
 	fireMgr         *handler.FireManager
 	redstoneMgr     *handler.RedstoneManager
+	ghostMgr        *ghostEntityManager
 }
 
 func (g *regionGamePlay) logf(format string, args ...any) {
@@ -467,6 +483,8 @@ func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 			player.Health = ps.Health
 			player.Food = ps.Food
 			player.Saturation = ps.Saturation
+			player.Exhaustion = ps.Exhaustion
+			player.GameMode = int32(ps.GameMode)
 			player.Experience = ps.Experience
 			player.ExperienceLevel = ps.ExperienceLevel
 			player.ExperienceTotal = ps.ExperienceTotal
@@ -483,6 +501,34 @@ func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 					Count:         slot.Count,
 					Durability:    slot.Durability,
 					MaxDurability: slot.MaxDurability,
+					Enchantments:  slot.Enchantments,
+					DisplayName:   slot.DisplayName,
+					PotionType:    slot.PotionType,
+				}
+			}
+			for i, slot := range ps.EnderChest {
+				if i >= len(player.EnderItems) {
+					break
+				}
+				player.EnderItems[i] = game.ItemStack{
+					ID:            slot.ID,
+					Count:         slot.Count,
+					Durability:    slot.Durability,
+					MaxDurability: slot.MaxDurability,
+					Enchantments:  slot.Enchantments,
+					DisplayName:   slot.DisplayName,
+					PotionType:    slot.PotionType,
+				}
+			}
+			if len(ps.Effects) > 0 {
+				player.Effects = make(map[int32]*game.ActiveEffect)
+				for _, e := range ps.Effects {
+					player.Effects[e.ID] = &game.ActiveEffect{
+						ID:       e.ID,
+						Level:    e.Level,
+						Duration: e.Duration,
+						Ambient:  e.Ambient,
+					}
 				}
 			}
 		}
@@ -520,6 +566,32 @@ func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 					Count:         s.Count,
 					Durability:    s.Durability,
 					MaxDurability: s.MaxDurability,
+					Enchantments:  s.Enchantments,
+					DisplayName:   s.DisplayName,
+					PotionType:    s.PotionType,
+				}
+			}
+			enderSlots := make([]store.ItemSlot, len(player.EnderItems))
+			for i, s := range player.EnderItems {
+				enderSlots[i] = store.ItemSlot{
+					ID:            s.ID,
+					Count:         s.Count,
+					Durability:    s.Durability,
+					MaxDurability: s.MaxDurability,
+					Enchantments:  s.Enchantments,
+					DisplayName:   s.DisplayName,
+					PotionType:    s.PotionType,
+				}
+			}
+			var effects []store.EffectData
+			for _, e := range player.Effects {
+				if e != nil {
+					effects = append(effects, store.EffectData{
+						ID:       e.ID,
+						Level:    e.Level,
+						Duration: e.Duration,
+						Ambient:  e.Ambient,
+					})
 				}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -536,7 +608,10 @@ func (g *regionGamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *
 				Health:          player.Health,
 				Food:            player.Food,
 				Saturation:      player.Saturation,
+				Exhaustion:      player.Exhaustion,
 				Inventory:       invSlots,
+				EnderChest:      enderSlots,
+				Effects:         effects,
 				Experience:      player.Experience,
 				ExperienceLevel: player.ExperienceLevel,
 				ExperienceTotal: player.ExperienceTotal,
@@ -1044,6 +1119,254 @@ func (b *redisChatBroadcaster) BroadcastChat(sender *game.Player, message string
 	// Cross-server broadcast via Redis
 	msg, _ := json.Marshal(map[string]string{"name": sender.Name, "message": message})
 	b.rdb.Publish(context.Background(), cluster.ChatChannel, string(msg))
+}
+
+// ---------------------------------------------------------------------------
+// Border Entity Sync — ghost entities from adjacent region servers
+// ---------------------------------------------------------------------------
+
+const (
+	borderRange     = 64.0  // blocks from region boundary to scan
+	borderPublishHz = 10    // publish every N ticks
+	ghostTimeout    = 5 * time.Second
+)
+
+// ghostEntity is a phantom entity rendered from an adjacent server's border broadcast.
+type ghostEntity struct {
+	EID      int32
+	TypeID   int32
+	X, Y, Z  float64
+	Yaw      float32
+	Pitch    float32
+	Name     string
+	UUID     uuid.UUID
+	LastSeen time.Time
+}
+
+// ghostEntityManager tracks phantom entities from other servers.
+type ghostEntityManager struct {
+	mu       sync.Mutex
+	ghosts   map[string]map[int32]*ghostEntity // sourceServer → eid → ghost
+	players  *game.PlayerManager
+	logger   *log.Logger
+}
+
+func newGhostEntityManager(players *game.PlayerManager, logger *log.Logger) *ghostEntityManager {
+	return &ghostEntityManager{
+		ghosts:  make(map[string]map[int32]*ghostEntity),
+		players: players,
+		logger:  logger,
+	}
+}
+
+// applyUpdate processes a border entity update from another server.
+func (gm *ghostEntityManager) applyUpdate(update cluster.BorderEntityUpdate) {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
+	serverGhosts, ok := gm.ghosts[update.SourceServer]
+	if !ok {
+		serverGhosts = make(map[int32]*ghostEntity)
+		gm.ghosts[update.SourceServer] = serverGhosts
+	}
+
+	// Track which EIDs are in this update
+	seen := make(map[int32]bool, len(update.Entities))
+	now := time.Now()
+
+	for _, e := range update.Entities {
+		seen[e.EID] = true
+		existing, exists := serverGhosts[e.EID]
+		if exists {
+			// Update position — send teleport to nearby players
+			existing.X, existing.Y, existing.Z = e.X, e.Y, e.Z
+			existing.Yaw = e.Yaw
+			existing.Pitch = e.Pitch
+			existing.LastSeen = now
+
+			teleportPkt := pk.Marshal(
+				packetid.ClientboundTeleportEntity,
+				pk.VarInt(e.EID),
+				pk.Double(e.X),
+				pk.Double(e.Y),
+				pk.Double(e.Z),
+				pk.UnsignedByte(0), // LpVec3 zero velocity
+				pk.Angle(degToAngle(e.Yaw)),
+				pk.Angle(degToAngle(e.Pitch)),
+				pk.Boolean(true), // onGround
+			)
+			gm.players.ForEachNearby(e.X, e.Z, handler.PlayerTrackingRange, func(p *game.Player) {
+				p.WritePacket(teleportPkt)
+			})
+		} else {
+			// New ghost — spawn for nearby players
+			ghost := &ghostEntity{
+				EID: e.EID, TypeID: e.TypeID,
+				X: e.X, Y: e.Y, Z: e.Z,
+				Yaw: e.Yaw, Pitch: e.Pitch,
+				Name: e.Name, UUID: e.UUID,
+				LastSeen: now,
+			}
+			serverGhosts[e.EID] = ghost
+
+			spawnPkt := pk.Marshal(
+				packetid.ClientboundAddEntity,
+				pk.VarInt(e.EID),
+				pk.UUID(e.UUID),
+				pk.VarInt(e.TypeID),
+				pk.Double(e.X),
+				pk.Double(e.Y),
+				pk.Double(e.Z),
+				pk.UnsignedByte(0), // LpVec3 zero velocity
+				pk.Angle(degToAngle(e.Pitch)),
+				pk.Angle(degToAngle(e.Yaw)),
+				pk.Angle(degToAngle(e.Yaw)), // head yaw
+				pk.VarInt(0),
+			)
+			gm.players.ForEachNearby(e.X, e.Z, handler.PlayerTrackingRange, func(p *game.Player) {
+				p.WritePacket(spawnPkt)
+			})
+		}
+	}
+
+	// Remove ghosts not in this update (they left the border)
+	for eid, ghost := range serverGhosts {
+		if !seen[eid] {
+			removePkt := pk.Marshal(
+				packetid.ClientboundRemoveEntities,
+				pk.VarInt(1),
+				pk.VarInt(eid),
+			)
+			gm.players.ForEachNearby(ghost.X, ghost.Z, handler.PlayerTrackingRange, func(p *game.Player) {
+				p.WritePacket(removePkt)
+			})
+			delete(serverGhosts, eid)
+		}
+	}
+}
+
+// cleanup removes stale ghosts that haven't been updated recently.
+func (gm *ghostEntityManager) cleanup() {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
+	cutoff := time.Now().Add(-ghostTimeout)
+	for srv, ghosts := range gm.ghosts {
+		for eid, ghost := range ghosts {
+			if ghost.LastSeen.Before(cutoff) {
+				removePkt := pk.Marshal(
+					packetid.ClientboundRemoveEntities,
+					pk.VarInt(1),
+					pk.VarInt(eid),
+				)
+				gm.players.ForEachNearby(ghost.X, ghost.Z, handler.PlayerTrackingRange, func(p *game.Player) {
+					p.WritePacket(removePkt)
+				})
+				delete(ghosts, eid)
+			}
+		}
+		if len(ghosts) == 0 {
+			delete(gm.ghosts, srv)
+		}
+	}
+}
+
+// publishBorderEntities scans for players near region boundaries and publishes them.
+func publishBorderEntities(tick int64, serverID string, cfg *cluster.ClusterConfig, players *game.PlayerManager, rdb *redis.Client) {
+	if tick%borderPublishHz != 0 {
+		return
+	}
+
+	// Gather entities near boundaries destined for each adjacent server
+	updates := make(map[string][]cluster.BorderEntity) // targetServerID → entities
+
+	players.ForEach(func(p *game.Player) {
+		px, py, pz := p.Position()
+		yaw, pitch := p.Rotation()
+
+		// Check all 4 cardinal region boundaries
+		bx := int(px)
+		bz := int(pz)
+		regionX := blockToRegionCoord(bx)
+		regionZ := blockToRegionCoord(bz)
+
+		// Region boundaries in block coords
+		minRX := regionX * 512
+		maxRX := minRX + 512
+		minRZ := regionZ * 512
+		maxRZ := minRZ + 512
+
+		type adj struct{ rx, rz int }
+		var adjacents []adj
+
+		if float64(bx)-float64(minRX) < borderRange {
+			adjacents = append(adjacents, adj{regionX - 1, regionZ})
+		}
+		if float64(maxRX)-float64(bx) < borderRange {
+			adjacents = append(adjacents, adj{regionX + 1, regionZ})
+		}
+		if float64(bz)-float64(minRZ) < borderRange {
+			adjacents = append(adjacents, adj{regionX, regionZ - 1})
+		}
+		if float64(maxRZ)-float64(bz) < borderRange {
+			adjacents = append(adjacents, adj{regionX, regionZ + 1})
+		}
+
+		for _, a := range adjacents {
+			targetSrv := cfg.ServerForRegion(p.Dimension, a.rx, a.rz)
+			if targetSrv != serverID {
+				updates[targetSrv] = append(updates[targetSrv], cluster.BorderEntity{
+					EID:    p.EID,
+					TypeID: 155, // Player
+					X:      px,
+					Y:      py,
+					Z:      pz,
+					Yaw:    yaw,
+					Pitch:  pitch,
+					Name:   p.Name,
+					UUID:   p.UUID,
+				})
+			}
+		}
+	})
+
+	ctx := context.Background()
+	for targetSrv, entities := range updates {
+		update := cluster.BorderEntityUpdate{
+			SourceServer: serverID,
+			Entities:     entities,
+		}
+		data, _ := json.Marshal(update)
+		rdb.Publish(ctx, cluster.BorderChannel(targetSrv), string(data))
+	}
+}
+
+// subscribeBorderChannel listens for border entity updates from adjacent servers.
+func subscribeBorderChannel(rdb *redis.Client, serverID string, ghostMgr *ghostEntityManager, logger *log.Logger) {
+	ctx := context.Background()
+	sub := rdb.Subscribe(ctx, cluster.BorderChannel(serverID))
+	defer sub.Close()
+
+	ch := sub.Channel()
+	for msg := range ch {
+		var update cluster.BorderEntityUpdate
+		if err := json.Unmarshal([]byte(msg.Payload), &update); err != nil {
+			logger.Printf("border: invalid message: %v", err)
+			continue
+		}
+		ghostMgr.applyUpdate(update)
+	}
+}
+
+func blockToRegionCoord(coord int) int {
+	if coord < 0 {
+		return (coord - 511) / 512
+	}
+	return coord / 512
+}
+
+func degToAngle(deg float32) int8 {
+	return int8(int32(deg*256.0/360.0) & 0xFF)
 }
 
 // Suppress unused import warnings

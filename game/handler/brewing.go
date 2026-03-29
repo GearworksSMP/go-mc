@@ -193,10 +193,19 @@ func (bm *BrewingStandManager) Tick() {
 				for i := 0; i < 3; i++ {
 					if bs.Bottles[i].ID > 0 && bs.Bottles[i].Count > 0 {
 						bottleName := ItemNameByID(bs.Bottles[i].ID)
-						if resultName, ok := recipes[bottleName]; ok {
-							resultID := itemIDByName(resultName)
+						if recipe, ok := recipes[bottleName]; ok {
+							resultID := itemIDByName(recipe.OutputItem)
 							if resultID > 0 {
-								bs.Bottles[i] = game.ItemStack{ID: resultID, Count: 1}
+								potionType := recipe.PotionType
+								if potionType == "" {
+									// Modifier ingredients keep existing potion type
+									potionType = bs.Bottles[i].PotionType
+								}
+								bs.Bottles[i] = game.ItemStack{
+									ID:         resultID,
+									Count:      1,
+									PotionType: potionType,
+								}
 							}
 						}
 					}
@@ -253,23 +262,27 @@ func sendBrewingSlot(player *game.Player, slot int, item game.ItemStack) {
 	))
 }
 
-// Brewing recipes: ingredient name → map of input potion name → output potion name.
-// Uses the base "potion" item ID for all potion types. The potion effect is tracked
-// server-side via EffectManager when consumed.
-var brewingRecipes = map[string]map[string]string{
-	"nether_wart":          {"potion": "potion"}, // water bottle → awkward potion (same item ID)
-	"sugar":                {"potion": "potion"}, // awkward → swiftness
-	"blaze_powder":         {"potion": "potion"}, // awkward → strength
-	"ghast_tear":           {"potion": "potion"}, // awkward → regeneration
-	"glistering_melon_slice": {"potion": "potion"}, // awkward → healing
-	"spider_eye":           {"potion": "potion"}, // awkward → poison
-	"golden_carrot":        {"potion": "potion"}, // awkward → night vision
-	"magma_cream":          {"potion": "potion"}, // awkward → fire resistance
-	"rabbit_foot":          {"potion": "potion"}, // awkward → leaping
-	"pufferfish":           {"potion": "potion"}, // awkward → water breathing
-	"fermented_spider_eye": {"potion": "potion"}, // modifier: inverts effects
-	"redstone":             {"potion": "potion"}, // modifier: extends duration
-	"glowstone_dust":       {"potion": "potion"}, // modifier: amplifies effect
-	"gunpowder":            {"potion": "splash_potion"}, // potion → splash potion
-	"dragon_breath":        {"splash_potion": "lingering_potion"}, // splash → lingering
+// brewRecipe defines what a brewing ingredient produces.
+type brewRecipe struct {
+	OutputItem string // output item name (usually "potion")
+	PotionType string // potion type set on the output
+}
+
+// Brewing recipes: ingredient name → map of input item name → recipe output.
+var brewingRecipes = map[string]map[string]brewRecipe{
+	"nether_wart":            {"potion": {OutputItem: "potion", PotionType: "awkward"}},
+	"sugar":                  {"potion": {OutputItem: "potion", PotionType: "swiftness"}},
+	"blaze_powder":           {"potion": {OutputItem: "potion", PotionType: "strength"}},
+	"ghast_tear":             {"potion": {OutputItem: "potion", PotionType: "regeneration"}},
+	"glistering_melon_slice": {"potion": {OutputItem: "potion", PotionType: "healing"}},
+	"spider_eye":             {"potion": {OutputItem: "potion", PotionType: "poison"}},
+	"golden_carrot":          {"potion": {OutputItem: "potion", PotionType: "night_vision"}},
+	"magma_cream":            {"potion": {OutputItem: "potion", PotionType: "fire_resistance"}},
+	"rabbit_foot":            {"potion": {OutputItem: "potion", PotionType: "leaping"}},
+	"pufferfish":             {"potion": {OutputItem: "potion", PotionType: "water_breathing"}},
+	"fermented_spider_eye":   {"potion": {OutputItem: "potion", PotionType: "weakness"}},
+	"redstone":               {"potion": {OutputItem: "potion", PotionType: ""}},   // extends duration (keeps type)
+	"glowstone_dust":         {"potion": {OutputItem: "potion", PotionType: ""}},   // amplifies (keeps type)
+	"gunpowder":              {"potion": {OutputItem: "splash_potion", PotionType: ""}}, // potion → splash (keeps type)
+	"dragon_breath":          {"splash_potion": {OutputItem: "lingering_potion", PotionType: ""}},
 }

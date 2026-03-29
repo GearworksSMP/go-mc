@@ -69,6 +69,8 @@ func (w *WireManager) UpdateFromSource(sx, sy, sz int, powered bool) {
 		nx, ny, nz := sx+off[0], sy+off[1], sz+off[2]
 		w.propagateFrom(nx, ny, nz)
 	}
+	// Also notify repeaters/comparators adjacent to the source
+	w.notifyNeighborComponents(sx, sy, sz)
 }
 
 // propagateFrom runs a BFS power propagation starting from position (x, y, z).
@@ -178,7 +180,12 @@ func isPowerSource(name string, state int) bool {
 			}
 		}
 	case "redstone_torch":
-		return true
+		if state >= 0 && state < len(block.StateList) && block.StateList[state] != nil {
+			if rt, ok := block.StateList[state].(block.RedstoneTorch); ok {
+				return bool(rt.Lit)
+			}
+		}
+		return true // fallback
 	case "redstone_block":
 		return true
 	}
@@ -226,6 +233,8 @@ func (w *WireManager) setWirePower(x, y, z, power int) {
 	if int(newID) != int(stateID) {
 		w.World.SetBlock(x, y, z, newID)
 		broadcastBlockUpdateDirect(w.Manager, x, y, z, int32(newID))
+		// Notify adjacent repeaters/comparators of wire power change
+		w.notifyNeighborComponents(x, y, z)
 	}
 }
 
@@ -368,6 +377,10 @@ func (w *WireManager) applyRepeaterOutput(x, y, z int, powered bool) {
 	// Propagate to wire/blocks in front of repeater
 	fx, fz := facingOffset(rep.Facing)
 	w.propagateFrom(x+fx, y, z+fz)
+	// Notify repeaters/comparators in front of this repeater
+	w.notifyNeighborComponents(x+fx, y, z+fz)
+	// Also notify adjacent components at this position
+	w.notifyNeighborComponents(x, y, z)
 }
 
 // UpdateRepeater checks if a repeater should schedule a toggle based on input power.
@@ -449,6 +462,9 @@ func (w *WireManager) UpdateComparator(x, y, z int) {
 		// Propagate output to front
 		fx, fz := facingOffset(comp.Facing)
 		w.propagateFrom(x+fx, y, z+fz)
+		// Notify adjacent components
+		w.notifyNeighborComponents(x+fx, y, z+fz)
+		w.notifyNeighborComponents(x, y, z)
 	}
 }
 
@@ -560,6 +576,24 @@ func rightOffset(facing block.Direction) (int, int) {
 		return 0, -1
 	}
 	return 0, 0
+}
+
+// notifyNeighborComponents checks all 6 neighbors of (x,y,z) for repeaters
+// and comparators, and triggers their update logic.
+func (w *WireManager) notifyNeighborComponents(x, y, z int) {
+	for _, off := range adjacentOffsets {
+		nx, ny, nz := x+off[0], y+off[1], z+off[2]
+		stateID, err := w.World.GetBlock(nx, ny, nz)
+		if err != nil || int(stateID) >= len(block.StateList) || block.StateList[stateID] == nil {
+			continue
+		}
+		switch block.StateList[stateID].(type) {
+		case block.Repeater:
+			w.UpdateRepeater(nx, ny, nz)
+		case block.Comparator:
+			w.UpdateComparator(nx, ny, nz)
+		}
+	}
 }
 
 // WirePowersBlock returns true if redstone wire at any adjacent position

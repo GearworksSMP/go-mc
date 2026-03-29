@@ -6,6 +6,7 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -27,6 +28,7 @@ type InventoryHandler struct {
 	BlastFurnaceMgr  *BlastFurnaceManager
 	ShulkerBoxMgr    *ShulkerBoxManager
 	SmithingMgr      *SmithingTableManager
+	BeaconMgr        *BeaconManager
 	OnContainerClose func(containerType string, pos [3]int) // called when chest/furnace closed
 }
 
@@ -49,6 +51,12 @@ func (h *InventoryHandler) HandlePacket(player *game.Player, p pk.Packet) bool {
 	case packetid.ServerboundSelectTrade:
 		if h.VillagerMgr != nil {
 			return h.VillagerMgr.HandleSelectTrade(player, p)
+		}
+		return false
+	case packetid.ServerboundSetBeacon:
+		if h.BeaconMgr != nil {
+			h.BeaconMgr.HandleBeaconUpdate(player, p)
+			return true
 		}
 		return false
 	}
@@ -134,6 +142,21 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		}
 		updateCraftingResult3x3(player)
 		SendCraftingWindowContent(player)
+		return
+	}
+
+	if int(windowID) == EnderChestWindowID && player.OpenWindowID == EnderChestWindowID {
+		switch mode {
+		case 0:
+			h.handleEnderChestClick(player, slot, int(button))
+		case 1:
+			h.handleEnderChestShiftClick(player, slot)
+		case 2:
+			h.handleEnderChestNumberKey(player, slot, int(button))
+		case 4:
+			h.handleEnderChestDrop(player, slot, int(button))
+		}
+		SendEnderChestContent(player)
 		return
 	}
 
@@ -354,6 +377,13 @@ func (h *InventoryHandler) handleNormalClick(player *game.Player, slot, button i
 	}
 
 	invItem := &player.Inventory[slot]
+
+	// Curse of Binding: prevent removing cursed armor in survival mode
+	if slot >= 5 && slot <= 8 && invItem.ID > 0 && player.GameMode != 1 {
+		if enchant.HasEnchant(invItem.Enchantments, enchant.CurseOfBinding) {
+			return
+		}
+	}
 
 	// Armor slot restrictions: only allow correct armor type in slots 5-8
 	if slot >= 5 && slot <= 8 && player.CursorItem.ID > 0 {
@@ -636,6 +666,8 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 		}
 	case SmithingWindowID:
 		// Closing smithing table — no state to return
+	case EnderChestWindowID:
+		// Closing ender chest — no shared state to save (per-player storage)
 	case 10:
 		// Closing enchanting table — clear session
 		player.EnchantSession = nil

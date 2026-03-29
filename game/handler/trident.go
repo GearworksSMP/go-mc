@@ -9,6 +9,8 @@ import (
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
+	"github.com/Tnze/go-mc/level/block"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -35,6 +37,7 @@ type TridentManager struct {
 	ArrowMgr   *ArrowManager
 	Survival   *SurvivalHandler
 	WeatherMgr *WeatherManager
+	World      game.World
 	Logger     *log.Logger
 
 	mu       sync.Mutex
@@ -74,7 +77,7 @@ func (tm *TridentManager) HandleUseItem(player *game.Player, p pk.Packet) bool {
 	}
 
 	// Check for Riptide enchantment: launches player instead of throwing
-	if invItem.Enchantments != nil && invItem.Enchantments["riptide"] > 0 {
+	if enchant.HasEnchant(invItem.Enchantments, enchant.Riptide) {
 		if tm.isInRainOrWater(player) {
 			tm.launchRiptide(player, invItem, slot)
 			// Send acknowledge
@@ -173,21 +176,18 @@ func (tm *TridentManager) throwTrident(player *game.Player, invItem *game.ItemSt
 
 	// Spawn trident as arrow projectile with trident damage
 	damage := tridentProjectileDamage * charge
-	tm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dirX, dirY, dirZ, damage)
+	tm.ArrowMgr.SpawnPlayerArrow(player.EID, px, eyeY, pz, dirX, dirY, dirZ, damage, 0, false)
 
 	// Check for Channeling enchantment: strike lightning on hit during thunderstorm
 	hasChanneling := false
-	if invItem.Enchantments != nil && invItem.Enchantments["channeling"] > 0 {
+	if enchant.HasEnchant(invItem.Enchantments, enchant.Channeling) {
 		hasChanneling = true
 	}
 	_ = hasChanneling // channeling logic applies on hit, tracked via arrow damage
 
 	// Reduce durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {
-		unbreakLvl := int32(0)
-		if invItem.Enchantments != nil {
-			unbreakLvl = invItem.Enchantments["unbreaking"]
-		}
+		unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking)
 		shouldReduce := true
 		if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 			shouldReduce = false
@@ -203,12 +203,10 @@ func (tm *TridentManager) throwTrident(player *game.Player, invItem *game.ItemSt
 	}
 
 	// Check for Loyalty enchantment: schedule return
-	if invItem.Enchantments != nil {
-		if loyaltyLvl := invItem.Enchantments["loyalty"]; loyaltyLvl > 0 {
-			// Return after level * 8 ticks (we don't track individual arrows,
-			// so we just restore the durability after the delay as a simplification)
-			tm.logf("Player %s threw trident with loyalty %d", player.Name, loyaltyLvl)
-		}
+	if loyaltyLvl := enchant.GetLevel(invItem.Enchantments, enchant.Loyalty); loyaltyLvl > 0 {
+		// Return after level * 8 ticks (we don't track individual arrows,
+		// so we just restore the durability after the delay as a simplification)
+		tm.logf("Player %s threw trident with loyalty %d", player.Name, loyaltyLvl)
 	}
 
 	// Play trident throw sound
@@ -219,7 +217,7 @@ func (tm *TridentManager) throwTrident(player *game.Player, invItem *game.ItemSt
 
 // launchRiptide launches the player forward using the Riptide enchantment.
 func (tm *TridentManager) launchRiptide(player *game.Player, invItem *game.ItemStack, slot int) {
-	riptideLvl := invItem.Enchantments["riptide"]
+	riptideLvl := enchant.GetLevel(invItem.Enchantments, enchant.Riptide)
 
 	// Calculate launch velocity from player look direction
 	yaw, pitch := player.Rotation()
@@ -246,10 +244,7 @@ func (tm *TridentManager) launchRiptide(player *game.Player, invItem *game.ItemS
 
 	// Reduce durability in survival mode
 	if player.GameMode == 0 && invItem.MaxDurability > 0 {
-		unbreakLvl := int32(0)
-		if invItem.Enchantments != nil {
-			unbreakLvl = invItem.Enchantments["unbreaking"]
-		}
+		unbreakLvl := enchant.GetLevel(invItem.Enchantments, enchant.Unbreaking)
 		shouldReduce := true
 		if unbreakLvl > 0 && rand.Int31n(unbreakLvl+1) > 0 {
 			shouldReduce = false
@@ -280,7 +275,16 @@ func (tm *TridentManager) isInRainOrWater(player *game.Player) bool {
 			return true
 		}
 	}
-	// TODO: check if player is in water block
+	// Check if player's feet are in water
+	if tm.World != nil {
+		px, py, pz := player.Position()
+		state, err := tm.World.GetBlock(int(math.Floor(px)), int(math.Floor(py)), int(math.Floor(pz)))
+		if err == nil && int(state) < len(block.StateList) && block.StateList[state] != nil {
+			if _, ok := block.StateList[state].(block.Water); ok {
+				return true
+			}
+		}
+	}
 	return false
 }
 

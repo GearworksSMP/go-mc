@@ -121,14 +121,19 @@ func (pm *PotionManager) HandleDrinkPotion(player *game.Player, itemName string)
 		return false
 	}
 
-	// For MVP, since we don't have potion NBT parsing, apply a basic healing effect.
-	// In a full implementation, the potion type would be read from the item's
-	// potion_contents component.
-	pe := PotionEffect{EffectInstantHealth, 0, 1}
+	// Look up potion type from the item's PotionType field
+	slot := int(player.HeldSlot) + 36
+	potionType := player.Inventory[slot].PotionType
+	if potionType == "" {
+		potionType = "healing" // default
+	}
+	pe, ok := potionTypeEffects[potionType]
+	if !ok {
+		pe = PotionEffect{EffectInstantHealth, 0, 1}
+	}
 	pm.EffectMgr.ApplyEffect(player, pe.EffectID, pe.Level, pe.Duration, false)
 
 	// Replace potion with glass bottle
-	slot := int(player.HeldSlot) + 36
 	bottleID := itemIDByName("glass_bottle")
 	if bottleID > 0 {
 		player.Inventory[slot] = game.ItemStack{ID: bottleID, Count: 1}

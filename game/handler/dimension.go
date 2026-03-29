@@ -183,6 +183,7 @@ func (dm *DimensionManager) sendRespawn(player *game.Player, dimTypeID int32, di
 
 // sendPlayerPosition sends a position teleport to the player.
 func (dm *DimensionManager) sendPlayerPosition(player *game.Player, x, y, z float64) {
+	player.TeleportPending = true
 	player.WritePacket(pk.Marshal(
 		packetid.ClientboundPlayerPosition,
 		pk.VarInt(3),        // teleport ID

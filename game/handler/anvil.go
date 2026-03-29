@@ -4,6 +4,7 @@ import (
 	"github.com/Tnze/go-mc/chat"
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
+	"github.com/Tnze/go-mc/game/handler/enchant"
 	pk "github.com/Tnze/go-mc/net/packet"
 )
 
@@ -148,23 +149,7 @@ func ComputeAnvilResult(player *game.Player) {
 			result.Durability = repaired
 
 			// Merge enchantments from material into result
-			if material.Enchantments != nil {
-				if result.Enchantments == nil {
-					result.Enchantments = make(map[string]int32)
-				}
-				for k, v := range material.Enchantments {
-					existing, ok := result.Enchantments[k]
-					if ok {
-						if v > existing {
-							result.Enchantments[k] = v
-						} else if v == existing && v+1 <= maxEnchantLevel(k) {
-							result.Enchantments[k] = v + 1
-						}
-					} else {
-						result.Enchantments[k] = v
-					}
-				}
-			}
+			result.Enchantments = enchant.MergeEnchantments(result.Enchantments, material.Enchantments)
 			cost = 2
 		} else if isRepairMaterial(inputName, materialName) {
 			// Unit repair: repair with raw material (e.g. iron ingot for iron tools)
@@ -180,27 +165,14 @@ func ComputeAnvilResult(player *game.Player) {
 			cost = 1
 		} else if materialName == "enchanted_book" && material.Enchantments != nil {
 			// Enchanted book: apply enchantments to the item
-			if result.Enchantments == nil {
-				result.Enchantments = make(map[string]int32)
-			}
-			for k, v := range material.Enchantments {
-				existing, ok := result.Enchantments[k]
-				if ok {
-					if v > existing {
-						result.Enchantments[k] = v
-					} else if v == existing && v+1 <= maxEnchantLevel(k) {
-						result.Enchantments[k] = v + 1
-					}
-				} else {
-					result.Enchantments[k] = v
-				}
-			}
+			result.Enchantments = enchant.MergeEnchantments(result.Enchantments, material.Enchantments)
 			cost = 3
 		}
 	}
 
 	// Rename: if rename text differs from the original item's name, add rename cost
 	if renameText != "" {
+		result.DisplayName = renameText
 		cost += 1
 	}
 
@@ -257,30 +229,6 @@ func HandleRenameItem(player *game.Player, p pk.Packet) {
 	// Recompute result with the new name
 	ComputeAnvilResult(player)
 	sendAnvilOutputSlot(player)
-}
-
-// maxEnchantLevel returns the maximum level for an enchantment.
-func maxEnchantLevel(enchantID string) int32 {
-	maxLevels := map[string]int32{
-		"sharpness":   5,
-		"protection":  4,
-		"efficiency":  5,
-		"unbreaking":  3,
-		"knockback":   2,
-		"fire_aspect": 2,
-		"looting":     3,
-		"fortune":     3,
-		"power":       5,
-		"smite":       5,
-		"silk_touch":  1,
-		"mending":     1,
-		"sweeping":    3,
-		"thorns":      3,
-	}
-	if v, ok := maxLevels[enchantID]; ok {
-		return v
-	}
-	return 5 // default
 }
 
 // isRepairMaterial checks if the material can repair the given item.

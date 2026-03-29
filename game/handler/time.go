@@ -12,16 +12,21 @@ import (
 // Full day = 24000 ticks (20 min). Dawn=0, noon=6000, sunset=12000, midnight=18000.
 type TimeManager struct {
 	mu       sync.Mutex
-	WorldAge int64 // total ticks, never resets
-	DayTime  int64 // time of day (0-24000, wraps)
-	Frozen   bool  // if true, DayTime doesn't advance
+	WorldAge int64      // total ticks, never resets
+	DayTime  int64      // time of day (0-24000, wraps)
+	Frozen   bool       // if true, DayTime doesn't advance
+	Rules    *GameRules // if set, doDaylightCycle overrides Frozen
 }
 
 // Tick advances time and broadcasts to all players every 20 ticks (1 second).
 func (t *TimeManager) Tick(tick int64, manager *game.PlayerManager) {
 	t.mu.Lock()
 	t.WorldAge++
-	if !t.Frozen {
+	frozen := t.Frozen
+	if t.Rules != nil {
+		frozen = !t.Rules.GetDoDaylightCycle()
+	}
+	if !frozen {
 		t.DayTime++
 		if t.DayTime >= 24000 {
 			t.DayTime -= 24000
@@ -29,7 +34,6 @@ func (t *TimeManager) Tick(tick int64, manager *game.PlayerManager) {
 	}
 	age := t.WorldAge
 	dayTime := t.DayTime
-	frozen := t.Frozen
 	t.mu.Unlock()
 
 	// Broadcast every 20 ticks (1 second)
@@ -75,6 +79,9 @@ func (t *TimeManager) SendTime(player *game.Player) {
 	age := t.WorldAge
 	dayTime := t.DayTime
 	frozen := t.Frozen
+	if t.Rules != nil {
+		frozen = !t.Rules.GetDoDaylightCycle()
+	}
 	t.mu.Unlock()
 
 	player.WritePacket(pk.Marshal(
