@@ -44,6 +44,31 @@ type TerrainGenerator struct {
 	dsCoalOreID, dsIronOreID, dsCopperOreID      level.BlocksState
 	dsGoldOreID, dsDiamondOreID, dsLapisOreID    level.BlocksState
 	dsRedstoneOreID                              level.BlocksState
+	// New biome blocks
+	vineID                                       level.BlocksState
+	lilyPadID                                    level.BlocksState
+	myceliumID                                   level.BlocksState
+	orangeTerracottaID                           level.BlocksState
+	redTerracottaID                              level.BlocksState
+	yellowTerracottaID                           level.BlocksState
+	brownTerracottaID                            level.BlocksState
+	redSandID                                    level.BlocksState
+	darkOakLogID                                 level.BlocksState
+	darkOakLeavesID                              level.BlocksState
+	jungleLogID                                  level.BlocksState
+	jungleLeavesID                               level.BlocksState
+	redMushroomBlockID                           level.BlocksState
+	brownMushroomBlockID                         level.BlocksState
+	mushroomStemID                               level.BlocksState
+	brownMushroomID                              level.BlocksState
+	redMushroomID                                level.BlocksState
+	deadBushID                                   level.BlocksState
+	poppyID                                      level.BlocksState
+	dandelionID                                  level.BlocksState
+	azureBluetID                                 level.BlocksState
+	oxeyeDaisyID                                 level.BlocksState
+	clayID                                       level.BlocksState
+
 	biomeNoise                                   *SimplexNoise
 	humidNoise                                   *SimplexNoise
 	structurePlacer                              *StructurePlacer
@@ -103,6 +128,31 @@ func NewTerrainGenerator(seed int64) *TerrainGenerator {
 	g.dsDiamondOreID, _ = block.ToStateID[block.DeepslateDiamondOre{}]
 	g.dsLapisOreID, _ = block.ToStateID[block.DeepslateLapisOre{}]
 	g.dsRedstoneOreID, _ = block.ToStateID[block.DeepslateRedstoneOre{Lit: false}]
+	// New biome blocks
+	g.vineID, _ = block.ToStateID[block.Vine{South: true}]
+	g.lilyPadID, _ = block.ToStateID[block.LilyPad{}]
+	g.myceliumID, _ = block.ToStateID[block.Mycelium{Snowy: false}]
+	g.orangeTerracottaID, _ = block.ToStateID[block.OrangeTerracotta{}]
+	g.redTerracottaID, _ = block.ToStateID[block.RedTerracotta{}]
+	g.yellowTerracottaID, _ = block.ToStateID[block.YellowTerracotta{}]
+	g.brownTerracottaID, _ = block.ToStateID[block.BrownTerracotta{}]
+	g.redSandID, _ = block.ToStateID[block.RedSand{}]
+	g.darkOakLogID, _ = block.ToStateID[block.DarkOakLog{Axis: block.Y}]
+	g.darkOakLeavesID, _ = block.ToStateID[block.DarkOakLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
+	g.jungleLogID, _ = block.ToStateID[block.JungleLog{Axis: block.Y}]
+	g.jungleLeavesID, _ = block.ToStateID[block.JungleLeaves{Distance: 1, Persistent: true, Waterlogged: false}]
+	g.redMushroomBlockID, _ = block.ToStateID[block.RedMushroomBlock{Down: true, East: true, North: true, South: true, Up: true, West: true}]
+	g.brownMushroomBlockID, _ = block.ToStateID[block.BrownMushroomBlock{Down: true, East: true, North: true, South: true, Up: true, West: true}]
+	g.mushroomStemID, _ = block.ToStateID[block.MushroomStem{Down: true, East: true, North: true, South: true, Up: true, West: true}]
+	g.brownMushroomID, _ = block.ToStateID[block.BrownMushroom{}]
+	g.redMushroomID, _ = block.ToStateID[block.RedMushroom{}]
+	g.deadBushID, _ = block.ToStateID[block.DeadBush{}]
+	g.poppyID, _ = block.ToStateID[block.Poppy{}]
+	g.dandelionID, _ = block.ToStateID[block.Dandelion{}]
+	g.azureBluetID, _ = block.ToStateID[block.AzureBluet{}]
+	g.oxeyeDaisyID, _ = block.ToStateID[block.OxeyeDaisy{}]
+	g.clayID, _ = block.ToStateID[block.Clay{}]
+
 	g.biomeNoise = NewSimplexNoise(seed + 3)
 	g.humidNoise = NewSimplexNoise(seed + 4)
 	g.structurePlacer = NewStructurePlacer(seed, g.waterID)
@@ -124,6 +174,12 @@ const (
 	BiomeSnowyTaiga  BiomeType = 7
 	BiomeBirchForest BiomeType = 8
 	BiomeSavanna     BiomeType = 9
+	BiomeJungle      BiomeType = 10
+	BiomeSwamp       BiomeType = 11
+	BiomeDarkForest  BiomeType = 12
+	BiomeFlowerForest BiomeType = 13
+	BiomeMushroom    BiomeType = 14
+	BiomeBadlands    BiomeType = 15
 )
 
 // biomeRegistryID maps internal BiomeType to the biome registry ID used on the wire.
@@ -149,6 +205,18 @@ func biomeRegistryID(b BiomeType) biome.Type {
 		return 10 // minecraft:birch_forest
 	case BiomeSavanna:
 		return 17 // minecraft:savanna
+	case BiomeJungle:
+		return 22 // minecraft:jungle
+	case BiomeSwamp:
+		return 6 // minecraft:swamp
+	case BiomeDarkForest:
+		return 11 // minecraft:dark_forest
+	case BiomeFlowerForest:
+		return 9 // minecraft:flower_forest
+	case BiomeMushroom:
+		return 48 // minecraft:mushroom_fields
+	case BiomeBadlands:
+		return 25 // minecraft:badlands
 	default:
 		return 1
 	}
@@ -159,6 +227,11 @@ func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
 	temp := g.biomeNoise.Noise2D(float64(x)*0.002, float64(z)*0.002)
 	humid := g.humidNoise.Noise2D(float64(x)*0.002, float64(z)*0.002)
 
+	// Mushroom island: rare special biome when both noise values are extreme
+	if temp > 0.6 && humid > 0.6 {
+		return BiomeMushroom
+	}
+
 	switch {
 	case temp < -0.3:
 		// Cold biomes
@@ -168,11 +241,17 @@ func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
 		return BiomeSnowyTaiga
 	case temp < 0:
 		// Cool biomes
+		if humid > 0.4 {
+			return BiomeDarkForest
+		}
 		return BiomeTaiga
 	case temp < 0.25:
 		// Temperate biomes
 		if humid > 0.3 {
 			return BiomeForest
+		}
+		if humid > 0.1 {
+			return BiomeFlowerForest
 		}
 		if humid < -0.1 {
 			return BiomeBirchForest
@@ -180,6 +259,9 @@ func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
 		return BiomePlains
 	case temp < 0.5:
 		// Warm biomes
+		if humid > 0.4 {
+			return BiomeSwamp
+		}
 		if humid > 0.2 {
 			return BiomeForest
 		}
@@ -189,8 +271,14 @@ func (g *TerrainGenerator) biomeAt(x, z int) BiomeType {
 		return BiomePlains
 	default:
 		// Hot biomes
+		if humid > 0.3 {
+			return BiomeJungle
+		}
 		if humid > 0.1 {
 			return BiomeSavanna
+		}
+		if humid < -0.2 {
+			return BiomeBadlands
 		}
 		return BiomeDesert
 	}
@@ -272,6 +360,7 @@ func (g *TerrainGenerator) Generate(pos game.ChunkPos) *level.Chunk {
 
 	g.placeSnowAndIce(chunk, pos, heights, biomes)
 	g.placeBiomeTrees(chunk, pos, heights, biomes)
+	g.placeBiomeVegetation(chunk, pos, heights, biomes)
 	g.placeSugarCane(chunk, pos, heights, biomes)
 	g.placePumpkins(chunk, pos, heights, biomes)
 	g.structurePlacer.PlaceStructures(chunk, pos.X, pos.Z, g)
@@ -315,6 +404,18 @@ func (g *TerrainGenerator) computeHeights(pos game.ChunkPos) ([256]int, [256]Bio
 				h = 64 + int(n*6)
 			case BiomeSavanna:
 				h = 64 + int(n*10)
+			case BiomeJungle:
+				h = 66 + int(n*10)
+			case BiomeSwamp:
+				h = 62 + int(n*4) // Flat and low, near water level
+			case BiomeDarkForest:
+				h = 66 + int(n*8)
+			case BiomeFlowerForest:
+				h = 66 + int(n*8)
+			case BiomeMushroom:
+				h = 64 + int(n*6)
+			case BiomeBadlands:
+				h = 68 + int(n*16) // Hilly terracotta terrain
 			default:
 				h = 64 + int(n*16)
 			}
@@ -374,7 +475,45 @@ func (g *TerrainGenerator) surfaceBlock(biome BiomeType, depthFromSurface, world
 			return g.grassID
 		}
 		return g.dirtID
-	default: // Plains, Forest, Birch Forest, Taiga
+	case BiomeBadlands:
+		if depthFromSurface == 0 {
+			return g.redSandID
+		}
+		// Terracotta layers at different depths
+		switch depthFromSurface % 4 {
+		case 1:
+			return g.orangeTerracottaID
+		case 2:
+			return g.redTerracottaID
+		case 3:
+			return g.yellowTerracottaID
+		default:
+			return g.brownTerracottaID
+		}
+	case BiomeMushroom:
+		if depthFromSurface == 0 {
+			if worldY < g.SeaLevel {
+				return g.dirtID
+			}
+			return g.myceliumID
+		}
+		return g.dirtID
+	case BiomeSwamp:
+		if depthFromSurface == 0 {
+			if worldY < g.SeaLevel {
+				return g.dirtID
+			}
+			// Clay patches near water level (hash uses worldY as proxy for position variation)
+			if worldY <= g.SeaLevel+2 {
+				h := posHash(worldY, depthFromSurface, worldY*37, g.Seed)
+				if h%4 == 0 {
+					return g.clayID
+				}
+			}
+			return g.grassID
+		}
+		return g.dirtID
+	default: // Plains, Forest, Birch Forest, Taiga, Jungle, Dark Forest, Flower Forest
 		if depthFromSurface == 0 {
 			if worldY < g.SeaLevel {
 				return g.dirtID
@@ -564,6 +703,40 @@ func (g *TerrainGenerator) placeBiomeTrees(chunk *level.Chunk, pos game.ChunkPos
 					continue
 				}
 				g.placeTree(chunk, x, ty, z, g.acaciaLogID, g.acaciaLeavesID, &rng)
+			case BiomeJungle:
+				if surfState != g.grassID || treeRng%6 != 0 {
+					continue
+				}
+				g.placeJungleTree(chunk, x, ty, z, &rng)
+			case BiomeSwamp:
+				if surfState != g.grassID || treeRng%12 != 0 {
+					continue
+				}
+				g.placeSwampTree(chunk, x, ty, z, &rng)
+			case BiomeDarkForest:
+				if surfState != g.grassID || treeRng%6 != 0 {
+					continue
+				}
+				g.placeDarkOakTree(chunk, x, ty, z, &rng)
+			case BiomeFlowerForest:
+				if surfState != g.grassID || treeRng%10 != 0 {
+					continue
+				}
+				g.placeTree(chunk, x, ty, z, g.oakLogID, g.oakLeavesID, &rng)
+			case BiomeMushroom:
+				if surfState != g.myceliumID || treeRng%10 != 0 {
+					continue
+				}
+				g.placeHugeMushroom(chunk, x, ty, z, &rng)
+			case BiomeBadlands:
+				// No trees in badlands; occasional cactus
+				if surfState != g.redSandID || treeRng%30 != 0 || g.cactusID == 0 {
+					continue
+				}
+				cactusH := 1 + int(treeRng/30)%3
+				for dy := 1; dy <= cactusH; dy++ {
+					g.setBlock(chunk, x, ty+dy, z, g.cactusID)
+				}
 			case BiomeOcean:
 				continue
 			}
