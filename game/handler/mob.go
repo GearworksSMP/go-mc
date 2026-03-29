@@ -1523,6 +1523,10 @@ func (m *MobManager) tryBreed(mob *Mob) {
 		m.Mobs[eid] = baby
 		m.broadcastSpawn(baby)
 
+		// Heart particles at both parent positions
+		BroadcastParticle(m.Manager, ParticleHeart, mob.X, mob.Y+1.0, mob.Z, 0.3, 0.3, 0.3, 0.0, 7)
+		BroadcastParticle(m.Manager, ParticleHeart, other.X, other.Y+1.0, other.Z, 0.3, 0.3, 0.3, 0.0, 7)
+
 		// Reset parents
 		mob.LoveTicks = 0
 		mob.BreedCooldown = 6000 // 5 minutes

@@ -173,6 +173,12 @@ func (em *EffectManager) Tick(tick int64) {
 			return
 		}
 
+		// Ambient potion swirl particles every 20 ticks for players with active effects
+		if tick%20 == 0 {
+			px, py, pz := p.Position()
+			BroadcastParticle(em.Manager, ParticleEffect, px, py+0.5, pz, 0.3, 0.5, 0.3, 0.01, 3)
+		}
+
 		var expired []int32
 		for effectID, effect := range p.Effects {
 			// Decrement duration (skip infinite effects)

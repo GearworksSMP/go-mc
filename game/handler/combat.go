@@ -285,7 +285,7 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	}
 
 	// Damage indicator particle at target position (resolved later per-target type)
-	h.emitDamageParticles(targetEID, isCritical)
+	h.emitDamageParticles(targetEID, isCritical, len(heldItem.Enchantments) > 0)
 
 	// Try boat target
 	if h.BoatMgr != nil && h.BoatMgr.IsBoat(targetEID) {
@@ -566,8 +566,8 @@ func (h *CombatHandler) applyThorns(attacker, target *game.Player) {
 	}
 }
 
-// emitDamageParticles sends damage indicator (and crit) particles at the target entity.
-func (h *CombatHandler) emitDamageParticles(targetEID int32, isCritical bool) {
+// emitDamageParticles sends damage indicator (and crit/enchanted hit) particles at the target entity.
+func (h *CombatHandler) emitDamageParticles(targetEID int32, isCritical, enchanted bool) {
 	var x, y, z float64
 	if h.MobManager != nil {
 		h.MobManager.mu.Lock()
@@ -586,12 +586,13 @@ func (h *CombatHandler) emitDamageParticles(targetEID int32, isCritical bool) {
 		return
 	}
 
-	// Damage indicator particles
 	BroadcastParticle(h.Manager, ParticleDamageIndicator, x, y, z, 0.1, 0.2, 0.1, 0.2, 3)
 
-	// Extra crit particles
 	if isCritical {
 		BroadcastParticle(h.Manager, ParticleCrit, x, y, z, 0.3, 0.5, 0.3, 0.4, 8)
+	}
+	if enchanted {
+		BroadcastParticle(h.Manager, ParticleEnchantedHit, x, y, z, 0.3, 0.3, 0.3, 0.5, 10)
 	}
 }
 
