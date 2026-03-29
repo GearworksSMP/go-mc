@@ -243,6 +243,7 @@ func main() {
 
 	fishingMgr := handler.NewFishingManager(players, itemEntities, world, logger)
 	signMgr := handler.NewSignManager(players, world, logger)
+	decoratedPotMgr := handler.NewDecoratedPotManager(players, itemEntities)
 	boatMgr := handler.NewBoatManager(players, world, itemEntities, logger)
 	tntMgr := handler.NewTNTManager(players, world, survHandler, itemEntities, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
@@ -329,6 +330,7 @@ func main() {
 		elytraMgr:       elytraMgr,
 		fishingMgr:      fishingMgr,
 		signMgr:         signMgr,
+		decoratedPotMgr: decoratedPotMgr,
 		boatMgr:         boatMgr,
 		minecartMgr:     minecartMgr,
 		effectMgr:       effectMgr,
@@ -627,6 +629,7 @@ type gamePlay struct {
 	elytraMgr       *handler.ElytraManager
 	fishingMgr      *handler.FishingManager
 	signMgr         *handler.SignManager
+	decoratedPotMgr *handler.DecoratedPotManager
 	boatMgr         *handler.BoatManager
 	minecartMgr     *handler.MinecartManager
 	effectMgr       *handler.EffectManager
@@ -1161,8 +1164,9 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		EnchantMgr:   g.enchantMgr,
 		AnvilMgr:     g.anvilMgr,
 		BedMgr:       g.bedMgr,
-		SignMgr:      g.signMgr,
-		BoatMgr:      g.boatMgr,
+		SignMgr:         g.signMgr,
+		DecoratedPotMgr: g.decoratedPotMgr,
+		BoatMgr:         g.boatMgr,
 		MinecartMgr:  g.minecartMgr,
 		TNTMgr:       g.tntMgr,
 		FireMgr:      g.fireMgr,

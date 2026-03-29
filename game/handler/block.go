@@ -61,21 +61,22 @@ type BlockHandler struct {
 	BlastFurnaceMgr *BlastFurnaceManager                // optional; handles blast furnace interactions
 	ShulkerBoxMgr   *ShulkerBoxManager                  // optional; handles shulker box interactions
 	SmithingMgr     *SmithingTableManager               // optional; handles smithing table interactions
-	XPOrbMgr        *XPOrbManager                       // optional; spawns XP orbs for ore mining
-	ComposterMgr    *ComposterManager                   // optional; handles composter interactions
-	CauldronMgr     *CauldronManager                    // optional; handles cauldron interactions
-	BeaconMgr       *BeaconManager                      // optional; handles beacon effects
-	WitherMgr       *WitherManager                      // optional; handles wither summoning
-	ArmorStandMgr   *ArmorStandManager                  // optional; handles armor stand placement
-	ItemFrameMgr    *ItemFrameManager                   // optional; handles item frame placement
-	PaintingMgr     *PaintingManager                    // optional; handles painting placement
-	LeashMgr        *LeashManager                       // optional; handles leash tie to fence
-	JukeboxMgr      *JukeboxManager                     // optional; handles jukebox interactions
-	LecternMgr      *LecternManager                     // optional; handles lectern interactions
+	XPOrbMgr         *XPOrbManager                       // optional; spawns XP orbs for ore mining
+	ComposterMgr     *ComposterManager                   // optional; handles composter interactions
+	CauldronMgr      *CauldronManager                    // optional; handles cauldron interactions
+	BeaconMgr        *BeaconManager                      // optional; handles beacon effects
+	WitherMgr        *WitherManager                      // optional; handles wither summoning
+	ArmorStandMgr    *ArmorStandManager                  // optional; handles armor stand placement
+	ItemFrameMgr     *ItemFrameManager                   // optional; handles item frame placement
+	PaintingMgr      *PaintingManager                    // optional; handles painting placement
+	LeashMgr         *LeashManager                       // optional; handles leash tie to fence
+	JukeboxMgr       *JukeboxManager                     // optional; handles jukebox interactions
+	LecternMgr       *LecternManager                     // optional; handles lectern interactions
 	BannerMgr        *BannerManager                      // optional; handles banner patterns
 	RespawnAnchorMgr *RespawnAnchorManager               // optional; handles respawn anchor interactions
 	CopperMgr        *CopperManager                      // optional; handles copper waxing/scraping
 	HiveMgr          *HiveManager                        // optional; handles beehive/bee_nest interactions
+	DecoratedPotMgr  *DecoratedPotManager                // optional; handles decorated pot interactions
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -336,6 +337,12 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			case "smithing_table":
 				if h.SmithingMgr != nil {
 					h.SmithingMgr.OpenSmithingTable(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "decorated_pot":
+				if h.DecoratedPotMgr != nil {
+					h.DecoratedPotMgr.UsePot(player, pos.X, pos.Y, pos.Z)
 					h.sendAck(player, int32(sequence))
 					return
 				}
@@ -864,6 +871,13 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 	// Drop book if breaking a lectern
 	if h.LecternMgr != nil {
 		h.LecternMgr.OnLecternBreak(x, y, z)
+	}
+
+	// Drop contents and clean up decorated pot data
+	if h.DecoratedPotMgr != nil && oldState > 0 {
+		if BlockNameFromState(int(oldState)) == "decorated_pot" {
+			h.DecoratedPotMgr.BreakPot(x, y, z)
+		}
 	}
 
 	// Clean up redstone power source if breaking a lever, button, or pressure plate
