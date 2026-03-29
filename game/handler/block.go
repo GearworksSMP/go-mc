@@ -60,6 +60,7 @@ type BlockHandler struct {
 	BlastFurnaceMgr *BlastFurnaceManager                // optional; handles blast furnace interactions
 	ShulkerBoxMgr   *ShulkerBoxManager                  // optional; handles shulker box interactions
 	SmithingMgr     *SmithingTableManager               // optional; handles smithing table interactions
+	DecoratedPotMgr *DecoratedPotManager                // optional; handles decorated pot interactions
 	OnBlockBreak    func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -316,6 +317,12 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			case "smithing_table":
 				if h.SmithingMgr != nil {
 					h.SmithingMgr.OpenSmithingTable(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "decorated_pot":
+				if h.DecoratedPotMgr != nil {
+					h.DecoratedPotMgr.UsePot(player, pos.X, pos.Y, pos.Z)
 					h.sendAck(player, int32(sequence))
 					return
 				}
@@ -730,6 +737,13 @@ func (h *BlockHandler) breakBlock(player *game.Player, x, y, z int, sequence int
 	// Remove sign data if breaking a sign
 	if h.SignMgr != nil {
 		h.SignMgr.RemoveSign(x, y, z)
+	}
+
+	// Drop contents and clean up decorated pot data
+	if h.DecoratedPotMgr != nil && oldState > 0 {
+		if BlockNameFromState(int(oldState)) == "decorated_pot" {
+			h.DecoratedPotMgr.BreakPot(x, y, z)
+		}
 	}
 
 	// Clean up redstone power source if breaking a lever, button, or pressure plate
