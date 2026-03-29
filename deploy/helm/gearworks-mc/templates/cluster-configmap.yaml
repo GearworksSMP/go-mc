@@ -1,0 +1,21 @@
+{{- if .Values.cluster.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gearworks-mc.fullname" . }}-cluster
+  labels:
+    {{- include "gearworks-mc.labels" . | nindent 4 }}
+data:
+  cluster.json: |
+    {
+      "servers": {
+        {{- $fullname := include "gearworks-mc.fullname" . }}
+        {{- $regions := int .Values.cluster.regions }}
+        {{- range $i := until $regions }}
+        {{- if $i }},{{ end }}
+        "{{ $fullname }}-region-{{ $i }}": {"mc_addr": "{{ $fullname }}-region-{{ $i }}.{{ $fullname }}-region:25566"}
+        {{- end }}
+      },
+      "default_server": "{{ $fullname }}-region-0"
+    }
+{{- end }}

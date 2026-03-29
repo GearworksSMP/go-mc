@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gearworks-mc
+description: Minecraft 26.1 Go server
+version: 0.1.0
+appVersion: "26.1"
+type: application
