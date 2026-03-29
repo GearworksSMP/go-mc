@@ -135,20 +135,38 @@ func (em *ElytraManager) HandleUseItem(player *game.Player, p pk.Packet) bool {
 	return true
 }
 
-// Tick handles per-tick elytra updates: durability loss and landing detection.
+// Tick handles per-tick elytra updates: velocity tracking, durability loss, and landing detection.
 func (em *ElytraManager) Tick(tick int64) {
 	em.Manager.ForEach(func(player *game.Player) {
 		if !player.Gliding {
+			player.ElytraTracking = false
 			return
 		}
+
+		// Track velocity from position deltas
+		px, py, pz := player.Position()
+		if player.ElytraTracking {
+			player.ElytraVelX = px - player.ElytraLastX
+			player.ElytraVelY = py - player.ElytraLastY
+			player.ElytraVelZ = pz - player.ElytraLastZ
+		}
+		player.ElytraLastX = px
+		player.ElytraLastY = py
+		player.ElytraLastZ = pz
+		player.ElytraTracking = true
 
 		// Deactivate gliding if player is on ground or dead
 		if player.OnGround || player.Dead {
 			player.Gliding = false
 			em.broadcastGlidePose(player, false)
-			if !player.Dead {
-				em.logf("Player %s stopped gliding (landed)", player.Name)
+
+			if !player.Dead && player.ElytraTracking {
+				em.applyLanding(player)
 			}
+
+			player.ElytraTracking = false
+			// Reset normal fall tracking so trackFall() doesn't double-apply damage
+			player.FallStartY = -999
 			return
 		}
 
@@ -169,6 +187,7 @@ func (em *ElytraManager) Tick(tick int64) {
 						chestItem.Durability = 1
 						player.Gliding = false
 						em.broadcastGlidePose(player, false)
+						player.ElytraTracking = false
 						em.logf("Player %s elytra broke (durability depleted)", player.Name)
 					}
 					SendSlotUpdate(player, 6)
@@ -176,6 +195,96 @@ func (em *ElytraManager) Tick(tick int64) {
 			}
 		}
 	})
+}
+
+// applyLanding handles elytra landing: fall damage, particles, and sounds.
+func (em *ElytraManager) applyLanding(player *game.Player) {
+	vx := player.ElytraVelX
+	vy := player.ElytraVelY
+	vz := player.ElytraVelZ
+
+	// Total speed in blocks/tick
+	speed := math.Sqrt(vx*vx + vy*vy + vz*vz)
+
+	px, py, pz := player.Position()
+
+	// Landing particles: broadcast block crack particles if speed is significant
+	if speed > 0.5 {
+		// Particle count proportional to landing speed (5-20 range)
+		count := int32(speed * 10)
+		if count < 5 {
+			count = 5
+		}
+		if count > 20 {
+			count = 20
+		}
+		BroadcastParticle(em.Manager, ParticleBlock, px, py, pz, 0.3, 0.1, 0.3, 0.0, count)
+	}
+
+	// No damage in creative/spectator, water, invulnerable, or slow falling
+	if player.GameMode == 1 || player.GameMode == 3 {
+		return
+	}
+	if player.InWater || player.IsInvulnerable() {
+		return
+	}
+	if player.Effects != nil {
+		if _, ok := player.Effects[EffectSlowFalling]; ok {
+			return
+		}
+	}
+
+	// Vanilla elytra damage: floor(speed_per_tick * 10 - 3), minimum 0
+	damage := math.Floor(speed*10 - 3)
+	if damage <= 0 {
+		return
+	}
+
+	// Protection enchantment: check all armor slots (5=helmet, 6=chest, 7=legs, 8=boots)
+	// Each level of Protection reduces damage by 4% (up to 80% total across all pieces)
+	totalProtLevel := int32(0)
+	for _, slot := range []int{5, 6, 7, 8} {
+		armorItem := &player.Inventory[slot]
+		if lvl := enchant.GetLevel(armorItem.Enchantments, enchant.Protection); lvl > 0 {
+			totalProtLevel += lvl
+		}
+	}
+	if totalProtLevel > 0 {
+		// Cap at 20 levels (80% reduction)
+		if totalProtLevel > 20 {
+			totalProtLevel = 20
+		}
+		reduction := float64(totalProtLevel) * 0.04
+		damage *= 1 - reduction
+	}
+
+	// Feather Falling on boots: each level reduces by 12%
+	bootsItem := &player.Inventory[8]
+	if ffLvl := enchant.GetLevel(bootsItem.Enchantments, enchant.FeatherFalling); ffLvl > 0 {
+		reduction := float64(ffLvl) * 0.12
+		if reduction > 1.0 {
+			reduction = 1.0
+		}
+		damage *= 1 - reduction
+	}
+
+	if damage <= 0 {
+		return
+	}
+
+	// Play fall sound based on damage severity
+	if damage >= 4 {
+		BroadcastSound(em.Manager, SoundFallBig, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+	} else {
+		BroadcastSound(em.Manager, SoundFallSmall, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+	}
+
+	// Apply damage
+	player.LastDamageMessage = player.Name + " experienced kinetic energy"
+	if em.Survival != nil {
+		em.Survival.ApplyDamage(em.Manager, player, float32(damage), em.Survival.FallDamageTypeID)
+	}
+	em.logf("Player %s elytra landing damage: %.1f (speed=%.2f b/t)", player.Name, damage, speed)
 }
 
 // broadcastGlidePose sends a pose metadata update to all players.

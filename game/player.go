@@ -415,6 +415,10 @@ type Player struct {
 
 	// Elytra gliding state
 	Gliding bool
+	// Velocity tracking for elytra landing damage (position deltas per tick)
+	ElytraLastX, ElytraLastY, ElytraLastZ float64
+	ElytraVelX, ElytraVelY, ElytraVelZ   float64
+	ElytraTracking                        bool // true once we have a previous position
 
 	// Riding state (e.g. boat)
 	RidingEntityEID int32

@@ -437,6 +437,13 @@ func (h *MovementHandler) trackFall(player *game.Player, oldY, newY float64, onG
 		return
 	}
 
+	// Elytra landing damage is handled by ElytraManager.applyLanding();
+	// skip normal fall tracking while gliding to avoid double damage.
+	if player.Gliding {
+		player.FallStartY = -999
+		return
+	}
+
 	// Cancel fall tracking when entering water or on a climbable block
 	if player.InWater || player.OnLadder {
 		player.FallStartY = -999
