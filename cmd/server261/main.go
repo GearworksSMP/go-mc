@@ -306,6 +306,14 @@ func main() {
 
 	permMgr := handler.NewPermissionManager("ops.json", "whitelist.json")
 
+	banMgr, err := handler.LoadBans("banned-players.json")
+	if err != nil {
+		logger.Printf("Warning: could not load bans: %v", err)
+		banMgr = nil
+	}
+
+	scoreboardMgr := handler.NewScoreboardManager(players)
+
 	gp := &gamePlay{
 		logger:          logger,
 		world:           world,
@@ -375,9 +383,11 @@ func main() {
 		respawnAnchorMgr: respawnAnchorMgr,
 		hiveMgr:          hiveMgr,
 		advancementMgr:   advancementMgr,
-		permMgr:         permMgr,
-		gameRules:       gameRules,
-		tracer:          tp.Tracer("gearworks-mc"),
+		permMgr:          permMgr,
+		banMgr:           banMgr,
+		scoreboardMgr:    scoreboardMgr,
+		gameRules:        gameRules,
+		tracer:           tp.Tracer("gearworks-mc"),
 	}
 
 	// Create DimensionManager for cross-dimension teleportation
@@ -737,6 +747,8 @@ type gamePlay struct {
 	gameRules        *handler.GameRules
 	advancementMgr  *handler.AdvancementManager
 	permMgr         *handler.PermissionManager
+	banMgr          *handler.BanManager
+	scoreboardMgr   *handler.ScoreboardManager
 	tracer          trace.Tracer
 }
 
@@ -842,6 +854,21 @@ func (g *gamePlay) saveAllBlockEntities() {
 }
 
 func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.PublicKey, properties []user.Property, protocol int32, conn *net.Conn) {
+	// Ban enforcement
+	if g.banMgr != nil {
+		if banned, reason := g.banMgr.IsBanned(name); banned {
+			msg := "You are banned from this server."
+			if reason != "" {
+				msg += " Reason: " + reason
+			}
+			_ = conn.WritePacket(pk.Marshal(
+				packetid.ClientboundDisconnect,
+				chat.Text(msg),
+			))
+			return
+		}
+	}
+
 	// Whitelist enforcement
 	if g.permMgr != nil && !g.permMgr.IsWhitelisted(id) {
 		disconnectPkt := pk.Marshal(
@@ -1328,6 +1355,8 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		World:           g.world,
 		MobMgr:          g.mobMgr,
 		EffectMgr:       g.effectMgr,
+		BanMgr:          g.banMgr,
+		ScoreboardMgr:   g.scoreboardMgr,
 	}
 	chatHandler := &handler.ChatHandler{
 		Manager:     g.players,

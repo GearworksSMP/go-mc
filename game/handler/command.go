@@ -31,6 +31,8 @@ type CommandExecutor struct {
 	World           game.World
 	MobMgr          *MobManager
 	EffectMgr       *EffectManager
+	BanMgr          *BanManager
+	ScoreboardMgr   *ScoreboardManager
 }
 
 // Execute parses and dispatches a command line (without the leading /).
@@ -52,12 +54,12 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		switch cmd {
 		case "gamemode", "gm", "tp", "teleport", "give", "kill", "time",
 			"clear", "difficulty", "weather", "xp", "experience", "enchant", "gamerule",
-			"summon", "setblock", "fill", "effect":
+			"summon", "setblock", "fill", "effect", "title", "scoreboard":
 			if pm.OpLevel(player.UUID) < 2 {
 				c.sendSystemMsg(player, "You don't have permission to use this command", "red")
 				return
 			}
-		case "op", "deop", "whitelist", "kick":
+		case "op", "deop", "whitelist", "kick", "ban", "pardon", "banlist":
 			if pm.OpLevel(player.UUID) < 3 {
 				c.sendSystemMsg(player, "You don't have permission to use this command", "red")
 				return
@@ -108,6 +110,18 @@ func (c *CommandExecutor) Execute(player *game.Player, cmdLine string) {
 		c.cmdEffect(player, args)
 	case "kick":
 		c.cmdKick(player, args)
+	case "ban":
+		c.cmdBan(player, args)
+	case "pardon":
+		c.cmdPardon(player, args)
+	case "banlist":
+		c.cmdBanList(player)
+	case "title":
+		c.cmdTitle(player, args)
+	case "msg", "tell", "w":
+		c.cmdMsg(player, args)
+	case "scoreboard":
+		c.cmdScoreboard(player, args)
 	default:
 		c.sendSystemMsg(player, fmt.Sprintf("Unknown command: /%s. Type /help for a list of commands.", cmd), "red")
 	}
@@ -608,6 +622,13 @@ func (c *CommandExecutor) cmdHelp(player *game.Player) {
 		"  /fill <x1 y1 z1> <x2 y2 z2> <block> [mode] — Fill region with blocks",
 		"  /effect <give|clear> <player> [effect] [duration] [amplifier] — Manage effects",
 		"  /kick <player> [reason] — Kick a player",
+		"  /ban <player> [reason] — Ban a player",
+		"  /pardon <player> — Unban a player",
+		"  /banlist — List all banned players",
+		"  /title <targets> <title|subtitle|actionbar|times|clear|reset> — Manage titles",
+		"  /msg <player> <message> — Send a private message (/tell, /w)",
+		"  /scoreboard objectives <add|remove|setdisplay> — Manage objectives",
+		"  /scoreboard players <set|add|remove|reset> — Manage scores",
 		"  /help — Show this help message",
 	}
 	for _, line := range lines {
@@ -1016,6 +1037,276 @@ func (c *CommandExecutor) cmdKick(player *game.Player, args []string) {
 	c.Logger.Printf("%s kicked %s: %s", player.Name, target.Name, reason)
 }
 
+func (c *CommandExecutor) cmdBan(player *game.Player, args []string) {
+	if c.BanMgr == nil {
+		c.sendSystemMsg(player, "Ban system not available", "red")
+		return
+	}
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /ban <player> [reason]", "red")
+		return
+	}
+
+	target := c.Manager.GetByName(args[0])
+	targetName := args[0]
+	targetUUID := ""
+	reason := "Banned by operator"
+	if len(args) >= 2 {
+		reason = strings.Join(args[1:], " ")
+	}
+
+	if target != nil {
+		targetName = target.Name
+		targetUUID = target.UUID.String()
+		// Kick the banned player
+		target.WritePacket(pk.Marshal(
+			packetid.ClientboundDisconnect,
+			chat.Message{Text: "You have been banned: " + reason},
+		))
+		target.Conn.Close()
+	}
+
+	c.BanMgr.Ban(targetName, targetUUID, reason, player.Name)
+	c.sendSystemMsg(player, fmt.Sprintf("Banned %s: %s", targetName, reason), "green")
+	c.Logger.Printf("%s banned %s: %s", player.Name, targetName, reason)
+}
+
+func (c *CommandExecutor) cmdPardon(player *game.Player, args []string) {
+	if c.BanMgr == nil {
+		c.sendSystemMsg(player, "Ban system not available", "red")
+		return
+	}
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /pardon <player>", "red")
+		return
+	}
+
+	banned, _ := c.BanMgr.IsBanned(args[0])
+	if !banned {
+		c.sendSystemMsg(player, fmt.Sprintf("%s is not banned", args[0]), "red")
+		return
+	}
+
+	c.BanMgr.Pardon(args[0])
+	c.sendSystemMsg(player, fmt.Sprintf("Pardoned %s", args[0]), "green")
+	c.Logger.Printf("%s pardoned %s", player.Name, args[0])
+}
+
+func (c *CommandExecutor) cmdBanList(player *game.Player) {
+	if c.BanMgr == nil {
+		c.sendSystemMsg(player, "Ban system not available", "red")
+		return
+	}
+
+	bans := c.BanMgr.ListBans()
+	if len(bans) == 0 {
+		c.sendSystemMsg(player, "No players are banned", "")
+		return
+	}
+
+	c.sendSystemMsg(player, fmt.Sprintf("Banned players (%d):", len(bans)), "")
+	for _, b := range bans {
+		line := fmt.Sprintf("  %s — %s (by %s, %s)", b.PlayerName, b.Reason, b.BannedBy, b.BannedAt)
+		c.sendSystemMsg(player, line, "")
+	}
+}
+
+func (c *CommandExecutor) cmdMsg(player *game.Player, args []string) {
+	if len(args) < 2 {
+		c.sendSystemMsg(player, "Usage: /msg <player> <message>", "red")
+		return
+	}
+
+	target := c.Manager.GetByName(args[0])
+	if target == nil {
+		c.sendSystemMsg(player, fmt.Sprintf("Player not found: %s", args[0]), "red")
+		return
+	}
+
+	message := strings.Join(args[1:], " ")
+
+	// Send to target
+	targetMsg := chat.Message{
+		Text:   fmt.Sprintf("[%s -> You] %s", player.Name, message),
+		Color:  "gray",
+		Italic: true,
+	}
+	target.WritePacket(pk.Marshal(
+		packetid.ClientboundSystemChat,
+		targetMsg,
+		pk.Boolean(false),
+	))
+
+	// Send confirmation to sender
+	senderMsg := chat.Message{
+		Text:   fmt.Sprintf("[You -> %s] %s", target.Name, message),
+		Color:  "gray",
+		Italic: true,
+	}
+	player.WritePacket(pk.Marshal(
+		packetid.ClientboundSystemChat,
+		senderMsg,
+		pk.Boolean(false),
+	))
+}
+
+func (c *CommandExecutor) cmdScoreboard(player *game.Player, args []string) {
+	if c.ScoreboardMgr == nil {
+		c.sendSystemMsg(player, "Scoreboard system not available", "red")
+		return
+	}
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /scoreboard <objectives|players> ...", "red")
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "objectives":
+		c.cmdScoreboardObjectives(player, args[1:])
+	case "players":
+		c.cmdScoreboardPlayers(player, args[1:])
+	default:
+		c.sendSystemMsg(player, "Usage: /scoreboard <objectives|players> ...", "red")
+	}
+}
+
+func (c *CommandExecutor) cmdScoreboardObjectives(player *game.Player, args []string) {
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /scoreboard objectives <add|remove|setdisplay> ...", "red")
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "add":
+		if len(args) < 3 {
+			c.sendSystemMsg(player, "Usage: /scoreboard objectives add <name> dummy [displayName]", "red")
+			return
+		}
+		name := args[1]
+		displayName := name
+		if len(args) >= 4 {
+			displayName = strings.Join(args[3:], " ")
+		}
+		if err := c.ScoreboardMgr.AddObjective(name, displayName); err != nil {
+			c.sendSystemMsg(player, err.Error(), "red")
+			return
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Added objective '%s'", name), "green")
+
+	case "remove":
+		if len(args) < 2 {
+			c.sendSystemMsg(player, "Usage: /scoreboard objectives remove <name>", "red")
+			return
+		}
+		if err := c.ScoreboardMgr.RemoveObjective(args[1]); err != nil {
+			c.sendSystemMsg(player, err.Error(), "red")
+			return
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Removed objective '%s'", args[1]), "green")
+
+	case "setdisplay":
+		if len(args) < 3 {
+			c.sendSystemMsg(player, "Usage: /scoreboard objectives setdisplay <slot> <name>", "red")
+			return
+		}
+		slot := args[1]
+		name := args[2]
+		if err := c.ScoreboardMgr.SetDisplay(slot, name); err != nil {
+			c.sendSystemMsg(player, err.Error(), "red")
+			return
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Set display slot '%s' to objective '%s'", slot, name), "green")
+
+	default:
+		c.sendSystemMsg(player, "Usage: /scoreboard objectives <add|remove|setdisplay> ...", "red")
+	}
+}
+
+func (c *CommandExecutor) cmdScoreboardPlayers(player *game.Player, args []string) {
+	if len(args) < 1 {
+		c.sendSystemMsg(player, "Usage: /scoreboard players <set|add|remove|reset> ...", "red")
+		return
+	}
+
+	switch strings.ToLower(args[0]) {
+	case "set":
+		if len(args) < 4 {
+			c.sendSystemMsg(player, "Usage: /scoreboard players set <targets> <objective> <score>", "red")
+			return
+		}
+		targets := resolveTargetNames(player, args[1], c.Manager)
+		score, err := strconv.Atoi(args[3])
+		if err != nil {
+			c.sendSystemMsg(player, "Score must be a number", "red")
+			return
+		}
+		for _, name := range targets {
+			c.ScoreboardMgr.SetScore(name, args[2], int32(score))
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Set score of %s for %d player(s) to %d", args[2], len(targets), score), "green")
+
+	case "add":
+		if len(args) < 4 {
+			c.sendSystemMsg(player, "Usage: /scoreboard players add <targets> <objective> <score>", "red")
+			return
+		}
+		targets := resolveTargetNames(player, args[1], c.Manager)
+		score, err := strconv.Atoi(args[3])
+		if err != nil {
+			c.sendSystemMsg(player, "Score must be a number", "red")
+			return
+		}
+		for _, name := range targets {
+			c.ScoreboardMgr.AddScore(name, args[2], int32(score))
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Added %d to %s for %d player(s)", score, args[2], len(targets)), "green")
+
+	case "remove":
+		if len(args) < 4 {
+			c.sendSystemMsg(player, "Usage: /scoreboard players remove <targets> <objective> <score>", "red")
+			return
+		}
+		targets := resolveTargetNames(player, args[1], c.Manager)
+		score, err := strconv.Atoi(args[3])
+		if err != nil {
+			c.sendSystemMsg(player, "Score must be a number", "red")
+			return
+		}
+		for _, name := range targets {
+			c.ScoreboardMgr.AddScore(name, args[2], -int32(score))
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Removed %d from %s for %d player(s)", score, args[2], len(targets)), "green")
+
+	case "reset":
+		if len(args) < 2 {
+			c.sendSystemMsg(player, "Usage: /scoreboard players reset <targets> [objective]", "red")
+			return
+		}
+		targets := resolveTargetNames(player, args[1], c.Manager)
+		objective := ""
+		if len(args) >= 3 {
+			objective = args[2]
+		}
+		for _, name := range targets {
+			c.ScoreboardMgr.ResetScores(name, objective)
+		}
+		c.sendSystemMsg(player, fmt.Sprintf("Reset scores for %d player(s)", len(targets)), "green")
+
+	default:
+		c.sendSystemMsg(player, "Usage: /scoreboard players <set|add|remove|reset> ...", "red")
+	}
+}
+
+// resolveTargetNames resolves a selector to player names (for scoreboard, which uses names not player objects).
+func resolveTargetNames(executor *game.Player, selector string, manager *game.PlayerManager) []string {
+	targets := resolveTargets(executor, selector, manager)
+	names := make([]string, len(targets))
+	for i, t := range targets {
+		names[i] = t.Name
+	}
+	return names
+}
+
 // BuildCommandGraph creates the command tree for tab-completion hints.
 func BuildCommandGraph() *command.Graph {
 	noop := func(_ context.Context, _ []command.ParsedData) error { return nil }
@@ -1291,6 +1582,161 @@ func BuildCommandGraph() *command.Graph {
 				g.Argument("player", command.EntityParser{Flags: 0x01}).
 					AppendArgument(g.Argument("reason", command.MessageParser{}).HandleFunc(noop)).
 					HandleFunc(noop),
+			).
+			Unhandle(),
+	)
+
+	// /ban <player> [reason]
+	g.AppendLiteral(
+		g.Literal("ban").
+			AppendArgument(
+				g.Argument("player", command.EntityParser{Flags: 0x01}).
+					AppendArgument(g.Argument("reason", command.MessageParser{}).HandleFunc(noop)).
+					HandleFunc(noop),
+			).
+			Unhandle(),
+	)
+
+	// /pardon <player>
+	g.AppendLiteral(
+		g.Literal("pardon").
+			AppendArgument(g.Argument("player", command.StringParser(0)).HandleFunc(noop)).
+			Unhandle(),
+	)
+
+	// /banlist
+	g.AppendLiteral(g.Literal("banlist").HandleFunc(noop))
+
+	// /title <targets> <action> ...
+	g.AppendLiteral(
+		g.Literal("title").
+			AppendArgument(
+				g.Argument("targets", command.EntityParser{Flags: 0x01}).
+					AppendLiteral(
+						g.Literal("title").
+							AppendArgument(g.Argument("text", command.MessageParser{}).HandleFunc(noop)).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("subtitle").
+							AppendArgument(g.Argument("text", command.MessageParser{}).HandleFunc(noop)).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("actionbar").
+							AppendArgument(g.Argument("text", command.MessageParser{}).HandleFunc(noop)).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("times").
+							AppendArgument(g.Argument("fadeIn_stay_fadeOut", command.StringParser(2)).HandleFunc(noop)).
+							Unhandle(),
+					).
+					AppendLiteral(g.Literal("clear").HandleFunc(noop)).
+					AppendLiteral(g.Literal("reset").HandleFunc(noop)).
+					Unhandle(),
+			).
+			Unhandle(),
+	)
+
+	// /msg, /tell, /w — private messaging
+	for _, alias := range []string{"msg", "tell", "w"} {
+		g.AppendLiteral(
+			g.Literal(alias).
+				AppendArgument(
+					g.Argument("player", command.EntityParser{Flags: 0x01}).
+						AppendArgument(g.Argument("message", command.MessageParser{}).HandleFunc(noop)).
+						Unhandle(),
+				).
+				Unhandle(),
+		)
+	}
+
+	// /scoreboard <objectives|players> ...
+	g.AppendLiteral(
+		g.Literal("scoreboard").
+			AppendLiteral(
+				g.Literal("objectives").
+					AppendLiteral(
+						g.Literal("add").
+							AppendArgument(
+								g.Argument("name", command.StringParser(0)).
+									AppendArgument(
+										g.Argument("criteria", command.StringParser(0)).
+											AppendArgument(g.Argument("displayName", command.MessageParser{}).HandleFunc(noop)).
+											HandleFunc(noop),
+									).
+									Unhandle(),
+							).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("remove").
+							AppendArgument(g.Argument("name", command.StringParser(0)).HandleFunc(noop)).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("setdisplay").
+							AppendArgument(
+								g.Argument("slot", command.StringParser(0)).
+									AppendArgument(g.Argument("objective", command.StringParser(0)).HandleFunc(noop)).
+									Unhandle(),
+							).
+							Unhandle(),
+					).
+					Unhandle(),
+			).
+			AppendLiteral(
+				g.Literal("players").
+					AppendLiteral(
+						g.Literal("set").
+							AppendArgument(
+								g.Argument("targets", command.EntityParser{Flags: 0x01}).
+									AppendArgument(
+										g.Argument("objective", command.StringParser(0)).
+											AppendArgument(g.Argument("score", command.StringParser(0)).HandleFunc(noop)).
+											Unhandle(),
+									).
+									Unhandle(),
+							).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("add").
+							AppendArgument(
+								g.Argument("targets", command.EntityParser{Flags: 0x01}).
+									AppendArgument(
+										g.Argument("objective", command.StringParser(0)).
+											AppendArgument(g.Argument("score", command.StringParser(0)).HandleFunc(noop)).
+											Unhandle(),
+									).
+									Unhandle(),
+							).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("remove").
+							AppendArgument(
+								g.Argument("targets", command.EntityParser{Flags: 0x01}).
+									AppendArgument(
+										g.Argument("objective", command.StringParser(0)).
+											AppendArgument(g.Argument("score", command.StringParser(0)).HandleFunc(noop)).
+											Unhandle(),
+									).
+									Unhandle(),
+							).
+							Unhandle(),
+					).
+					AppendLiteral(
+						g.Literal("reset").
+							AppendArgument(
+								g.Argument("targets", command.EntityParser{Flags: 0x01}).
+									AppendArgument(g.Argument("objective", command.StringParser(0)).HandleFunc(noop)).
+									HandleFunc(noop),
+							).
+							Unhandle(),
+					).
+					Unhandle(),
 			).
 			Unhandle(),
 	)
