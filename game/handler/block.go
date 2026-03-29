@@ -79,6 +79,7 @@ type BlockHandler struct {
 	DecoratedPotMgr  *DecoratedPotManager                // optional; handles decorated pot interactions
 	CampfireMgr      *CampfireManager                   // optional; handles campfire cooking
 	NoteBlockMgr     *NoteBlockManager                  // optional; handles note block tuning/playback
+	LoomMgr          *LoomManager                      // optional; handles loom interactions
 	OnBlockBreak     func(blockName string, x, y, z int) // called when a block is broken
 }
 
@@ -355,6 +356,12 @@ func (h *BlockHandler) handleUseItemOn(player *game.Player, p pk.Packet) {
 			case "decorated_pot":
 				if h.DecoratedPotMgr != nil {
 					h.DecoratedPotMgr.UsePot(player, pos.X, pos.Y, pos.Z)
+					h.sendAck(player, int32(sequence))
+					return
+				}
+			case "loom":
+				if h.LoomMgr != nil {
+					h.LoomMgr.OpenLoom(player)
 					h.sendAck(player, int32(sequence))
 					return
 				}

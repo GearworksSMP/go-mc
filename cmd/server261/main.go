@@ -184,6 +184,7 @@ func main() {
 	grindstoneMgr := handler.NewGrindstoneManager(world)
 	stonecutterMgr := handler.NewStonecutterManager(world)
 	smithingMgr := handler.NewSmithingTableManager(world)
+	loomMgr := handler.NewLoomManager()
 	spawnerMgr := handler.NewSpawnerManager(mobMgr, players, world)
 	enchantMgr := handler.NewEnchantManager(world)
 	anvilMgr := handler.NewAnvilManager(world)
@@ -372,6 +373,7 @@ func main() {
 		blastFurnaceMgr: blastFurnaceMgr,
 		shulkerBoxMgr:   shulkerBoxMgr,
 		smithingMgr:     smithingMgr,
+		loomMgr:         loomMgr,
 		jukeboxMgr:      jukeboxMgr,
 		lecternMgr:      lecternMgr,
 		bookMgr:         bookMgr,
@@ -737,6 +739,7 @@ type gamePlay struct {
 	blastFurnaceMgr *handler.BlastFurnaceManager
 	shulkerBoxMgr   *handler.ShulkerBoxManager
 	smithingMgr     *handler.SmithingTableManager
+	loomMgr         *handler.LoomManager
 	jukeboxMgr      *handler.JukeboxManager
 	lecternMgr      *handler.LecternManager
 	bookMgr         *handler.BookManager
@@ -1309,6 +1312,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BlastFurnaceMgr: g.blastFurnaceMgr,
 		ShulkerBoxMgr:   g.shulkerBoxMgr,
 		SmithingMgr:     g.smithingMgr,
+		LoomMgr:         g.loomMgr,
 		ComposterMgr:    g.composterMgr,
 		CauldronMgr:     g.cauldronMgr,
 		BeaconMgr:       g.beaconMgr,
@@ -1352,6 +1356,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		ShulkerBoxMgr:   g.shulkerBoxMgr,
 		SmithingMgr:     g.smithingMgr,
 		BeaconMgr:       g.beaconMgr,
+		LoomMgr:         g.loomMgr,
 	}
 	if g.pgStore != nil {
 		invHandler.OnContainerClose = func(containerType string, pos [3]int) {

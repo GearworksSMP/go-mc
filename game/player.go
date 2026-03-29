@@ -222,20 +222,21 @@ func (a Slot261Array) WriteTo(w io.Writer) (n int64, err error) {
 
 // ItemStack represents a single item slot.
 type ItemStack struct {
-	ID            int32            // 0 = empty
-	Count         int32
-	Durability    int32            // remaining durability (tools only)
-	MaxDurability int32            // max durability (tools only; 0 = not a tool)
-	Enchantments  map[string]int32 `json:"enchantments,omitempty"` // server-side only
-	DisplayName   string           `json:"display_name,omitempty"` // custom name (from anvil rename)
-	PotionType    string           `json:"potion_type,omitempty"`  // e.g. "healing", "strength"
-	Lodestone     *LodestoneTarget `json:"lodestone,omitempty"`    // lodestone compass target
-	CanDestroy    []string         `json:"can_destroy,omitempty"`  // adventure mode: blocks this item can break
-	CanPlaceOn    []string         `json:"can_place_on,omitempty"` // adventure mode: blocks this item can be placed on
-	BookPages     []string         `json:"book_pages,omitempty"`   // book page content (writable_book / written_book)
-	BookAuthor    string           `json:"book_author,omitempty"`  // author of a written_book
-	BookTitle     string           `json:"book_title,omitempty"`   // title of a written_book
-	BookGeneration int32           `json:"book_generation,omitempty"` // 0=original, 1=copy, 2=copy-of-copy, 3=tattered
+	ID             int32            // 0 = empty
+	Count          int32
+	Durability     int32            // remaining durability (tools only)
+	MaxDurability  int32            // max durability (tools only; 0 = not a tool)
+	Enchantments   map[string]int32 `json:"enchantments,omitempty"` // server-side only
+	DisplayName    string           `json:"display_name,omitempty"` // custom name (from anvil rename)
+	PotionType     string           `json:"potion_type,omitempty"`  // e.g. "healing", "strength"
+	Lodestone      *LodestoneTarget `json:"lodestone,omitempty"`    // lodestone compass target
+	CanDestroy     []string         `json:"can_destroy,omitempty"`  // adventure mode: blocks this item can break
+	CanPlaceOn     []string         `json:"can_place_on,omitempty"` // adventure mode: blocks this item can be placed on
+	BookPages      []string         `json:"book_pages,omitempty"`   // book page content (writable_book / written_book)
+	BookAuthor     string           `json:"book_author,omitempty"`  // author of a written_book
+	BookTitle      string           `json:"book_title,omitempty"`   // title of a written_book
+	BookGeneration int32            `json:"book_generation,omitempty"` // 0=original, 1=copy, 2=copy-of-copy, 3=tattered
+	BannerPatterns []BannerLayer    `json:"banner_patterns,omitempty"` // banner pattern layers (loom)
 }
 
 // ToSlot converts an ItemStack to a Slot261 for wire encoding.
@@ -250,6 +251,12 @@ func (s ItemStack) ToSlot() Slot261 {
 		MaxDurability: s.MaxDurability,
 		Lodestone:     s.Lodestone,
 	}
+}
+
+// BannerLayer represents a single pattern layer on a banner item.
+type BannerLayer struct {
+	Pattern string `json:"pattern"` // e.g. "minecraft:stripe_bottom"
+	Color   string `json:"color"`   // e.g. "red"
 }
 
 // Inventory represents a player's survival inventory (46 slots).

@@ -45,6 +45,7 @@ type InventoryHandler struct {
 	ShulkerBoxMgr    *ShulkerBoxManager
 	SmithingMgr      *SmithingTableManager
 	BeaconMgr        *BeaconManager
+	LoomMgr          *LoomManager
 	OnContainerClose func(containerType string, pos [3]int) // called when chest/furnace closed
 }
 
@@ -1867,6 +1868,9 @@ func (h *InventoryHandler) handleContainerButtonClick(player *game.Player, p pk.
 	}
 	if h.SmithingMgr != nil && int(windowID) == SmithingWindowID && player.OpenWindowID == SmithingWindowID {
 		h.SmithingMgr.HandleSmithingClick(player, int(buttonID))
+	}
+	if h.LoomMgr != nil && int(windowID) == LoomWindowID && player.OpenWindowID == LoomWindowID {
+		h.LoomMgr.HandleLoomSelect(player, int(buttonID))
 	}
 }
 
