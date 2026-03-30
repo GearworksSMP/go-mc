@@ -252,6 +252,16 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 
 	attacker.LastAttackTime = time.Now()
 
+	// Broadcast attack indicator to trigger cooldown bar on clients
+	attackIndicatorPkt := pk.Marshal(
+		packetid.ClientboundEntityEvent,
+		pk.Int(attacker.EID),
+		pk.Byte(30), // attack indicator
+	)
+	h.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(attackIndicatorPkt)
+	})
+
 	// Determine mob type for type-specific enchantments
 	var targetMobType int32
 	if h.MobManager != nil {
