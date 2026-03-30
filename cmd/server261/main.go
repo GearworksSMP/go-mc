@@ -538,6 +538,7 @@ func main() {
 			mobMgr.Tick(tick)
 			spawnerMgr.Tick(tick)
 			arrowMgr.Tick(tick)
+			arrowMgr.TickWindCharges(tick)
 			xpOrbMgr.Tick(tick)
 			fishingMgr.Tick(tick)
 			fluidMgr.Tick(tick)
@@ -1526,6 +1527,9 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 			continue
 		}
 		if g.tridentMgr.HandleUseItem(player, p) {
+			continue
+		}
+		if g.arrowMgr.HandleWindChargeUseItem(player, p) {
 			continue
 		}
 		if g.foodHandler.HandlePacket(player, p) {

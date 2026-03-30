@@ -66,6 +66,7 @@ const (
 	MobTypeAllay            int32 = 2
 	MobTypeSniffer          int32 = 119
 	MobTypeTurtle           int32 = 131
+	MobTypeBreeze           int32 = 16
 )
 
 // mobNameToType maps entity names to type IDs for /summon.
@@ -90,6 +91,7 @@ var mobNameToType = map[string]int32{
 	"allay": MobTypeAllay, "sniffer": MobTypeSniffer,
 	"turtle": MobTypeTurtle,
 	"llama": MobTypeLlama, "trader_llama": MobTypeTraderLlama,
+	"breeze": MobTypeBreeze,
 }
 
 // MobTypeByName returns the entity type ID for a mob name, or -1 if unknown.
@@ -145,6 +147,8 @@ func mobDefaults(typeID int32) (health, damage float32, speed float64, hostile b
 		return 30, 0, 0.1, false
 	case MobTypeLlama, MobTypeTraderLlama:
 		return 22, 1, 0.1, false
+	case MobTypeBreeze:
+		return 30, 6, 0.6, true
 	default:
 		return 20, 3, 0.1, true
 	}
@@ -1135,6 +1139,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 			m.tickPassive(mob, tick)
 		}
 		return
+	case mob.TypeID == MobTypeBreeze:
+		m.tickBreeze(mob, tick)
+		return
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
 		return
@@ -1850,6 +1857,40 @@ func (m *MobManager) FindMobNear(x, y, z, radius float64, excludeEID int32) int3
 	return -1
 }
 
+// KnockbackMobsNear pushes all mobs within radius away from (cx, cy, cz).
+func (m *MobManager) KnockbackMobsNear(cx, cy, cz, radius, strength float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r2 := radius * radius
+	for eid, mob := range m.Mobs {
+		if mob.Health <= 0 || mob.DeathTick > 0 {
+			continue
+		}
+		dx := mob.X - cx
+		dy := (mob.Y + 0.9) - cy
+		dz := mob.Z - cz
+		d2 := dx*dx + dy*dy + dz*dz
+		if d2 >= r2 || d2 < 0.0001 {
+			continue
+		}
+		d := math.Sqrt(d2)
+		scale := (1.0 - d/radius) * strength
+		kbX := dx / d * scale
+		kbY := 0.4 * scale
+		kbZ := dz / d * scale
+		pkt := pk.Marshal(
+			packetid.ClientboundSetEntityMotion,
+			pk.VarInt(eid),
+			pk.Short(int16(kbX*8000)),
+			pk.Short(int16(kbY*8000)),
+			pk.Short(int16(kbZ*8000)),
+		)
+		m.Manager.ForEachNearby(mob.X, mob.Z, 64, func(p *game.Player) {
+			p.WritePacket(pkt)
+		})
+	}
+}
+
 // DamageMobByArrow applies arrow damage to a mob. Returns whether the mob died and its type ID.
 func (m *MobManager) DamageMobByArrow(shooterEID, targetEID int32, damage float32) (killed bool, typeID int32) {
 	m.mu.Lock()
@@ -2235,7 +2276,7 @@ func (m *MobManager) spawnMobXPOrbs(mob *Mob) {
 // mobXPAmount returns the vanilla XP value for a mob type.
 func mobXPAmount(mob *Mob) int32 {
 	switch mob.TypeID {
-	case MobTypeBlaze:
+	case MobTypeBlaze, MobTypeBreeze:
 		return 10
 	case MobTypeSlime, MobTypeMagmaCube:
 		if mob.SlimeSize >= 4 {
@@ -2370,6 +2411,8 @@ func (m *MobManager) dropMobLootWithLooting(mob *Mob, lootingLevel int32) {
 		drops = []drop{{"ender_pearl", 0, 1}}
 	case MobTypeBlaze:
 		drops = []drop{{"blaze_rod", 0, 1}}
+	case MobTypeBreeze:
+		drops = []drop{{"breeze_rod", 1, 2}}
 	case MobTypeWitherSkeleton:
 		drops = []drop{{"bone", 0, 2}, {"coal", 0, 1}}
 		if rand.Float64() < 0.025+float64(lootingLevel)*0.01 {

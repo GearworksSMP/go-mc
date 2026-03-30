@@ -2131,3 +2131,88 @@ func (m *MobManager) tickVillagerSleep(mob *Mob, vd *VillagerData, tick int64) {
 	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
 	m.broadcastMobMove(mob)
 }
+
+// tickBreeze runs breeze AI: hovers above ground, shoots wind charges at players, evades when close.
+func (m *MobManager) tickBreeze(mob *Mob, tick int64) {
+	if mob.ShootCooldown > 0 {
+		mob.ShootCooldown--
+	}
+
+	groundY := m.findGroundY(mob.X, mob.Y, mob.Z)
+	hoverY := groundY + 3.5
+	if mob.Y < hoverY-0.5 {
+		mob.Y += 0.08
+	} else if mob.Y > hoverY+0.5 {
+		mob.Y -= 0.04
+	}
+
+	var nearest *game.Player
+	nearestDist := 24.0
+	m.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.GameMode != 0 {
+			return
+		}
+		px, py, pz := p.Position()
+		d := math.Sqrt(sqDist3(px-mob.X, py-mob.Y, pz-mob.Z))
+		if d < nearestDist {
+			nearestDist = d
+			nearest = p
+		}
+	})
+
+	if nearest == nil {
+		mob.Target = nil
+		if tick%40 == 0 {
+			mob.FlyTargetY = mob.Y + (rand.Float64()*4 - 2)
+		}
+		mob.X += (rand.Float64() - 0.5) * 0.15
+		mob.Z += (rand.Float64() - 0.5) * 0.15
+		m.broadcastMobMove(mob)
+		return
+	}
+
+	mob.Target = nearest
+	px, py, pz := nearest.Position()
+	dx := px - mob.X
+	dz := pz - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+
+	if dist < 4 && dist > 0.1 {
+		evadeX := -dx / dist * 0.8
+		evadeZ := -dz / dist * 0.8
+		mob.X += evadeX
+		mob.Z += evadeZ
+		mob.Y += 0.3
+		m.broadcastMobMove(mob)
+		return
+	}
+
+	if dist < 8 {
+		mob.X -= dx / dist * 0.12
+		mob.Z -= dz / dist * 0.12
+	} else if dist > 16 {
+		mob.X += dx / dist * 0.12
+		mob.Z += dz / dist * 0.12
+	}
+
+	m.broadcastMobMove(mob)
+
+	if nearestDist <= 24.0 && mob.ShootCooldown <= 0 && m.ArrowMgr != nil {
+		mob.ShootCooldown = 60
+		m.ArrowMgr.SpawnWindCharge(mob.EID, mob.X, mob.Y+1.0, mob.Z, px, py+1.0, pz)
+		BroadcastSound(m.Manager, SoundBreezeShoot, SoundCategoryHostile, mob.X, mob.Y, mob.Z, 1.0, 1.0)
+	}
+}
+
+// findGroundY scans downward from pos to find the first solid block.
+func (m *MobManager) findGroundY(x, y, z float64) float64 {
+	bx, bz := int(math.Floor(x)), int(math.Floor(z))
+	for by := int(math.Floor(y)); by > -64; by-- {
+		state, err := m.World.GetBlock(bx, by, bz)
+		if err == nil && state != 0 {
+			return float64(by + 1)
+		}
+	}
+	return -64
+}

@@ -67,6 +67,7 @@ type ArrowManager struct {
 	ItemEntities *ItemEntityManager
 	mu           sync.Mutex
 	Arrows       map[int32]*Arrow
+	WindCharges  map[int32]*WindCharge
 }
 
 // NewArrowManager creates a new ArrowManager.
@@ -500,6 +501,214 @@ func (am *ArrowManager) removeArrow(eid int32) {
 	delete(am.Arrows, eid)
 }
 
+// windChargeEntityType is the entity type ID for wind charge projectiles (26.1-snapshot-2 registry).
+const windChargeEntityType int32 = 143
+
+// WindCharge represents a flying wind charge projectile.
+type WindCharge struct {
+	EID              int32
+	ShooterEID       int32
+	X, Y, Z          float64
+	VelX, VelY, VelZ float64
+	LifeTick         int64
+}
+
+// SpawnWindCharge creates and broadcasts a wind charge from a breeze (or player) toward a target.
+func (am *ArrowManager) SpawnWindCharge(shooterEID int32, sx, sy, sz, tx, ty, tz float64) {
+	dx := tx - sx
+	dy := ty - sy
+	dz := tz - sz
+	dist := math.Sqrt(dx*dx + dy*dy + dz*dz)
+	if dist < 0.01 {
+		return
+	}
+
+	speed := 1.0
+	velX := dx / dist * speed
+	velY := dy / dist * speed
+	velZ := dz / dist * speed
+
+	eid := am.Manager.NextEntityID()
+	wc := &WindCharge{
+		EID:        eid,
+		ShooterEID: shooterEID,
+		X:          sx,
+		Y:          sy,
+		Z:          sz,
+		VelX:       velX,
+		VelY:       velY,
+		VelZ:       velZ,
+	}
+
+	am.mu.Lock()
+	if am.WindCharges == nil {
+		am.WindCharges = make(map[int32]*WindCharge)
+	}
+	am.WindCharges[eid] = wc
+	am.mu.Unlock()
+
+	id := uuid.New()
+	data := shooterEID + 1
+	pkt := pk.Marshal(
+		packetid.ClientboundAddEntity,
+		pk.VarInt(eid),
+		pk.UUID(id),
+		pk.VarInt(windChargeEntityType),
+		pk.Double(sx),
+		pk.Double(sy),
+		pk.Double(sz),
+		pk.UnsignedByte(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.Angle(0),
+		pk.VarInt(data),
+	)
+	am.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(pkt)
+	})
+}
+
+// SpawnPlayerWindCharge creates a wind charge from a player's look direction
+// with a slight upward trajectory boost.
+func (am *ArrowManager) SpawnPlayerWindCharge(shooterEID int32, x, y, z, dirX, dirY, dirZ float64) {
+	am.SpawnWindCharge(shooterEID, x, y, z, x+dirX*10, y+(dirY+0.1)*10, z+dirZ*10)
+}
+
+// TickWindCharges processes all wind charge projectiles (movement, collision, despawn).
+func (am *ArrowManager) TickWindCharges(tick int64) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+
+	if am.WindCharges == nil {
+		return
+	}
+
+	var toRemove []int32
+
+	for eid, wc := range am.WindCharges {
+		wc.LifeTick++
+		if wc.LifeTick > 100 { // 5 second max flight
+			toRemove = append(toRemove, eid)
+			continue
+		}
+
+		wc.X += wc.VelX
+		wc.Y += wc.VelY
+		wc.Z += wc.VelZ
+		wc.VelY -= 0.03 // lighter gravity than arrows
+
+		bx, by, bz := int(math.Floor(wc.X)), int(math.Floor(wc.Y)), int(math.Floor(wc.Z))
+		state, err := am.World.GetBlock(bx, by, bz)
+		if err == nil && state != 0 {
+			am.windChargeImpact(wc)
+			toRemove = append(toRemove, eid)
+			continue
+		}
+
+		hitEntity := false
+		am.Manager.ForEach(func(p *game.Player) {
+			if hitEntity || p.Dead || p.IsInvulnerable() {
+				return
+			}
+			if p.EID == wc.ShooterEID && wc.LifeTick < 5 {
+				return
+			}
+			px, py, pz := p.Position()
+			dx := px - wc.X
+			dy := (py + 0.9) - wc.Y
+			dz := pz - wc.Z
+			d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+			if d < 1.0 {
+				hitEntity = true
+			}
+		})
+
+		if !hitEntity && am.MobMgr != nil {
+			mobEID := am.MobMgr.FindMobNear(wc.X, wc.Y, wc.Z, 1.0, wc.ShooterEID)
+			if mobEID >= 0 {
+				hitEntity = true
+			}
+		}
+
+		if hitEntity {
+			am.windChargeImpact(wc)
+			toRemove = append(toRemove, eid)
+			continue
+		}
+
+		pkt := pk.Marshal(
+			packetid.ClientboundTeleportEntity,
+			pk.VarInt(wc.EID),
+			pk.Double(wc.X),
+			pk.Double(wc.Y),
+			pk.Double(wc.Z),
+			pk.Double(wc.VelX), pk.Double(wc.VelY), pk.Double(wc.VelZ),
+			pk.Float(0), pk.Float(0),
+			pk.Int(0),
+			pk.Boolean(false),
+		)
+		am.Manager.ForEach(func(p *game.Player) {
+			p.WritePacket(pkt)
+		})
+	}
+
+	for _, eid := range toRemove {
+		am.removeWindCharge(eid)
+	}
+}
+
+// windChargeImpact handles wind charge detonation: knockback nearby entities, particles, sound.
+func (am *ArrowManager) windChargeImpact(wc *WindCharge) {
+	impactX, impactY, impactZ := wc.X, wc.Y, wc.Z
+	knockbackRadius := 3.0
+	knockbackStrength := 1.0
+
+	am.Manager.ForEach(func(p *game.Player) {
+		if p.Dead || p.IsInvulnerable() {
+			return
+		}
+		px, py, pz := p.Position()
+		dx := px - impactX
+		dy := (py + 0.9) - impactY
+		dz := pz - impactZ
+		d := math.Sqrt(dx*dx + dy*dy + dz*dz)
+		if d < knockbackRadius && d > 0.01 {
+			scale := (1.0 - d/knockbackRadius) * knockbackStrength
+			kbX := dx / d * scale
+			kbY := 0.4 * scale
+			kbZ := dz / d * scale
+			pkt := pk.Marshal(
+				packetid.ClientboundSetEntityMotion,
+				pk.VarInt(p.EID),
+				pk.Short(int16(kbX*8000)),
+				pk.Short(int16(kbY*8000)),
+				pk.Short(int16(kbZ*8000)),
+			)
+			p.WritePacket(pkt)
+		}
+	})
+
+	if am.MobMgr != nil {
+		am.MobMgr.KnockbackMobsNear(impactX, impactY, impactZ, knockbackRadius, knockbackStrength)
+	}
+
+	BroadcastParticle(am.Manager, ParticlePoof, impactX, impactY, impactZ, 0.5, 0.5, 0.5, 0.1, 20)
+	BroadcastSound(am.Manager, SoundWindChargeImpact, SoundCategoryHostile, impactX, impactY, impactZ, 1.0, 1.0)
+}
+
+// removeWindCharge removes a wind charge and broadcasts entity removal.
+func (am *ArrowManager) removeWindCharge(eid int32) {
+	removePkt := pk.Marshal(
+		packetid.ClientboundRemoveEntities,
+		pk.VarInt(1),
+		pk.VarInt(eid),
+	)
+	am.Manager.ForEach(func(p *game.Player) {
+		p.WritePacket(removePkt)
+	})
+	delete(am.WindCharges, eid)
+}
+
 // SendExistingArrows sends all current arrows to a newly joined player.
 func (am *ArrowManager) SendExistingArrows(player *game.Player) {
 	am.mu.Lock()
@@ -522,4 +731,59 @@ func (am *ArrowManager) SendExistingArrows(player *game.Player) {
 			pk.VarInt(arrow.ShooterEID+1),
 		))
 	}
+}
+
+// HandleWindChargeUseItem processes ServerboundUseItem for wind_charge items.
+// Returns true if the packet was handled.
+func (am *ArrowManager) HandleWindChargeUseItem(player *game.Player, p pk.Packet) bool {
+	if packetid.ServerboundPacketID(p.ID) != packetid.ServerboundUseItem {
+		return false
+	}
+
+	var hand pk.VarInt
+	var sequence pk.VarInt
+	if err := p.Scan(&hand, &sequence); err != nil {
+		return false
+	}
+
+	if player.Dead {
+		return false
+	}
+
+	if int(hand) != 0 {
+		return false
+	}
+
+	slot := int(player.HeldSlot) + 36
+	invItem := &player.Inventory[slot]
+	if invItem.ID <= 0 || invItem.Count <= 0 {
+		return false
+	}
+
+	itemName := ItemNameByID(invItem.ID)
+	if itemName != "wind_charge" {
+		return false
+	}
+
+	yaw, pitch := player.Rotation()
+	yawRad := float64(yaw) * math.Pi / 180.0
+	pitchRad := float64(pitch) * math.Pi / 180.0
+	dirX := -math.Sin(yawRad) * math.Cos(pitchRad)
+	dirY := -math.Sin(pitchRad)
+	dirZ := math.Cos(yawRad) * math.Cos(pitchRad)
+
+	px, py, pz := player.Position()
+	am.SpawnPlayerWindCharge(player.EID, px, py+1.5, pz, dirX, dirY, dirZ)
+
+	if player.GameMode == 0 {
+		invItem.Count--
+		if invItem.Count <= 0 {
+			invItem.ID = 0
+			invItem.Count = 0
+		}
+		SendSlotUpdate(player, slot)
+	}
+
+	BroadcastSound(am.Manager, SoundBreezeShoot, SoundCategoryPlayer, px, py, pz, 1.0, 1.2)
+	return true
 }

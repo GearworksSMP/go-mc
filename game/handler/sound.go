@@ -149,6 +149,8 @@ const (
 	SoundGhastDeath  int32 = 432
 	SoundGhastHurt   int32 = 433
 	SoundGhastShoot  int32 = 435
+	SoundBreezeShoot int32 = 126
+	SoundWindChargeImpact int32 = 1132
 	SoundIronGolemDeath int32 = 512
 	SoundIronGolemHurt  int32 = 514
 	SoundGuardianDeath  int32 = 448
