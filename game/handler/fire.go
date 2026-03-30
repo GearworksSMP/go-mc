@@ -17,13 +17,14 @@ const (
 
 // FireManager manages fire blocks in the world.
 type FireManager struct {
-	Manager  *game.PlayerManager
-	World    game.World
-	Survival *SurvivalHandler
-	Rules    *GameRules
-	Logger   *log.Logger
-	mu       sync.Mutex
-	fires    map[[3]int]int64 // position -> tick when placed
+	Manager    *game.PlayerManager
+	World      game.World
+	Survival   *SurvivalHandler
+	Rules      *GameRules
+	WeatherMgr *WeatherManager
+	Logger     *log.Logger
+	mu         sync.Mutex
+	fires      map[[3]int]int64 // position -> tick when placed
 }
 
 // NewFireManager creates a new FireManager.
@@ -136,6 +137,31 @@ func (fm *FireManager) Tick(tick int64) {
 				}
 			})
 		}
+	}
+
+	// Rain extinguishes exposed fires every 20 ticks
+	if tick%20 == 0 && fm.WeatherMgr != nil && fm.WeatherMgr.State() >= WeatherRain {
+		fm.mu.Lock()
+		var rainExtinguish [][3]int
+		for pos := range fm.fires {
+			if fm.isExposedToSky(pos[0], pos[1], pos[2]) {
+				rainExtinguish = append(rainExtinguish, pos)
+			}
+		}
+		for _, pos := range rainExtinguish {
+			delete(fm.fires, pos)
+			state, err := fm.World.GetBlock(pos[0], pos[1], pos[2])
+			if err == nil {
+				name := BlockNameFromState(int(state))
+				if name == "fire" || name == "soul_fire" {
+					fm.World.SetBlock(pos[0], pos[1], pos[2], 0)
+					broadcastBlockUpdateDirect(fm.Manager, pos[0], pos[1], pos[2], 0)
+					BroadcastSound(fm.Manager, SoundFireExtinguish, SoundCategoryBlock,
+						float64(pos[0])+0.5, float64(pos[1])+0.5, float64(pos[2])+0.5, 1.0, 1.0)
+				}
+			}
+		}
+		fm.mu.Unlock()
 	}
 
 	// Fire spread and burn-out: every 30 ticks (1.5 seconds)
@@ -259,6 +285,20 @@ func (fm *FireManager) Tick(tick int64) {
 		broadcastBlockUpdateDirect(fm.Manager, pos[0], pos[1], pos[2], int32(stateID))
 		fm.fires[pos] = tick
 	}
+}
+
+// isExposedToSky checks if a position has no solid block above it up to y=320.
+func (fm *FireManager) isExposedToSky(x, y, z int) bool {
+	for checkY := y + 1; checkY <= 320; checkY++ {
+		state, err := fm.World.GetBlock(x, checkY, z)
+		if err != nil {
+			return true // can't read above = assume sky
+		}
+		if state != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func (fm *FireManager) logf(format string, args ...any) {

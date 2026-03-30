@@ -34,6 +34,7 @@ type LightningManager struct {
 	WeatherMgr *WeatherManager
 	MobMgr     *MobManager
 	Survival   *SurvivalHandler
+	FireMgr    *FireManager
 	Logger     *log.Logger
 	mu         sync.Mutex
 	bolts      map[int32]*LightningBolt
@@ -91,7 +92,13 @@ func (lm *LightningManager) randomStrike() {
 	// Random offset within 128 blocks
 	x := px + float64(rand.Intn(256)-128)
 	z := pz + float64(rand.Intn(256)-128)
-	y := 80.0 // approximate surface height
+	y := 80.0
+	if lm.MobMgr != nil {
+		surfaceY := lm.MobMgr.findSurfaceY(int(x), int(z))
+		if surfaceY >= lm.MobMgr.MinY {
+			y = float64(surfaceY)
+		}
+	}
 
 	lm.SpawnLightningBolt(x, y, z)
 }
@@ -156,8 +163,18 @@ func (lm *LightningManager) SpawnLightningBolt(x, y, z float64) {
 		lm.convertNearbyMobs(x, y, z)
 	}
 
-	// Set fire at impact point (1 block)
-	// Note: fire block placement would require world access; skip for now
+	// Set fire at impact point and 1-2 random adjacent blocks
+	if lm.FireMgr != nil {
+		ix, iy, iz := int(math.Floor(x)), int(math.Floor(y)), int(math.Floor(z))
+		lm.FireMgr.PlaceFire(ix, iy, iz, 0)
+		adjOffsets := [][3]int{{1, 0, 0}, {-1, 0, 0}, {0, 0, 1}, {0, 0, -1}}
+		count := 1 + rand.Intn(2) // 1-2 adjacent fires
+		perm := rand.Perm(len(adjOffsets))
+		for i := 0; i < count && i < len(perm); i++ {
+			off := adjOffsets[perm[i]]
+			lm.FireMgr.PlaceFire(ix+off[0], iy+off[1], iz+off[2], 0)
+		}
+	}
 
 	if lm.Logger != nil {
 		lm.Logger.Printf("Lightning bolt struck at (%.0f, %.0f, %.0f)", x, y, z)

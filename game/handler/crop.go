@@ -10,8 +10,9 @@ import (
 
 // CropManager handles crop growth simulation.
 type CropManager struct {
-	World   game.World
-	Manager *game.PlayerManager
+	World      game.World
+	Manager    *game.PlayerManager
+	WeatherMgr *WeatherManager
 
 	mu          sync.Mutex
 	crops       map[[3]int]struct{} // positions of registered crops (wheat, carrots, potatoes, beetroots)
@@ -225,6 +226,13 @@ func (c *CropManager) tickCrop(x, y, z int) {
 	chance := 25
 	if c.isHydrated(x, y-1, z) {
 		chance = 12
+	}
+	// Rain bonus: further reduce chance denominator (faster growth)
+	if c.WeatherMgr != nil && c.WeatherMgr.State() >= WeatherRain {
+		chance = chance * 2 / 3 // ~33% faster growth during rain
+		if chance < 1 {
+			chance = 1
+		}
 	}
 	if rand.Intn(chance) != 0 {
 		return

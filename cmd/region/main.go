@@ -178,6 +178,7 @@ func main() {
 
 	cropMgr := handler.NewCropManager(world, players)
 	weatherMgr := handler.NewWeatherManager(players)
+	cropMgr.WeatherMgr = weatherMgr
 	mobMgr.WeatherMgr = weatherMgr
 
 	bedMgr := &handler.BedManager{
@@ -204,6 +205,7 @@ func main() {
 	effectMgr := handler.NewEffectManager(players, survHandler, logger)
 	potionMgr := handler.NewPotionManager(players, effectMgr, survHandler, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
+	fireMgr.WeatherMgr = weatherMgr
 
 	survHandler.ItemEntities = itemEntities
 	survHandler.Rules = gameRules

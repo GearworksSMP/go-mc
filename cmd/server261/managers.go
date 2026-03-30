@@ -133,6 +133,7 @@ func createManagers(
 		Logger:   logger,
 	}
 
+	cropMgr.WeatherMgr = weatherMgr
 	lightningMgr := handler.NewLightningManager(players, weatherMgr, mobMgr, survHandler, logger)
 
 	tridentMgr := &handler.TridentManager{
@@ -157,6 +158,8 @@ func createManagers(
 	tntMgr := handler.NewTNTManager(players, world, survHandler, itemEntities, logger)
 	fireMgr := handler.NewFireManager(players, world, survHandler, logger)
 	fireMgr.Rules = gameRules
+	fireMgr.WeatherMgr = weatherMgr
+	lightningMgr.FireMgr = fireMgr
 	redstoneMgr := handler.NewRedstoneManager(players, world, logger)
 	wireMgr := handler.NewWireManager(players, world)
 	pistonMgr := handler.NewPistonManager(players, world)

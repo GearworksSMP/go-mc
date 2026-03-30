@@ -832,7 +832,11 @@ func (m *MobManager) DamageMobByArrow(shooterEID, targetEID int32, damage float3
 }
 
 // sunlightDamage applies damage to zombies and skeletons in sunlight.
+// Skipped when raining, since rain protects undead from burning.
 func (m *MobManager) sunlightDamage() {
+	if m.WeatherMgr != nil && m.WeatherMgr.State() >= WeatherRain {
+		return
+	}
 	for _, mob := range m.Mobs {
 		if mob.Health <= 0 {
 			continue
