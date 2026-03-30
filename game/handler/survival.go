@@ -224,6 +224,9 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 	}
 
 	if player.Health <= 0 {
+		if s.tryTotemOfUndying(manager, player) {
+			return
+		}
 		s.handleDeath(manager, player)
 	}
 }
@@ -236,12 +239,86 @@ func (s *SurvivalHandler) ApplyDamageFrom(manager *game.PlayerManager, player *g
 
 // handleDeath handles player death: sends combat kill and death animation.
 func (s *SurvivalHandler) handleDeath(manager *game.PlayerManager, player *game.Player) {
+	// Store death location for recovery compass
+	px, py, pz := player.Position()
+	player.DeathX = int(px)
+	player.DeathY = int(py)
+	player.DeathZ = int(pz)
+	player.DeathDimension = player.Dimension
+	if player.DeathDimension == "" {
+		player.DeathDimension = "minecraft:overworld"
+	}
+
 	msg := player.Name + " died"
 	if player.LastDamageMessage != "" {
 		msg = player.LastDamageMessage
 		player.LastDamageMessage = ""
 	}
 	s.handleDeathWithMessage(manager, player, msg)
+}
+
+// tryTotemOfUndying checks if the player is holding a Totem of Undying and
+// activates it, preventing death. Returns true if the totem was consumed.
+func (s *SurvivalHandler) tryTotemOfUndying(manager *game.PlayerManager, player *game.Player) bool {
+	totemID := itemIDByName("totem_of_undying")
+	if totemID <= 0 {
+		return false
+	}
+
+	// Check offhand (slot 45) and mainhand (HeldSlot + 36)
+	totemSlot := -1
+	if player.Inventory[45].ID == totemID && player.Inventory[45].Count > 0 {
+		totemSlot = 45
+	} else {
+		mainSlot := int(player.HeldSlot) + 36
+		if player.Inventory[mainSlot].ID == totemID && player.Inventory[mainSlot].Count > 0 {
+			totemSlot = mainSlot
+		}
+	}
+	if totemSlot < 0 {
+		return false
+	}
+
+	player.Inventory[totemSlot] = game.ItemStack{}
+	SendSlotUpdate(player, totemSlot)
+	BroadcastEquipment(manager, player)
+
+	player.Health = 1
+
+	if s.EffectMgr != nil {
+		negativeEffects := []int32{
+			EffectSlowness, EffectMiningFatigue, EffectInstantDamage,
+			EffectNausea, EffectBlindness, EffectHunger,
+			EffectWeakness, EffectPoison, EffectWither,
+			EffectLevitation, EffectUnluck, EffectDarkness,
+		}
+		for _, eid := range negativeEffects {
+			s.EffectMgr.RemoveEffect(player, eid)
+		}
+		// Apply totem effects: Regeneration II (40t), Absorption II (100t), Fire Resistance (800t)
+		s.EffectMgr.ApplyEffect(player, EffectRegeneration, 1, 40, false)
+		s.EffectMgr.ApplyEffect(player, EffectAbsorption, 1, 100, false)
+		s.EffectMgr.ApplyEffect(player, EffectFireResistance, 0, 800, false)
+	}
+
+	SendSetHealth(player)
+	BroadcastHealthTag(manager, player)
+
+	// Entity event 35 = totem activation animation
+	totemPkt := pk.Marshal(
+		packetid.ClientboundEntityEvent,
+		pk.Int(player.EID),
+		pk.Byte(35),
+	)
+	manager.ForEach(func(p *game.Player) {
+		p.WritePacket(totemPkt)
+	})
+
+	px, py, pz := player.Position()
+	BroadcastSound(manager, SoundTotemUse, SoundCategoryPlayer, px, py, pz, 1.0, 1.0)
+
+	s.logf("Player %s used Totem of Undying", player.Name)
+	return true
 }
 
 // dropPlayerInventory drops all inventory items as entities and resets XP.

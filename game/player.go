@@ -400,6 +400,10 @@ type Player struct {
 	LastAttackTime    time.Time
 	LastDamageMessage string // death message override (e.g. "X was slain by Y")
 
+	// Death location (for recovery compass)
+	DeathX, DeathY, DeathZ int
+	DeathDimension         string // e.g. "minecraft:overworld"
+
 	// Shield blocking state
 	Blocking            bool
 	ShieldCooldownUntil time.Time

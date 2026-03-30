@@ -24,6 +24,7 @@ const (
 const (
 	SoundPlayerHurt  int32 = 799
 	SoundPlayerDeath int32 = 798
+	SoundTotemUse    int32 = 1023
 
 	SoundExplode      int32 = 399
 	SoundCreeperPrime int32 = 235
