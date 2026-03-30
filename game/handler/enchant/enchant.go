@@ -40,9 +40,11 @@ const (
 	SoulSpeed            = "soul_speed"
 	SwiftSneak           = "swift_sneak"
 	Piercing             = "piercing"
-	CurseOfBinding  = "binding_curse"
+	CurseOfBinding   = "binding_curse"
 	CurseOfVanishing = "vanishing_curse"
-	Sweeping             = "sweeping" // alias for sweeping_edge
+	Sweeping         = "sweeping" // alias for sweeping_edge
+	Density          = "density"
+	Breach           = "breach"
 )
 
 // Enchantment holds metadata about an enchantment type.
@@ -98,4 +100,8 @@ func init() {
 	}
 	// Register the sweeping alias pointing to the same entry.
 	Registry[Sweeping] = Registry[SweepingEdge]
+
+	// Mace-exclusive enchantments
+	Registry[Density] = &Enchantment{Name: Density, MaxLevel: 5, Incompatible: []string{Breach, Smite, BaneOfArthropods, Sharpness}}
+	Registry[Breach] = &Enchantment{Name: Breach, MaxLevel: 4, Incompatible: []string{Density, Smite, BaneOfArthropods, Sharpness}}
 }

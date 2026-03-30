@@ -31,8 +31,9 @@ const (
 	SoundArrowShoot   int32 = 61
 	SoundSkeletonShoot int32 = 932
 
-	SoundShieldBlock   int32 = 905
-	SoundThornsHit     int32 = 1021
+	SoundShieldBlock      int32 = 905
+	SoundThornsHit        int32 = 1021
+	SoundMaceSmashGround  int32 = 605 // mace smash ground impact
 
 	SoundZombieDeath   int32 = 1172
 	SoundZombieHurt    int32 = 1177
