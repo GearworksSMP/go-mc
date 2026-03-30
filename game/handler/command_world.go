@@ -131,6 +131,7 @@ func (c *CommandExecutor) cmdClear(player *game.Player, args []string) {
 	}
 	SendFullInventory(target)
 	BroadcastEquipment(c.Manager, target)
+	BroadcastAttributes(c.Manager, target)
 	c.sendSystemMsg(player, fmt.Sprintf("Cleared %d items from %s", cleared, target.Name), "green")
 	c.Logger.Printf("%s cleared %d items from %s", player.Name, cleared, target.Name)
 }

@@ -366,6 +366,12 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 		return
 	}
 
+	// Snapshot armor slots before click for change detection
+	var armorBefore [4]int32
+	for i, s := range []int{5, 6, 7, 8} {
+		armorBefore[i] = player.Inventory[s].ID
+	}
+
 	switch mode {
 	case 0: // Normal click
 		h.handleNormalClick(player, slot, int(button))
@@ -385,6 +391,20 @@ func (h *InventoryHandler) handleContainerClick(player *game.Player, p pk.Packet
 
 	updateCraftingResult(player)
 	SendFullInventory(player)
+
+	// If any armor slot changed, broadcast updated attributes
+	armorChanged := false
+	for i, s := range []int{5, 6, 7, 8} {
+		if player.Inventory[s].ID != armorBefore[i] {
+			armorChanged = true
+			break
+		}
+	}
+	if armorChanged {
+		if mgr := h.playerManager(); mgr != nil {
+			BroadcastAttributes(mgr, player)
+		}
+	}
 }
 
 // handleContainerClose handles ServerboundContainerClose.
@@ -499,6 +519,14 @@ func (h *InventoryHandler) handleContainerClose(player *game.Player, p pk.Packet
 
 	player.OpenWindowID = 0
 	SendFullInventory(player)
+}
+
+// playerManager returns the PlayerManager via the chest manager, or nil.
+func (h *InventoryHandler) playerManager() *game.PlayerManager {
+	if h.Chests != nil {
+		return h.Chests.Manager
+	}
+	return nil
 }
 
 // playBlockSound broadcasts a sound at the center of a block position.

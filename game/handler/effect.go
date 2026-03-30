@@ -133,6 +133,11 @@ func (em *EffectManager) ApplyEffect(player *game.Player, effectID, level, durat
 	// Send effect packet to the player
 	em.sendUpdateEffect(player, effect)
 
+	// Broadcast updated attributes if this effect modifies any attribute
+	if effectModifiesAttributes(effectID) {
+		BroadcastAttributes(em.Manager, player)
+	}
+
 	em.logf("Applied %s %d to %s (duration=%d ticks)", effectName(effectID), level+1, player.Name, durationTicks)
 }
 
@@ -157,6 +162,11 @@ func (em *EffectManager) RemoveEffect(player *game.Player, effectID int32) {
 		pk.VarInt(player.EID),
 		pk.VarInt(effectID),
 	))
+
+	// Broadcast updated attributes if this effect modifies any attribute
+	if effectModifiesAttributes(effectID) {
+		BroadcastAttributes(em.Manager, player)
+	}
 }
 
 // ClearAllEffects removes all effects from a player.
@@ -405,6 +415,19 @@ func effectName(id int32) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// effectModifiesAttributes returns true if the given effect ID changes
+// any player attribute (speed, damage, health, etc.).
+func effectModifiesAttributes(effectID int32) bool {
+	switch effectID {
+	case EffectSpeed, EffectSlowness,
+		EffectStrength, EffectWeakness,
+		EffectHaste, EffectMiningFatigue,
+		EffectHealthBoost:
+		return true
+	}
+	return false
 }
 
 func (em *EffectManager) logf(format string, args ...any) {

@@ -485,6 +485,9 @@ func (g *gamePlay) AcceptPlayer(name string, id uuid.UUID, profilePubKey *user.P
 	// Send initial experience
 	handler.SendExperience(player)
 
+	// Send initial player attributes (armor, speed, etc.)
+	handler.SendAttributes(player)
+
 	// Send current world time
 	g.timeMgr.SendTime(player)
 
