@@ -307,6 +307,11 @@ type Mob struct {
 	SnifferDigging   bool  // currently digging
 	SnifferDigEnd    int64 // tick when digging finishes
 
+	// Conversion ticks: counts down to 0 when a mob is converting to another type.
+	// Zombie→Drowned (in water), Husk→Zombie (in water), Skeleton→Stray (in powder snow).
+	// 0 = not converting. Set to 600 (30 seconds) when conversion starts.
+	ConversionTicks int
+
 	// Death animation: tick when killed (0 = alive). Entity is removed after 20 ticks.
 	DeathTick int64
 
@@ -1013,6 +1018,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 		m.tickCreeper(mob, tick)
 		return
 	case mob.TypeID == MobTypeSkeleton:
+		if m.tickSkeletonConversion(mob) {
+			return
+		}
 		m.tickSkeleton(mob, tick)
 		return
 	case mob.TypeID == MobTypeStray:
@@ -1127,6 +1135,13 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case !mob.Hostile:
 		m.tickPassive(mob, tick)
 		return
+	}
+
+	// Zombie water conversion check
+	if mob.TypeID == MobTypeZombie {
+		if m.tickZombieConversion(mob) {
+			return
+		}
 	}
 
 	// Default hostile AI (zombie, spider)
