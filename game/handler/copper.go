@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"math/rand"
 	"strings"
 
 	"github.com/Tnze/go-mc/game"
@@ -87,6 +88,10 @@ var copperScrapeBack = map[string]string{
 	"oxidized_copper_bulb":       "weathered_copper_bulb",
 }
 
+// copperWeatheringForward maps a copper block to its next oxidation stage.
+// Built at init time as the reverse of copperScrapeBack.
+var copperWeatheringForward map[string]string
+
 // copperDefaultStateID caches the default state ID for each copper block name.
 // Built at init time from block.ToStateID and block.FromID.
 var copperDefaultStateID map[string]int
@@ -96,6 +101,12 @@ func init() {
 	waxedToCopper = make(map[string]string, len(copperToWaxed))
 	for k, v := range copperToWaxed {
 		waxedToCopper[v] = k
+	}
+
+	// Build forward weathering map (reverse of copperScrapeBack).
+	copperWeatheringForward = make(map[string]string, len(copperScrapeBack))
+	for oxidized, previous := range copperScrapeBack {
+		copperWeatheringForward[previous] = oxidized
 	}
 
 	// Build default state ID cache for all copper block names referenced in the maps.
@@ -194,6 +205,50 @@ func (m *CopperManager) ScrapeCopper(player *game.Player, x, y, z int) bool {
 	}
 
 	return false
+}
+
+// TickWeathering randomly oxidizes unprotected copper blocks near players.
+// Should be called every ~1200 ticks (1 minute). It samples random blocks
+// in loaded areas around players and advances copper one oxidation stage
+// with a 1/1200 chance per block checked.
+func (m *CopperManager) TickWeathering() {
+	var positions [][3]float64
+	m.Manager.ForEach(func(p *game.Player) {
+		x, y, z := p.Position()
+		positions = append(positions, [3]float64{x, y, z})
+	})
+
+	for _, pos := range positions {
+		// Sample 16 random blocks within a 64-block radius around each player
+		for i := 0; i < 16; i++ {
+			bx := int(pos[0]) + rand.Intn(128) - 64
+			by := int(pos[1]) + rand.Intn(64) - 32
+			bz := int(pos[2]) + rand.Intn(128) - 64
+
+			state, err := m.World.GetBlock(bx, by, bz)
+			if err != nil || state == 0 {
+				continue
+			}
+
+			name := BlockNameFromState(int(state))
+			nextName, ok := copperWeatheringForward[name]
+			if !ok {
+				continue
+			}
+
+			// 1/1200 chance to advance
+			if rand.Intn(1200) != 0 {
+				continue
+			}
+
+			newStateID, ok := copperTransformStateID(int(state), name, nextName)
+			if !ok {
+				continue
+			}
+			m.World.SetBlock(bx, by, bz, block.StateID(newStateID))
+			broadcastBlockUpdateDirect(m.Manager, bx, by, bz, int32(newStateID))
+		}
+	}
 }
 
 // IsAxeItem returns true if the item name is any type of axe.

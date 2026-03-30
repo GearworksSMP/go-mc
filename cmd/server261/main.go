@@ -269,6 +269,7 @@ func main() {
 	hopperMgr.CrafterMgr = crafterMgr
 	dispenserMgr.ArrowMgr = arrowMgr
 	hopperMgr.WireMgr = wireMgr
+	hopperMgr.RedstoneMgr = redstoneMgr
 	wireMgr.ChestMgr = chestMgr
 	wireMgr.FurnaceMgr = furnaceMgr
 	wireMgr.HopperMgr = hopperMgr
@@ -326,6 +327,11 @@ func main() {
 	worldBorderMgr := handler.NewWorldBorderManager(players)
 	worldBorderMgr.SurvivalHandler = survHandler
 	worldBorderMgr.Logger = logger
+
+	copperMgr := &handler.CopperManager{
+		Manager: players,
+		World:   world,
+	}
 
 	gp := &gamePlay{
 		logger:          logger,
@@ -398,6 +404,7 @@ func main() {
 		leashMgr:         leashMgr,
 		respawnAnchorMgr: respawnAnchorMgr,
 		hiveMgr:          hiveMgr,
+		copperMgr:        copperMgr,
 		advancementMgr:   advancementMgr,
 		permMgr:          permMgr,
 		banMgr:           banMgr,
@@ -546,6 +553,11 @@ func main() {
 			villagerMgr.TickRestock(tick, timeMgr)
 			villageMgr.Tick(tick)
 			tabListMgr.Tick(tick)
+
+			// Copper weathering: check every 1200 ticks (~1 minute)
+			if tick%1200 == 0 {
+				copperMgr.TickWeathering()
+			}
 
 			metrics.RecordTick(time.Since(tickStart))
 		}),
@@ -767,6 +779,7 @@ type gamePlay struct {
 	leashMgr         *handler.LeashManager
 	respawnAnchorMgr *handler.RespawnAnchorManager
 	hiveMgr          *handler.HiveManager
+	copperMgr        *handler.CopperManager
 	gameRules        *handler.GameRules
 	advancementMgr  *handler.AdvancementManager
 	permMgr         *handler.PermissionManager
@@ -1339,10 +1352,7 @@ func (g *gamePlay) packetLoop(player *game.Player) {
 		BannerMgr:        g.bannerMgr,
 		RespawnAnchorMgr: g.respawnAnchorMgr,
 		HiveMgr:          g.hiveMgr,
-		CopperMgr: &handler.CopperManager{
-			Manager: g.players,
-			World:   g.world,
-		},
+		CopperMgr: g.copperMgr,
 	}
 	if g.pgStore != nil {
 		blockHandler.OnBlockBreak = func(blockName string, x, y, z int) {

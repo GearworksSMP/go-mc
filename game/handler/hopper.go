@@ -23,14 +23,15 @@ type HopperState struct {
 
 // HopperManager tracks all hoppers in the world and handles item transfer.
 type HopperManager struct {
-	Hoppers  map[[3]int]*HopperState
-	mu       sync.RWMutex
-	Manager  *game.PlayerManager
-	World    game.World
+	Hoppers    map[[3]int]*HopperState
+	mu         sync.RWMutex
+	Manager    *game.PlayerManager
+	World      game.World
 	Chests     *ChestManager
 	Furnaces   *FurnaceManager
 	CrafterMgr *CrafterManager
-	WireMgr    *WireManager // for comparator notifications on item transfers
+	WireMgr    *WireManager        // for comparator notifications on item transfers
+	RedstoneMgr *RedstoneManager   // for checking if hopper is locked by redstone
 }
 
 // NewHopperManager creates a new HopperManager.
@@ -168,6 +169,11 @@ func (hm *HopperManager) Tick(tick int64) {
 	defer hm.mu.Unlock()
 
 	for _, hs := range hm.Hoppers {
+		// Redstone-powered hoppers are locked
+		if hm.RedstoneMgr != nil && hm.RedstoneMgr.GetPowerLevel(hs.Pos[0], hs.Pos[1], hs.Pos[2]) > 0 {
+			continue
+		}
+
 		if hs.Cooldown > 0 {
 			hs.Cooldown--
 			continue
