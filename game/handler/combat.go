@@ -269,6 +269,26 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		}
 	}
 
+	// Mace smash attack: bonus damage when falling
+	isMaceSmash := false
+	var maceFallDist float64
+	if IsMace(heldName) && !attacker.OnGround && attacker.FallStartY > attacker.Y {
+		maceFallDist = attacker.FallStartY - attacker.Y
+		bonus := float32(maceFallDist * 3.5)
+		// Density enchantment: +0.5 * level per block fallen
+		if densityLvl := enchant.GetLevel(heldItem.Enchantments, enchant.Density); densityLvl > 0 {
+			bonus += float32(float64(densityLvl) * 0.5 * maceFallDist)
+		}
+		if bonus > 150 {
+			bonus = 150
+		}
+		damage += bonus
+		isMaceSmash = true
+	}
+
+	// Breach enchantment: reduce target armor effectiveness by 15% per level
+	breachLevel := enchant.GetLevel(heldItem.Enchantments, enchant.Breach)
+
 	// Knockback enchantment level (adds to base knockback)
 	knockbackLevel := enchant.GetLevel(heldItem.Enchantments, enchant.Knockback)
 	// Sprinting adds +1 knockback level equivalent
@@ -333,6 +353,11 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	if h.MobManager != nil && h.MobManager.DamageMobEx(attacker, targetEID, damage, knockbackLevel, fireAspectLevel, lootingLevel) {
 		attacker.Exhaustion += 0.1
 
+		// Mace smash effects: reset fall damage, particles, sound
+		if isMaceSmash {
+			h.applyMaceSmashEffects(attacker)
+		}
+
 		// Sweep attack: if full charge, standing still, and using a sword,
 		// deal reduced damage to nearby mobs
 		if strength >= 1.0 && IsSword(heldName) && !attacker.Sprinting {
@@ -340,7 +365,7 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 		}
 
 		h.applyDurabilityLoss(attacker, heldName, strength)
-		h.logf("Player %s attacked mob EID=%d (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, targetEID, strength, damage, isCritical)
+		h.logf("Player %s attacked mob EID=%d (strength=%.2f, damage=%.1f, crit=%v, maceSmash=%v)", attacker.Name, targetEID, strength, damage, isCritical, isMaceSmash)
 		return
 	}
 
@@ -356,7 +381,12 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	}
 
 	if h.SurvivalHandler != nil {
-		h.SurvivalHandler.ApplyDamageFrom(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID, attacker.Name)
+		h.SurvivalHandler.ApplyDamageFromWithBreach(h.Manager, target, damage, h.SurvivalHandler.AttackDamageTypeID, attacker.Name, breachLevel)
+	}
+
+	// Mace smash effects: reset fall damage, particles, sound
+	if isMaceSmash {
+		h.applyMaceSmashEffects(attacker)
 	}
 
 	// Fire Aspect: set target player on fire (4 seconds per level)
@@ -369,7 +399,12 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	attacker.Exhaustion += 0.1
 
 	// Knockback: push target away from attacker
-	h.applyKnockbackToPlayer(attacker, target, knockbackLevel)
+	if isMaceSmash && maceFallDist > 1 {
+		// Mace smash: extra knockback proportional to fall distance (upward + outward)
+		h.applyMaceKnockback(attacker, target, maceFallDist)
+	} else {
+		h.applyKnockbackToPlayer(attacker, target, knockbackLevel)
+	}
 
 	// Thorns enchantment: check target's armor for thorns, reflect damage back to attacker
 	h.applyThorns(attacker, target)
@@ -388,7 +423,7 @@ func (h *CombatHandler) handleAttack(attacker *game.Player, targetEID int32) {
 	}
 
 	h.applyDurabilityLoss(attacker, heldName, strength)
-	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f, crit=%v)", attacker.Name, target.Name, strength, damage, isCritical)
+	h.logf("Player %s attacked %s (strength=%.2f, damage=%.1f, crit=%v, maceSmash=%v)", attacker.Name, target.Name, strength, damage, isCritical, isMaceSmash)
 }
 
 // applyKnockbackToPlayer pushes the target player away from the attacker.
@@ -604,6 +639,41 @@ func (h *CombatHandler) emitDamageParticles(targetEID int32, isCritical, enchant
 	if enchanted {
 		BroadcastParticle(h.Manager, ParticleEnchantedHit, x, y, z, 0.3, 0.3, 0.3, 0.5, 10)
 	}
+}
+
+// applyMaceSmashEffects resets fall damage, broadcasts smash particles and impact sound.
+func (h *CombatHandler) applyMaceSmashEffects(attacker *game.Player) {
+	attacker.FallStartY = attacker.Y
+	ax, ay, az := attacker.Position()
+	BroadcastParticle(h.Manager, ParticlePoof, ax, ay, az, 0.5, 0.1, 0.5, 0.3, 20)
+	BroadcastSound(h.Manager, SoundMaceSmashGround, SoundCategoryPlayer, ax, ay, az, 1.0, 0.8)
+}
+
+// applyMaceKnockback applies extra knockback proportional to fall distance (upward + outward).
+func (h *CombatHandler) applyMaceKnockback(attacker, target *game.Player, fallDist float64) {
+	ax, _, az := attacker.Position()
+	tx, _, tz := target.Position()
+	dx := tx - ax
+	dz := tz - az
+	dist := math.Sqrt(dx*dx + dz*dz)
+	if dist < 0.01 {
+		dist = 0.01
+	}
+
+	// Scale knockback with fall distance, capped
+	kbStrength := math.Min(fallDist*0.5, 10.0)
+	vx := (dx / dist) * kbStrength
+	vz := (dz / dist) * kbStrength
+	vy := math.Min(fallDist*0.25, 5.0) // upward component
+
+	pkt := pk.Marshal(
+		packetid.ClientboundSetEntityMotion,
+		pk.VarInt(target.EID),
+		pk.Short(int16(vx*8000)),
+		pk.Short(int16(vy*8000)),
+		pk.Short(int16(vz*8000)),
+	)
+	target.WritePacket(pkt)
 }
 
 func (h *CombatHandler) logf(format string, args ...any) {

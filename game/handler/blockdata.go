@@ -432,6 +432,11 @@ func IsAxe(itemName string) bool {
 	return strings.HasSuffix(itemName, "_axe")
 }
 
+// IsMace returns true if the item is a mace.
+func IsMace(name string) bool {
+	return name == "mace"
+}
+
 // GetWeaponDamage returns the attack damage for a weapon item name.
 // Returns 1.0 (bare hand) for non-weapon items.
 func GetWeaponDamage(itemName string) float32 {
@@ -469,6 +474,8 @@ var weaponCooldown = map[string]float64{
 	"golden_hoe": 1.0, "diamond_hoe": 0.25, "netherite_hoe": 0.25,
 	// Trident: 0.9s (1.1 attacks/s)
 	"trident": 0.9,
+	// Mace: 1.6s (0.625 attacks/s)
+	"mace": 1.6,
 }
 
 // CanHarvestBlock returns true if the held item can harvest the block (gets drops).
@@ -732,4 +739,7 @@ var weaponDamage = map[string]float32{
 
 	// Trident: 9 base damage
 	"trident": 9,
+
+	// Mace: 5 base damage
+	"mace": 5,
 }

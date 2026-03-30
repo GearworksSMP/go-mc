@@ -41,6 +41,11 @@ func SendSetHealth(player *game.Player) {
 
 // ApplyDamage reduces player health, broadcasts hurt animation, and handles death.
 func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32) {
+	s.applyDamageInternal(manager, player, damage, damageTypeID, 0)
+}
+
+// applyDamageInternal is the shared implementation for ApplyDamage with optional breach level.
+func (s *SurvivalHandler) applyDamageInternal(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32, breachLevel int32) {
 	if player.Dead || player.IsInvulnerable() {
 		return
 	}
@@ -74,6 +79,13 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 		name := ItemNameByID(player.Inventory[slot].ID)
 		armorPts += float32(GetArmorProtection(name))
 		toughness += GetArmorToughness(name)
+	}
+	// Breach enchantment: reduce armor effectiveness by 15% per level
+	if breachLevel > 0 && armorPts > 0 {
+		armorPts *= float32(1.0 - 0.15*float64(breachLevel))
+		if armorPts < 0 {
+			armorPts = 0
+		}
 	}
 	if armorPts > 0 {
 		a := float64(armorPts) / 5.0
@@ -232,6 +244,13 @@ func (s *SurvivalHandler) ApplyDamage(manager *game.PlayerManager, player *game.
 func (s *SurvivalHandler) ApplyDamageFrom(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32, attackerName string) {
 	player.LastDamageMessage = player.Name + " was slain by " + attackerName
 	s.ApplyDamage(manager, player, damage, damageTypeID)
+}
+
+// ApplyDamageFromWithBreach applies damage with Breach enchantment reducing armor effectiveness.
+// Each breach level reduces armor points by 15% before damage reduction calculation.
+func (s *SurvivalHandler) ApplyDamageFromWithBreach(manager *game.PlayerManager, player *game.Player, damage float32, damageTypeID int32, attackerName string, breachLevel int32) {
+	player.LastDamageMessage = player.Name + " was slain by " + attackerName
+	s.applyDamageInternal(manager, player, damage, damageTypeID, breachLevel)
 }
 
 // handleDeath handles player death: sends combat kill and death animation.
