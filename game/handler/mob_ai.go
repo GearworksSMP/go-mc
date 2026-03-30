@@ -3,6 +3,7 @@ package handler
 import (
 	"math"
 	"math/rand"
+	"strings"
 
 	"github.com/Tnze/go-mc/data/packetid"
 	"github.com/Tnze/go-mc/game"
@@ -1975,4 +1976,158 @@ func (m *MobManager) tickZombieConversion(mob *Mob) bool {
 // tickSkeletonConversion checks if a skeleton should convert to a stray in powder snow.
 func (m *MobManager) tickSkeletonConversion(mob *Mob) bool {
 	return m.tickConversion(mob, "powder_snow", MobTypeStray)
+}
+
+// tickVillager runs villager daily schedule AI based on world time.
+func (m *MobManager) tickVillager(mob *Mob, tick int64) {
+	m.applyGravity(mob)
+
+	if mob.VillagerData == nil {
+		m.tickWander(mob, tick)
+		return
+	}
+	vd := mob.VillagerData
+
+	// Flee behavior takes priority over schedule (reuse tickPassive flee logic)
+	if m.tickFlee(mob) {
+		return
+	}
+
+	dayTime := m.TimeMgr.GetDayTime()
+
+	// Determine target state from time of day
+	var targetState VillagerState
+	switch {
+	case dayTime < 2000:
+		targetState = VillagerWandering
+	case dayTime < 9000:
+		targetState = VillagerWorking
+	case dayTime < 11000:
+		targetState = VillagerSocializing
+	default:
+		targetState = VillagerSleeping
+	}
+
+	// Handle state transitions
+	if vd.State != targetState {
+		oldState := vd.State
+		vd.State = targetState
+
+		if oldState == VillagerSleeping {
+			m.broadcastMobPose(mob, 0) // standing
+		}
+
+		vd.PathAttemptTick = tick
+	}
+
+	switch vd.State {
+	case VillagerWorking:
+		m.villagerMoveToward(mob, vd, tick, vd.WorkstationPos)
+	case VillagerSleeping:
+		m.tickVillagerSleep(mob, vd, tick)
+	default:
+		m.tickWander(mob, tick)
+	}
+}
+
+// tickFlee handles flee behavior for a mob. Returns true if the mob is fleeing.
+func (m *MobManager) tickFlee(mob *Mob) bool {
+	if mob.FleeTicks <= 0 {
+		return false
+	}
+	mob.FleeTicks--
+	dx := mob.FleeX - mob.X
+	dz := mob.FleeZ - mob.Z
+	dist := math.Sqrt(dx*dx + dz*dz)
+	if dist > 1.0 {
+		nx := dx / dist * mob.Speed * 1.5
+		nz := dz / dist * mob.Speed * 1.5
+		m.tryMove(mob, nx, nz)
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		m.broadcastMobMove(mob)
+		return true
+	}
+	mob.FleeTicks = 0
+	return false
+}
+
+// broadcastMobPose sends a pose metadata update for a mob to nearby players.
+func (m *MobManager) broadcastMobPose(mob *Mob, pose int32) {
+	var w MetadataWriter
+	w.WritePose(6, pose)
+	data := w.Bytes()
+	m.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
+		SendEntityMetadata(p, mob.EID, data)
+	})
+}
+
+// villagerMoveToward moves a villager toward a target position, stopping within 2 blocks.
+// Falls back to wandering if no target or pathfinding times out after 200 ticks.
+func (m *MobManager) villagerMoveToward(mob *Mob, vd *VillagerData, tick int64, target [3]int) {
+	if target == ([3]int{}) {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	dx := float64(target[0]) + 0.5 - mob.X
+	dz := float64(target[2]) + 0.5 - mob.Z
+	distSq := dx*dx + dz*dz
+
+	if distSq <= 4 {
+		mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+		m.broadcastMobMove(mob)
+		return
+	}
+
+	if tick-vd.PathAttemptTick > 200 {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	dist := math.Sqrt(distSq)
+	m.tryMove(mob, dx/dist*mob.Speed, dz/dist*mob.Speed)
+	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+	m.broadcastMobMove(mob)
+}
+
+// tickVillagerSleep moves the villager to bed and sets sleeping pose.
+func (m *MobManager) tickVillagerSleep(mob *Mob, vd *VillagerData, tick int64) {
+	bed := vd.BedPos
+	if bed == ([3]int{}) {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	// Check bed still exists (only every 20 ticks to avoid per-tick block lookups)
+	if tick%20 == 0 {
+		name := blockNameAt(m.World, bed[0], bed[1], bed[2])
+		if !strings.HasSuffix(name, "_bed") {
+			vd.BedPos = [3]int{}
+			m.tickWander(mob, tick)
+			return
+		}
+	}
+
+	dx := float64(bed[0]) + 0.5 - mob.X
+	dz := float64(bed[2]) + 0.5 - mob.Z
+	distSq := dx*dx + dz*dz
+
+	if distSq <= 4 {
+		vd.LastSleepTick = tick
+		// Only send pose update once when first arriving (not every tick)
+		if tick == vd.PathAttemptTick || (tick-vd.PathAttemptTick)%100 == 0 {
+			m.broadcastMobPose(mob, 2) // sleeping
+		}
+		return
+	}
+
+	if tick-vd.PathAttemptTick > 200 {
+		m.tickWander(mob, tick)
+		return
+	}
+
+	dist := math.Sqrt(distSq)
+	m.tryMove(mob, dx/dist*mob.Speed, dz/dist*mob.Speed)
+	mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
+	m.broadcastMobMove(mob)
 }

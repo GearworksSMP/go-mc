@@ -36,7 +36,7 @@ type Village struct {
 	LastGolemSpawnTick         int64
 }
 
-// VillageManager detects villages and manages workstation claiming and iron golem spawning.
+// VillageManager detects villages and manages workstation claiming, bed claiming, and iron golem spawning.
 type VillageManager struct {
 	MobMgr  *MobManager
 	Manager *game.PlayerManager
@@ -46,6 +46,7 @@ type VillageManager struct {
 
 	villages            []*Village
 	claimedWorkstations map[[3]int]int32 // position -> villager EID
+	claimedBeds         map[[3]int]int32 // position -> villager EID
 }
 
 // NewVillageManager creates a new VillageManager.
@@ -56,6 +57,7 @@ func NewVillageManager(mobMgr *MobManager, manager *game.PlayerManager, world ga
 		World:               world,
 		Logger:              logger,
 		claimedWorkstations: make(map[[3]int]int32),
+		claimedBeds:         make(map[[3]int]int32),
 	}
 }
 
@@ -69,12 +71,13 @@ func (vm *VillageManager) Tick(tick int64) {
 
 	vm.detectVillages()
 	vm.claimWorkstations()
+	vm.claimBeds()
 	vm.checkIronGolemSpawns(tick)
 }
 
 // blockNameAt returns the block ID string at the given position, or "" on error.
-func (vm *VillageManager) blockNameAt(x, y, z int) string {
-	state, err := vm.World.GetBlock(x, y, z)
+func blockNameAt(w game.World, x, y, z int) string {
+	state, err := w.GetBlock(x, y, z)
 	if err != nil {
 		return ""
 	}
@@ -91,7 +94,7 @@ func (vm *VillageManager) findBlocks(cx, cy, cz, radius int, match func(string) 
 	for x := cx - radius; x <= cx+radius; x++ {
 		for z := cz - radius; z <= cz+radius; z++ {
 			for y := cy - vertRange; y <= cy+vertRange; y++ {
-				if name := vm.blockNameAt(x, y, z); name != "" && match(name) {
+				if name := blockNameAt(vm.World,x, y, z); name != "" && match(name) {
 					result = append(result, [3]int{x, y, z})
 				}
 			}
@@ -269,7 +272,7 @@ func (vm *VillageManager) claimWorkstations() {
 				if dist > 48*48 || dist >= bestDist {
 					continue
 				}
-				name := vm.blockNameAt(ws[0], ws[1], ws[2])
+				name := blockNameAt(vm.World,ws[0], ws[1], ws[2])
 				if prof, ok := workstationProfession[name]; ok {
 					bestDist = dist
 					bestPos = ws
@@ -294,6 +297,66 @@ func (vm *VillageManager) claimWorkstations() {
 				vm.MobMgr.Manager.ForEachNearby(mob.X, mob.Z, PlayerTrackingRange, func(p *game.Player) {
 					SendEntityMetadata(p, mob.EID, data)
 				})
+			}
+			vm.MobMgr.mu.Unlock()
+		}
+	}
+}
+
+// claimBeds assigns villagers without beds to nearby unclaimed beds.
+func (vm *VillageManager) claimBeds() {
+	// Remove stale bed claims for dead/removed villagers.
+	vm.MobMgr.mu.Lock()
+	for pos, eid := range vm.claimedBeds {
+		mob, ok := vm.MobMgr.Mobs[eid]
+		if !ok || mob.Health <= 0 {
+			delete(vm.claimedBeds, pos)
+		}
+	}
+	vm.MobMgr.mu.Unlock()
+
+	for _, village := range vm.villages {
+		for _, eid := range village.Villagers {
+			vm.MobMgr.mu.Lock()
+			mob, ok := vm.MobMgr.Mobs[eid]
+			if !ok || mob.Health <= 0 || mob.VillagerData == nil {
+				vm.MobMgr.mu.Unlock()
+				continue
+			}
+			// Skip if already has a bed
+			if mob.VillagerData.BedPos != ([3]int{}) {
+				vm.MobMgr.mu.Unlock()
+				continue
+			}
+			mobX, mobY, mobZ := mob.X, mob.Y, mob.Z
+			vm.MobMgr.mu.Unlock()
+
+			bestDist := math.MaxFloat64
+			bestPos := [3]int{}
+			for _, bed := range village.Beds {
+				if _, claimed := vm.claimedBeds[bed]; claimed {
+					continue
+				}
+				dx := float64(bed[0]) + 0.5 - mobX
+				dy := float64(bed[1]) + 0.5 - mobY
+				dz := float64(bed[2]) + 0.5 - mobZ
+				dist := dx*dx + dy*dy + dz*dz
+				if dist > 48*48 || dist >= bestDist {
+					continue
+				}
+				bestDist = dist
+				bestPos = bed
+			}
+
+			if bestDist == math.MaxFloat64 {
+				continue
+			}
+
+			vm.MobMgr.mu.Lock()
+			mob, ok = vm.MobMgr.Mobs[eid]
+			if ok && mob.Health > 0 && mob.VillagerData != nil {
+				mob.VillagerData.BedPos = bestPos
+				vm.claimedBeds[bestPos] = eid
 			}
 			vm.MobMgr.mu.Unlock()
 		}

@@ -1125,6 +1125,9 @@ func (m *MobManager) tickMob(mob *Mob, tick int64) {
 	case mob.TypeID == MobTypeSniffer:
 		m.tickSniffer(mob, tick)
 		return
+	case mob.TypeID == MobTypeVillager:
+		m.tickVillager(mob, tick)
+		return
 	case mob.TypeID == MobTypeTurtle:
 		if m.TurtleMgr != nil {
 			m.TurtleMgr.tickTurtle(mob, tick)
@@ -1538,21 +1541,8 @@ func (m *MobManager) tickSkeleton(mob *Mob, tick int64) {
 func (m *MobManager) tickPassive(mob *Mob, tick int64) {
 	m.applyGravity(mob)
 
-	// Flee behavior: move toward flee target at 1.5x speed
-	if mob.FleeTicks > 0 {
-		mob.FleeTicks--
-		dx := mob.FleeX - mob.X
-		dz := mob.FleeZ - mob.Z
-		dist := math.Sqrt(dx*dx + dz*dz)
-		if dist > 1.0 {
-			nx := dx / dist * mob.Speed * 1.5
-			nz := dz / dist * mob.Speed * 1.5
-			m.tryMove(mob, nx, nz)
-			mob.Yaw = float32(math.Atan2(-dx, dz) * 180 / math.Pi)
-			m.broadcastMobMove(mob)
-			return
-		}
-		mob.FleeTicks = 0
+	if m.tickFlee(mob) {
+		return
 	}
 
 	// Baby growth: count down and convert to adult

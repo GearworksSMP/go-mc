@@ -63,6 +63,16 @@ func villagerProfessionID(name string) int32 {
 	}
 }
 
+// VillagerState represents a villager's current schedule state.
+type VillagerState int
+
+const (
+	VillagerWandering   VillagerState = iota // free roaming
+	VillagerWorking                          // morning/afternoon, near workstation
+	VillagerSleeping                         // nighttime, in bed
+	VillagerSocializing                      // evening, near bell/meeting point
+)
+
 // VillagerData holds the profession and trade list for a villager mob.
 type VillagerData struct {
 	Profession      string
@@ -72,6 +82,9 @@ type VillagerData struct {
 	Gossip          []GossipEntry // gossip entries about players
 	WorkstationPos  [3]int        // claimed workstation block position (zero value = none)
 	LastSleepTick   int64         // tick when villager last slept
+	State           VillagerState // current schedule state
+	BedPos          [3]int        // claimed bed position (zero value = none)
+	PathAttemptTick int64         // tick when pathfinding toward target started (for timeout)
 }
 
 // SetProfession changes the villager's profession and regenerates trades.
@@ -616,12 +629,12 @@ func (vm *VillagerManager) GetOpenTradeIndex(player *game.Player) int {
 	return session.SelectedTrade
 }
 
-// TickRestock refreshes villager trades during the day, matching vanilla behavior.
+// TickRestock refreshes villager trades during work hours when near workstation.
 // Villagers restock up to 2 times per day, with at least 2400 ticks between restocks.
 // At midnight (time crosses 18000), the daily restock counter resets.
 func (vm *VillagerManager) TickRestock(tick int64, timeMgr *TimeManager) {
 	dayTime := timeMgr.GetDayTime()
-	isDaytime := dayTime < 13000
+	isWorkHours := dayTime >= 2000 && dayTime < 9000
 
 	vm.MobMgr.mu.Lock()
 	defer vm.MobMgr.mu.Unlock()
@@ -633,14 +646,23 @@ func (vm *VillagerManager) TickRestock(tick int64, timeMgr *TimeManager) {
 		vd := mob.VillagerData
 
 		// Reset daily counter at midnight (dayTime wraps past 18000).
-		// We detect this by checking if dayTime is in the range [18000, 18020)
-		// since this tick runs once per server tick.
 		if dayTime >= 18000 && dayTime < 18020 && vd.RestocksToday > 0 {
 			vd.RestocksToday = 0
 		}
 
-		// Only restock during daytime
-		if !isDaytime {
+		// Only restock during work hours
+		if !isWorkHours {
+			continue
+		}
+
+		// Must be near workstation (within 2 blocks) to restock
+		if vd.WorkstationPos == ([3]int{}) {
+			continue
+		}
+		dx := float64(vd.WorkstationPos[0]) + 0.5 - mob.X
+		dy := float64(vd.WorkstationPos[1]) + 0.5 - mob.Y
+		dz := float64(vd.WorkstationPos[2]) + 0.5 - mob.Z
+		if dx*dx+dy*dy+dz*dz > 4 { // within 2 blocks
 			continue
 		}
 
