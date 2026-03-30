@@ -40,6 +40,12 @@ func (w *MetadataWriter) WriteByte(index uint8, value int8) {
 	w.buf.WriteByte(byte(value))
 }
 
+// WriteVarInt writes a VARINT metadata entry.
+func (w *MetadataWriter) WriteVarInt(index uint8, value int32) {
+	w.writeIndex(index, metaSerializerInt)
+	writeVarIntBuf(&w.buf, value)
+}
+
 // WriteFloat writes a FLOAT metadata entry.
 func (w *MetadataWriter) WriteFloat(index uint8, value float32) {
 	w.writeIndex(index, metaSerializerFloat)
@@ -130,6 +136,7 @@ func SendEntityMetadata(target *game.Player, entityID int32, data []byte) {
 func SendFullPlayerMetadata(target, about *game.Player) {
 	var w MetadataWriter
 	w.WriteByte(0, EntityFlags(about))          // entity flags
+	w.WriteVarInt(1, about.AirTicks)            // air supply
 	w.WriteOptChat(2, healthDisplayText(about)) // custom name
 	w.WriteBoolean(3, true)                     // custom name visible
 	w.WritePose(6, playerPose(about))           // pose
@@ -156,6 +163,25 @@ func BroadcastHealthTag(manager *game.PlayerManager, player *game.Player) {
 	w.WriteBoolean(3, true)
 	data := w.Bytes()
 
+	px, _, pz := player.Position()
+	manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
+		if p.UUID != player.UUID {
+			SendEntityMetadata(p, player.EID, data)
+		}
+	})
+}
+
+// BroadcastAirSupply sends updated air supply metadata to the player and nearby players.
+// This makes the client render the air bubble bar when underwater.
+func BroadcastAirSupply(manager *game.PlayerManager, player *game.Player) {
+	var w MetadataWriter
+	w.WriteVarInt(1, player.AirTicks)
+	data := w.Bytes()
+
+	// Send to the player themselves (for their own bubble bar)
+	SendEntityMetadata(player, player.EID, data)
+
+	// Send to nearby players
 	px, _, pz := player.Position()
 	manager.ForEachNearby(px, pz, PlayerTrackingRange, func(p *game.Player) {
 		if p.UUID != player.UUID {

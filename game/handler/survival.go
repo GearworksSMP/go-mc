@@ -500,6 +500,8 @@ func (s *SurvivalHandler) WaterTick(manager *game.PlayerManager, world game.Worl
 			}
 		}
 
+		prevAir := p.AirTicks
+
 		if inWater {
 			// Extinguish fire
 			if p.FireTicks > 0 {
@@ -507,26 +509,35 @@ func (s *SurvivalHandler) WaterTick(manager *game.PlayerManager, world game.Worl
 				broadcastFireMetadata(manager, p.EID, false)
 			}
 
-			// Respiration enchant extends air: each level adds ~15s (300 ticks)
-			respirationLevel := int32(0)
-			if len(p.Inventory) > 5 {
-				respirationLevel = enchant.GetLevel(p.Inventory[5].Enchantments, enchant.Respiration)
+			// Water Breathing or Conduit Power: don't lose air
+			hasBreathingProtection := false
+			if s.EffectMgr != nil {
+				hasBreathingProtection = s.EffectMgr.HasEffect(p, EffectWaterBreathing) ||
+					s.EffectMgr.HasEffect(p, EffectConduitPower)
 			}
 
-			// With Respiration, chance per tick to not consume air = level/(level+1)
-			consumeAir := true
-			if respirationLevel > 0 && rand.Int31n(respirationLevel+1) > 0 {
-				consumeAir = false
-			}
+			if !hasBreathingProtection {
+				// Respiration enchant extends air: each level adds ~15s (300 ticks)
+				respirationLevel := int32(0)
+				if len(p.Inventory) > 5 {
+					respirationLevel = enchant.GetLevel(p.Inventory[5].Enchantments, enchant.Respiration)
+				}
 
-			if consumeAir {
-				p.AirTicks--
-			}
+				// With Respiration, chance per tick to not consume air = level/(level+1)
+				consumeAir := true
+				if respirationLevel > 0 && rand.Int31n(respirationLevel+1) > 0 {
+					consumeAir = false
+				}
 
-			if p.AirTicks <= -20 {
-				p.AirTicks = 0
-				p.LastDamageMessage = p.Name + " drowned"
-				s.ApplyDamage(manager, p, 2.0, s.DrownDamageTypeID)
+				if consumeAir {
+					p.AirTicks--
+				}
+
+				if p.AirTicks <= -20 {
+					p.AirTicks = 0
+					p.LastDamageMessage = p.Name + " drowned"
+					s.ApplyDamage(manager, p, 2.0, s.DrownDamageTypeID)
+				}
 			}
 		} else {
 			// Restore air: +4 per tick, cap at 300
@@ -536,6 +547,11 @@ func (s *SurvivalHandler) WaterTick(manager *game.PlayerManager, world game.Worl
 					p.AirTicks = 300
 				}
 			}
+		}
+
+		// Broadcast air supply metadata when it changes (for client bubble bar)
+		if p.AirTicks != prevAir {
+			BroadcastAirSupply(manager, p)
 		}
 	})
 }
